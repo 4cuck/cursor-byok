@@ -593,7 +593,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 560,
+          "line": 562,
           "column": 14
         }
       ]
@@ -605,7 +605,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1463,
+          "line": 1487,
           "column": 70
         }
       ]
@@ -2239,7 +2239,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1354,
+          "line": 1378,
           "column": 100
         }
       ]
@@ -2983,7 +2983,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 762,
+          "line": 752,
           "column": 66
         }
       ]
@@ -3825,7 +3825,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1475,
+          "line": 1499,
           "column": 15
         }
       ]
@@ -3909,7 +3909,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 569,
+          "line": 571,
           "column": 14
         }
       ]
@@ -4997,22 +4997,22 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 532,
+          "line": 534,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 538,
+          "line": 540,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 544,
+          "line": 546,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 553,
+          "line": 555,
           "column": 16
         }
       ]
@@ -5125,7 +5125,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 580,
+          "line": 570,
           "column": 99
         }
       ]
@@ -5807,7 +5807,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1438,
+          "line": 1462,
           "column": 49
         }
       ]
@@ -6861,12 +6861,12 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 495,
+          "line": 497,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 510,
+          "line": 512,
           "column": 14
         }
       ]
@@ -7510,7 +7510,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 462,
+          "line": 452,
           "column": 24
         }
       ]
@@ -7853,7 +7853,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 693,
+          "line": 683,
           "column": 128
         }
       ]
@@ -8001,12 +8001,12 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1315,
+          "line": 1339,
           "column": 37
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1329,
+          "line": 1353,
           "column": 37
         }
       ]
@@ -9718,7 +9718,7 @@
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 489,
+          "line": 491,
           "column": 20
         }
       ]
@@ -10042,7 +10042,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 506,
+          "line": 508,
           "column": 14
         }
       ]
@@ -12533,7 +12533,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 521,
+          "line": 523,
           "column": 14
         }
       ]
@@ -13080,7 +13080,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1408,
+          "line": 1432,
           "column": 35
         }
       ]
@@ -13717,7 +13717,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 524,
+          "line": 526,
           "column": 14
         }
       ]
@@ -14786,7 +14786,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1386,
+          "line": 1410,
           "column": 49
         }
       ]
@@ -14954,7 +14954,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1464,
+          "line": 1488,
           "column": 61
         }
       ]
@@ -15422,7 +15422,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 557,
+          "line": 559,
           "column": 14
         }
       ]
@@ -15655,7 +15655,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1368,
+          "line": 1392,
           "column": 79
         }
       ]
@@ -16462,7 +16462,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 527,
+          "line": 529,
           "column": 14
         }
       ]
@@ -16864,7 +16864,7 @@
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1272,
+          "line": 1296,
           "column": 49
         }
       ]
@@ -16980,12 +16980,12 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1422,
+          "line": 1446,
           "column": 35
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1449,
+          "line": 1473,
           "column": 48
         }
       ]
@@ -17568,7 +17568,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 548,
+          "line": 550,
           "column": 14
         }
       ]
@@ -19119,12 +19119,12 @@
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1294,
+          "line": 1318,
           "column": 37
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1454,
+          "line": 1478,
           "column": 78
         }
       ]
@@ -19999,7 +19999,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 491,
+          "line": 493,
           "column": 14
         }
       ]
@@ -20572,7 +20572,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 484,
+          "line": 486,
           "column": 14
         }
       ]
@@ -20983,7 +20983,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 503,
+          "line": 505,
           "column": 14
         }
       ]
@@ -21717,7 +21717,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1478,
+          "line": 1502,
           "column": 26
         }
       ]
@@ -21729,7 +21729,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 513,
+          "line": 515,
           "column": 14
         }
       ]
@@ -21741,7 +21741,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 516,
+          "line": 518,
           "column": 14
         }
       ]
@@ -22713,7 +22713,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1479,
+          "line": 1503,
           "column": 26
         },
         {
@@ -23368,12 +23368,12 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 563,
+          "line": 565,
           "column": 14
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 566,
+          "line": 568,
           "column": 14
         }
       ]
@@ -23564,7 +23564,7 @@
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 326,
+          "line": 327,
           "column": 49
         },
         {
@@ -24165,7 +24165,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 500,
+          "line": 502,
           "column": 14
         }
       ]

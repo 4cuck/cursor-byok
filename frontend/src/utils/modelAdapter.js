@@ -322,6 +322,7 @@ export function normalizeModelAdapter(source) {
       type: MODEL_SOURCE_CURSOR_ACCOUNT,
       supplierID: ownerLabel,
       cursorAccountID: asString(raw.cursorAccountID || raw.cursor_account_id),
+      cursorModelSpec: asString(raw.cursorModelSpec || raw.cursor_model_spec),
       disabled: asBoolean(raw.disabled),
       tooltipData: asString(raw.tooltipData) || "Cursor 账户模型",
       modelID: asString(raw.modelID),
@@ -453,6 +454,7 @@ export function mergeDuplicateModelAdapter(existing, incoming) {
     balanceAccessToken: existing.balanceAccessToken || incoming.balanceAccessToken,
     balanceUserID: existing.balanceUserID || incoming.balanceUserID,
     balanceCodingPlanProvider: existing.balanceCodingPlanProvider || incoming.balanceCodingPlanProvider,
+    cursorModelSpec: incoming.cursorModelSpec || existing.cursorModelSpec,
   };
 }
 

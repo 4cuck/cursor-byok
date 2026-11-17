@@ -127,6 +127,8 @@ type ModelAdapterConfig struct {
 	Pricing *ModelPricing `json:"pricing,omitempty"`
 	// FastMode 表示 OpenAI/GPT 是否请求 priority service tier。
 	FastMode bool `json:"fastMode,omitempty"`
+	// CursorModelSpec 保存 Cursor 目录里的 effort、fast 和 max mode 定义。
+	CursorModelSpec string `json:"cursorModelSpec,omitempty"`
 	// OpenAIServiceTier 表示显式 OpenAI service tier。
 	OpenAIServiceTier string `json:"openAIServiceTier,omitempty"`
 	// Disabled 表示渠道已停用：不出现在客户端模型列表，也不参与请求路由。
@@ -179,6 +181,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				ContextWindowTokens: modelcontext.Resolve(item.ModelID, normalizeMaxCompletionTokens(item.ContextWindowTokens)),
 				MaxCompletionTokens: normalizeMaxCompletionTokens(item.MaxCompletionTokens),
 				Pricing:             item.Pricing,
+				CursorModelSpec:     strings.TrimSpace(item.CursorModelSpec),
 			}
 			if next.TooltipData == "" {
 				next.TooltipData = "Cursor 账户模型"

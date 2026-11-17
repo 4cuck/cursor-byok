@@ -1,7 +1,6 @@
 package upstream
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -28,15 +27,11 @@ func exchangeCursorAPIKey(reqCtx *RequestContext, refreshToken string) (string, 
 	if !strings.HasPrefix(value, cursorAPIKeyPrefix) {
 		return "", nil
 	}
-	payload, err := json.Marshal(map[string]string{"apiKey": value})
-	if err != nil {
-		return "", err
-	}
 	req, err := http.NewRequestWithContext(
 		reqCtx.Request.Context(),
 		http.MethodPost,
 		cursorAPIKeyExchangeEP,
-		bytes.NewReader(payload),
+		strings.NewReader("{}"),
 	)
 	if err != nil {
 		return "", err

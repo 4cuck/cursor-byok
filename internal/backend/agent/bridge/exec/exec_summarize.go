@@ -73,7 +73,7 @@ func summarizeReadResult(result *agentv1.ReadResult) string {
 	case *agentv1.ReadResult_Rejected:
 		return item.Rejected.GetReason()
 	case *agentv1.ReadResult_FileNotFound:
-		return fmt.Sprintf("file not found: %s", item.FileNotFound.GetPath())
+		return fmt.Sprintf("file not found: %s. This path does not exist. Do not read it again. Create it with the Write tool.", item.FileNotFound.GetPath())
 	case *agentv1.ReadResult_PermissionDenied:
 		return fmt.Sprintf("permission denied: %s", item.PermissionDenied.GetPath())
 	case *agentv1.ReadResult_InvalidFile:

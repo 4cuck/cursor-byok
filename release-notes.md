@@ -1,18 +1,20 @@
-## v1.0.33
-
-### New
-
-- **Plan and remaining usage on each Cursor account**: every saved key shows its plan name, subscription status, and how much included usage is left. The bar turns amber, then red, as the allowance runs down.
-- **Cursor account models are separated by owner**: synced models are labeled `cursor_account1`, `cursor_account2`, and so on, so two accounts no longer share one catalog or one spend card.
-- **Account health you can actually read**: Check status probes the real agent path and reports Working, Locked, Rejected, Session expired, Plan required, or Error on that account only.
+## v1.0.34
 
 ### Fixed
 
-- **Paid accounts were reported as "Plan required"**: the health check called a retired chat route that answers every account with a payment-shaped error. It now uses the same agent path as the installed Cursor client.
-- **One prompt printed the reply twice and said the context was summarized**: a normal turn no longer asks the model to write the answer again after `send_final_summary`, and it no longer sends the compaction events Cursor renders as "Chat context summarized".
-- **A valid API key stopped working after about an hour**: the short-lived session was stored as the refresh token. Refresh now keeps the original `crsr_` key and mints a new session when Cursor asks.
-- **Switching to official upstream and back replaced the API key**: injected sessions are no longer saved as the official login, and returning to cursor-byok writes the selected account back.
-- **Check status looked like every account was being checked**: only the account you clicked is marked as in progress, and its result stays on that row.
+- **Cursor account subagents stayed on Auto**: with Explore set to Inherit from parent, a Task launched from a Cursor account uses the parent model, including its effort and fast setting. Fable 5.2 max fast stays max fast, and the task card shows that model instead of Auto.
+- **A Linux or SSH workspace was given Windows commands**: the shell and operating system sent upstream now match the machine that runs the tools, so a Debian session is not told to use PowerShell.
+- **A large terminal listing froze the turn**: shell output sent back to the model is the head and tail the agent expects, so a long command no longer leaves the tool hanging.
+- **Saying continue started the task over**: tool results stay on the open Cursor account stream instead of opening a new turn that drops the work in progress.
+- **A later message forgot the earlier one**: Cursor account chats keep the conversation checkpoint and send it back, so the next turn still has the previous context.
+- **A huge tool result dropped the connection**: older read, search, and shell output is shortened in the model view so a large result does not blow the prompt apart.
+- **An API key exchange did not match the Cursor client**: the key is sent as the Authorization header with an empty JSON body, the same way the installed agent host exchanges it.
+
+### Improved
+
+- **Cursor account models follow the IDE picker**: each family is one model, and Fast and Max come from that model's parameters instead of a separate entry for every suffix.
+- **Account status stays on the card**: the last plan and health result for each Cursor account is remembered, so reopening the app does not look unchecked.
+- **Only project skills are injected**: user-level skills and the bundled superpowers set are no longer added to every agent prompt, and the app no longer writes them into the Cursor skills folder on startup.
 
 > **Windows 用户注意**：安装时若被 SmartScreen 拦截，点击「更多信息」->「仍要运行」即可。
 
@@ -20,11 +22,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.33-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.33-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.33-windows-arm64-installer.exe` 或 `cursor-byok-1.0.33-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.33-windows-x32-installer.exe` 或 `cursor-byok-1.0.33-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.33-macos-arm64.dmg` 或 `cursor-byok-1.0.33-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.33-macos-x64.dmg` 或 `cursor-byok-1.0.33-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.33-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.34-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.34-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.34-windows-arm64-installer.exe` 或 `cursor-byok-1.0.34-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.34-windows-x32-installer.exe` 或 `cursor-byok-1.0.34-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.34-macos-arm64.dmg` 或 `cursor-byok-1.0.34-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.34-macos-x64.dmg` 或 `cursor-byok-1.0.34-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.34-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

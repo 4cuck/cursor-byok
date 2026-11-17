@@ -482,8 +482,9 @@ func (service *Service) finishPatchEditOperationWithNotice(stream *ActiveStream,
 		if err := service.startQueuedPatchEditOperation(stream, next); err != nil {
 			return err
 		}
+		return service.reconcileStream(stream)
 	}
-	return service.reconcileStream(stream)
+	return service.continueCursorToolOrReconcile(stream, strings.TrimSpace(toolCallID), nil)
 }
 
 func patchEditQueueKey(path string) string {

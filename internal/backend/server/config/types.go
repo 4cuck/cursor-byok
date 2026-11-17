@@ -101,8 +101,10 @@ type ModelAdapterConfig struct {
 	ThinkingBudgetTokens    int           `json:"thinkingBudgetTokens" yaml:"thinkingBudgetTokens"`
 	Pricing                 *ModelPricing `json:"pricing,omitempty" yaml:"pricing,omitempty"`
 	FastMode                bool          `json:"fastMode,omitempty" yaml:"fastMode,omitempty"`
-	OpenAIServiceTier       string        `json:"openAIServiceTier,omitempty" yaml:"openAIServiceTier,omitempty"`
-	ModelCatalogURL         string        `json:"modelCatalogURL,omitempty" yaml:"modelCatalogURL,omitempty"`
+	// CursorModelSpec 保存 Cursor 目录返回的参数定义，供模型选择器还原 Fast 和 Max。
+	CursorModelSpec   string `json:"cursorModelSpec,omitempty" yaml:"cursorModelSpec,omitempty"`
+	OpenAIServiceTier string `json:"openAIServiceTier,omitempty" yaml:"openAIServiceTier,omitempty"`
+	ModelCatalogURL   string `json:"modelCatalogURL,omitempty" yaml:"modelCatalogURL,omitempty"`
 	// 余额查询（可配置兜底）：全部可选，零值即「未启用」。
 	// 具名 provider 未命中时，若 BalanceQueryURL 非空，则用它发一次 GET 并按点分路径取值。
 	// URL/Headers 支持 {{apiKey}}、{{baseUrl}}、{{accessToken}}、{{userId}} 占位符替换。
@@ -502,6 +504,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				MaxCompletionTokens: normalizeMaxCompletionTokens(item.MaxCompletionTokens),
 				Pricing:             item.Pricing,
 				FastMode:            item.FastMode,
+				CursorModelSpec:     strings.TrimSpace(item.CursorModelSpec),
 				Disabled:            item.Disabled,
 			}
 			if next.TooltipData == "" {

@@ -1356,7 +1356,10 @@ func extractMessages(text string, moduleStarts []int, diagnostics *extractionDia
 	// Example:
 	// i.runtime=n.proto3,i.typeName="agent.v1.McpArgs",i.fields=n.proto3.util.newFieldList(()=>[{...}]);
 	assignmentRe := regexp.MustCompile(`([\w$]+)\.typeName\s*=\s*"([\w.]+)"\s*[,;]\s*[\w$]+\.fields\s*=\s*\w+(?:\.\w+)*\.util\.newFieldList\s*\(\s*\(\s*\)\s*=>\s*\[`)
+	// Cursor 3.30 protobuf-es: const e_=Da.makeMessageType("agent.v1.GrepArgs",(()=>[{no:1,...}]))
+	makeMessageTypeRe := regexp.MustCompile(`([\w$]+)\s*=\s*[\w$]+\.makeMessageType\(\s*"([\w.]+)"\s*,\s*\(*\s*\(\s*\)\s*=>\s*\[`)
 	assignmentMatches := assignmentRe.FindAllStringSubmatchIndex(text, -1)
+	assignmentMatches = append(assignmentMatches, makeMessageTypeRe.FindAllStringSubmatchIndex(text, -1)...)
 
 	// Build class declaration index for resolving InternalName.
 	// Minified bundles use class declarations (not class expressions):
@@ -1398,7 +1401,7 @@ func extractMessages(text string, moduleStarts []int, diagnostics *extractionDia
 		// Skip duplicates already captured by class-body style
 		alreadyExists := false
 		for _, existing := range messages {
-			if existing.TypeName == typeName && existing.VarName == varName {
+			if existing.TypeName == typeName {
 				alreadyExists = true
 				break
 			}
@@ -1612,8 +1615,10 @@ func extractEnums(text string, moduleStarts []int) []Enum {
 	// Pattern for enum: setEnumType(XXX, "xxx.v1.EnumName", [...]) (any package)
 	// JS 变量名可以包含 $ 符号
 	enumRe := regexp.MustCompile(`setEnumType\s*\(\s*([\w$]+)\s*,\s*"([\w.]+)"\s*,\s*\[`)
+	makeEnumRe := regexp.MustCompile(`([\w$]+)\s*=\s*[\w$]+\.makeEnum\(\s*"([\w.]+)"\s*,\s*\[`)
 
 	matches := enumRe.FindAllStringSubmatchIndex(text, -1)
+	matches = append(matches, makeEnumRe.FindAllStringSubmatchIndex(text, -1)...)
 	for _, match := range matches {
 		varName := text[match[2]:match[3]]
 		typeName := text[match[4]:match[5]]

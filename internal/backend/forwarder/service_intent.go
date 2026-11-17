@@ -58,6 +58,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		}
 		intent.ModelID = extractRequestedModelID(message)
 		intent.ThinkingEffort = extractRuntimeThinkingEffort(message)
+		intent.FastMode = extractRuntimeFastMode(message)
 		intent.CustomSystemPrompt = truncatePromptGuardText("run_request.custom_system_prompt", runRequest.GetCustomSystemPrompt(), promptGuardCustomSystemPromptChars)
 		intent.MaxMode = extractRequestedMaxMode(message)
 		intent.SubagentTypeName = strings.TrimSpace(runRequest.GetSubagentTypeName())
@@ -104,6 +105,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		}
 		intent.ModelID = firstNonEmpty(extractRequestedModelID(message), "default")
 		intent.ThinkingEffort = extractRuntimeThinkingEffort(message)
+		intent.FastMode = extractRuntimeFastMode(message)
 		intent.MaxMode = extractRequestedMaxMode(message)
 		intent.ModelName = service.resolveRequestedModelName(message, intent.ModelID)
 	case "conversation_action":
@@ -313,6 +315,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	clearPendingProviderCompletion(stream)
 	stream.mu.Lock()
 	stream.ThinkingEffort = strings.TrimSpace(intent.ThinkingEffort)
+	stream.FastMode = intent.FastMode
 	stream.CustomSystemPrompt = strings.TrimSpace(intent.CustomSystemPrompt)
 	stream.MaxMode = intent.MaxMode
 	stream.SubagentModelOverrides = cloneSubagentModelOverrides(intent.SubagentModelOverrides)
@@ -932,6 +935,31 @@ func extractRequestedModelIDFromRequestedModel(model *agentv1.RequestedModel) st
 		return strings.TrimSpace(model.GetModelId())
 	}
 	return strings.TrimSpace(model.GetModelId())
+}
+
+func extractRuntimeFastMode(message *agentv1.AgentClientMessage) bool {
+	if message == nil {
+		return false
+	}
+	model := (*agentv1.RequestedModel)(nil)
+	if runRequest := message.GetRunRequest(); runRequest != nil {
+		model = runRequest.GetRequestedModel()
+	} else if prewarm := message.GetPrewarmRequest(); prewarm != nil {
+		model = prewarm.GetRequestedModel()
+	}
+	if model == nil {
+		return false
+	}
+	for _, parameter := range model.GetParameters() {
+		if parameter == nil || !strings.EqualFold(strings.TrimSpace(parameter.GetId()), "fast") {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(parameter.GetValue())) {
+		case "1", "true", "on", "yes":
+			return true
+		}
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(model.GetModelId())), "-fast")
 }
 
 func extractRuntimeThinkingEffort(message *agentv1.AgentClientMessage) string {

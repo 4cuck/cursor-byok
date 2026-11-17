@@ -303,6 +303,30 @@ func buildRequestContextAgentTranscriptsSection(requestContext *agentv1.RequestC
 }
 
 // buildRequestContextAgentSkillsSection 构造 <agent_skills> 片段。
+func isSuperpowersSkill(parts ...string) bool {
+	return strings.Contains(strings.ToLower(strings.Join(parts, " ")), "superpowers")
+}
+
+// skillPathInWorkspace reports whether a skill file lives inside the project.
+// Cursor's default agent prompt only carries project skills. User-level skills
+// such as ~/.cursor/skills stay out unless the user enables them in settings.
+func skillPathInWorkspace(fullPath string, workspaces []string) bool {
+	fullPath = strings.TrimRight(strings.ToLower(strings.ReplaceAll(strings.TrimSpace(fullPath), `\`, `/`)), `/`)
+	if fullPath == "" {
+		return false
+	}
+	for _, root := range workspaces {
+		root = strings.TrimRight(strings.ToLower(strings.ReplaceAll(strings.TrimSpace(root), `\`, `/`)), `/`)
+		if root == "" {
+			continue
+		}
+		if fullPath == root || strings.HasPrefix(fullPath, root+`/`) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildRequestContextAgentSkillsSection(requestContext *agentv1.RequestContext) string {
 	if requestContext == nil {
 		return ""
@@ -313,11 +337,12 @@ func buildRequestContextAgentSkillsSection(requestContext *agentv1.RequestContex
 		"",
 		`<available_skills description="Skills the agent can use. Use the Read tool with the provided absolute path to fetch full contents.">`,
 	}
+	workspaces := requestContext.GetEnv().GetWorkspacePaths()
 	seen := make(map[string]struct{}, len(requestContext.GetAgentSkills())+len(requestContext.GetSkillOptions().GetSkillDescriptors()))
 	appendSkill := func(fullPath string, description string) {
 		fullPath = strings.TrimSpace(fullPath)
 		description = strings.TrimSpace(description)
-		if fullPath == "" || description == "" {
+		if fullPath == "" || description == "" || isSuperpowersSkill(fullPath, description) || !skillPathInWorkspace(fullPath, workspaces) {
 			return
 		}
 		if _, ok := seen[fullPath]; ok {

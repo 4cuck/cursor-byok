@@ -320,3 +320,4 @@ func TestParseMCPJSONRegression(t *testing.T) {
 		t.Errorf("servers missing key filesystem, got %v", servers)
 	}
 }
+

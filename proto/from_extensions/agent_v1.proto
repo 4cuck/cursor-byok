@@ -4508,6 +4508,8 @@ message ReadArgs {
   optional int32 offset = 4;
   optional uint32 limit = 5;
   optional string encoding_hint = 6;
+  optional bool digest_only = 7;
+  optional uint32 max_chars = 8;
 }
 
 // Copied from: local:agent.v1.ReadCanvasArgs (var: Uo)
@@ -6067,6 +6069,7 @@ message ShellArgs {
   repeated string admin_command_denylist = 22;
   optional string request_id = 23;
   optional string secret_scope_id = 24;
+  bool smart_mode_classifier_allowed = 25;
 }
 
 // Copied from: local:agent.v1.ShellBackgroundReason (var: m)
@@ -7738,6 +7741,7 @@ message WriteArgs {
   bool return_file_content_after_write = 4;
   bytes file_bytes = 5;
   optional string encoding_hint = 6;
+  bool plan_mode = 7;
 }
 
 // Copied from: local:agent.v1.WriteCanvasArgs (var: To)

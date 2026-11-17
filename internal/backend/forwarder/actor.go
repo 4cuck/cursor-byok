@@ -1005,6 +1005,12 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	finishReason := stream.ProviderFinishReason
 	usage := stream.ProviderUsage
 	hadToolInvocation := stream.ToolInvocationCount > 0
+	inlineCursorTools := stream.CursorInlineToolTurn
+	stream.CursorInlineToolTurn = false
+	stream.CursorToolResults = nil
+	stream.nativeExecSlots = nil
+	stream.cursorToolWaiting = false
+	stream.cursorToolDelivered = false
 	providerPass := stream.ProviderPassCount
 	thinkingDeltaCount := stream.ProviderThinkingDeltaCount
 	thinkingCompletedCount := stream.ProviderThinkingCompletedCount
@@ -1198,7 +1204,10 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	// 其参数往往已被过滤或截断，照常执行会绕过安全策略（参照上游 aa47152f 的语义：
 	// 被内容过滤回合的工具调用一律拒绝，回合按正常结束收口）。
 	contentFiltered := strings.TrimSpace(finishReason) == "content_filter"
-	if (hadToolInvocation || shouldResumeAfterToolResults(finishReason)) && !terminalToolInvocation && !contentFiltered {
+	// 同一条 Cursor 账户流已经把工具结果写回去并正常结束时，再开一轮会把
+	// 已经执行过的 Read 再规划一遍。
+	inlineTurnCompleted := inlineCursorTools && strings.TrimSpace(finishReason) == "stop"
+	if !inlineTurnCompleted && (hadToolInvocation || shouldResumeAfterToolResults(finishReason)) && !terminalToolInvocation && !contentFiltered {
 		if err := service.publishCheckpoint(requestID, conversationID); err != nil {
 			return service.failStreamIfNonTerminal(stream, "unknown", err)
 		}

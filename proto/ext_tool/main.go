@@ -45,22 +45,31 @@ func ExtractProtosWithOptions(inputFile, outputDir string, opts ExtractionOption
 func main() {
 	// 命令行参数
 	inputPath := flag.String("input", "", "Path to JS file (e.g., extensionHostProcess.js)")
+	installPath := flag.String("install", "", "Installed Cursor directory. Dumps protobuf-es descriptors from that version.")
 	outputDir := flag.String("output", "", "Output directory for proto files (default: ./cursor_proto)")
 	skipFormat := flag.Bool("skip-format", false, "Skip prettier formatting")
 	strict := flag.Bool("strict", true, "Fail when extraction validation detects unresolved/placeholder output")
 	flag.Parse()
 
 	// 如果没有 -input 参数，尝试从位置参数获取
+	if *inputPath == "" && *installPath != "" {
+		source, err := findCursorProtoSource(*installPath)
+		bailIf(err)
+		*inputPath = source.Path
+		fmt.Printf("Cursor %s protobuf bundle: %s (%d descriptors)\n", source.Version, source.Path, source.Count)
+		*skipFormat = true
+	}
+
 	if *inputPath == "" && flag.NArg() > 0 {
 		*inputPath = flag.Arg(0)
 	}
 
 	if *inputPath == "" {
 		fmt.Fprintln(os.Stderr, "Usage: ext -input <path-to-js-file> [-output <dir>] [-skip-format]")
+		fmt.Fprintln(os.Stderr, "       ext -install <Cursor install dir> [-output <dir>]")
 		fmt.Fprintln(os.Stderr, "       ext <path-to-js-file>")
 		fmt.Fprintln(os.Stderr, "\nExample:")
-		fmt.Fprintln(os.Stderr, "  ext -input /path/to/extensionHostProcess.js")
-		fmt.Fprintln(os.Stderr, "  ext C:\\Users\\xxx\\AppData\\Local\\Programs\\cursor\\resources\\app\\out\\vs\\workbench\\api\\node\\extensionHostProcess.js")
+		fmt.Fprintln(os.Stderr, "  ext -install %LOCALAPPDATA%\\Programs\\cursor -output proto/from_extensions")
 		os.Exit(1)
 	}
 

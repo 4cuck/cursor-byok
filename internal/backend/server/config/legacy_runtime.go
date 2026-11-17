@@ -44,6 +44,7 @@ func (store *Store) LegacyRuntimeSnapshot(ctx context.Context) (legacyruntime.Ru
 			Pricing:                     item.Pricing,
 			FastMode:                    item.FastMode,
 			OpenAIServiceTier:           item.OpenAIServiceTier,
+			CursorModelSpec:             item.CursorModelSpec,
 			Disabled:                    item.Disabled,
 		})
 	}

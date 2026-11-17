@@ -141,6 +141,12 @@ type StreamRequest struct {
 	OpenAIServiceTier string
 	// FastMode 表示 OpenAI/GPT 是否启用 priority service tier。
 	FastMode bool
+	// CursorToolResults 把客户端工具结果送回仍打开的 Cursor 账户 RunSSE。
+	// 空通道表示沿用旧行为：第一个用户工具结束本次上游流。
+	CursorToolResults <-chan *agentv1.ExecClientMessage
+	// CursorRequestContext 是 IDE 带来的执行环境。Cursor 账户回合把它交给
+	// 云端 agent，云端据此生成系统提示词。空环境会被当成没有工作区的 Windows。
+	CursorRequestContext *agentv1.RequestContext
 	// CustomHeadersEnabled 表示是否启用自定义请求头。
 	CustomHeadersEnabled bool
 	// CustomHeadersJSON 表示自定义请求头 JSON 对象。

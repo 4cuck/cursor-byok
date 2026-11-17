@@ -389,7 +389,7 @@ func (service *Service) finishWriteOperationWithNotice(stream *ActiveStream, too
 	if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 		return err
 	}
-	return service.reconcileStream(stream)
+	return service.continueCursorToolOrReconcile(stream, strings.TrimSpace(toolCallID), cursorWriteResultMessage(writeArgs.Path, result))
 }
 
 func decodeWriteOperationArgs(raw []byte) (writeOperationArgs, error) {
@@ -399,7 +399,7 @@ func decodeWriteOperationArgs(raw []byte) (writeOperationArgs, error) {
 	}
 	result := writeOperationArgs{
 		Path:     firstNonEmpty(readStringAny(args["path"]), readStringAny(args["file_path"])),
-		Contents: firstNonEmpty(readStringAny(args["contents"]), readStringAny(args["content"]), readStringAny(args["stream_content"]), readStringAny(args["streamContent"])),
+		Contents: firstNonEmpty(readStringAny(args["contents"]), readStringAny(args["content"]), readStringAny(args["fileText"]), readStringAny(args["file_text"]), readStringAny(args["stream_content"]), readStringAny(args["streamContent"])),
 	}
 	if strings.TrimSpace(result.Path) == "" {
 		return writeOperationArgs{}, fmt.Errorf("write path is required")
@@ -463,6 +463,37 @@ func buildStartedWriteHistoryToolCall(path string) *agentv1.ToolCall {
 
 func buildCompletedWriteHistoryToolCall(path string, result *agentv1.EditResult) *agentv1.ToolCall {
 	return buildCompletedEditToolCall(path, compactWriteHistoryEditResult(path, result))
+}
+
+func cursorWriteResultMessage(path string, result *agentv1.EditResult) *agentv1.ExecClientMessage {
+	filePath := strings.TrimSpace(path)
+	if result != nil && result.GetSuccess() != nil {
+		success := result.GetSuccess()
+		filePath = firstNonEmpty(success.GetPath(), filePath)
+		content := success.GetAfterFullFileContent()
+		return &agentv1.ExecClientMessage{
+			Message: &agentv1.ExecClientMessage_WriteResult{
+				WriteResult: &agentv1.WriteResult{
+					Result: &agentv1.WriteResult_Success{
+						Success: &agentv1.WriteSuccess{
+							Path:         filePath,
+							LinesCreated: success.GetLinesAdded(),
+							FileSize:     int32(len(content)),
+						},
+					},
+				},
+			},
+		}
+	}
+	return &agentv1.ExecClientMessage{
+		Message: &agentv1.ExecClientMessage_WriteResult{
+			WriteResult: &agentv1.WriteResult{
+				Result: &agentv1.WriteResult_Error{
+					Error: &agentv1.WriteError{Path: filePath, Error: summarizeWriteHistoryResult(filePath, result)},
+				},
+			},
+		},
+	}
 }
 
 func summarizeWriteHistoryResult(path string, result *agentv1.EditResult) string {

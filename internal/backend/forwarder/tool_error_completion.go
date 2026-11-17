@@ -95,7 +95,7 @@ func (service *Service) completePreDispatchToolError(
 	if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 		return err
 	}
-	return service.reconcileStream(stream)
+	return service.continueCursorToolOrReconcile(stream, invocation.CallID, nil)
 }
 
 func formatPreDispatchToolError(invocation runtimecore.ToolInvocation, cause error) string {

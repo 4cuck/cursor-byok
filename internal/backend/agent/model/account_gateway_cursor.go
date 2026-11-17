@@ -2,14 +2,18 @@ package modeladapter
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"cursor/gen/agentv1"
 	"cursor/gen/aiserverv1"
@@ -103,6 +107,9 @@ func (gateway *cursorAccountGateway) streamAuthorized(ctx context.Context, req S
 	host := cursorAccountAgentHost(ctx, authorization)
 	requestID := uuid.NewString()
 	run := cursorAccountRunMessage(req, modelID)
+	if env := run.GetRunRequest().GetAction().GetUserMessageAction().GetRequestContext().GetEnv(); env != nil {
+		logger.Infof("cursor account environment os=%s shell=%s workspaces=%d", env.GetOsVersion(), env.GetShell(), len(env.GetWorkspacePaths()))
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(host, "/")+cursorAccountRunPath,
 		bytes.NewReader(cursorAccountFrame(mustCursorProto(&aiserverv1.BidiRequestId{RequestId: requestID}))))
 	if err != nil {
@@ -125,7 +132,7 @@ func (gateway *cursorAccountGateway) streamAuthorized(ctx context.Context, req S
 		appendErr <- appendCursorAccount(ctx, authorization, requestID, 0, mustCursorProto(run))
 	}()
 
-	return readCursorAccountStream(ctx, authorization, requestID, modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, sink)
+	return readCursorAccountStream(ctx, authorization, requestID, strings.TrimSpace(req.ConversationID), modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, req.CursorToolResults, cursorAccountRequestContext(req), sink)
 }
 
 func (gateway *cursorAccountGateway) authorize(ctx context.Context, accountID string) (string, error) {
@@ -253,10 +260,37 @@ func cursorAccountSlotSuffix(label string) bool {
 	return true
 }
 
-func readCursorAccountStream(ctx context.Context, authorization, requestID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, sink func(ModelEvent) error) error {
+type cursorExecSlot struct {
+	id     uint32
+	execID string
+}
+
+func readCursorAccountStream(ctx context.Context, authorization, requestID, conversationID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, toolResults <-chan *agentv1.ExecClientMessage, requestContext *agentv1.RequestContext, sink func(ModelEvent) error) error {
+	cursorAccountResetFrameLog()
 	var pending []byte
 	tmp := make([]byte, 8192)
+	var seqMu sync.Mutex
 	seq := int64(1)
+	nextSeq := func() int64 {
+		seqMu.Lock()
+		defer seqMu.Unlock()
+		n := seq
+		seq++
+		return n
+	}
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	var finishInline <-chan struct{}
+	var toolContinued <-chan struct{}
+	var pendingExecs chan cursorExecSlot
+	if toolResults != nil {
+		signal := make(chan struct{}, 1)
+		continued := make(chan struct{}, 8)
+		finishInline = signal
+		toolContinued = continued
+		pendingExecs = make(chan cursorExecSlot, 8)
+		go serveCursorAccountToolResults(streamCtx, authorization, requestID, nextSeq, toolResults, pendingExecs, signal, continued)
+	}
 	thinkingActive := false
 	var thinkingStarted time.Time
 	toolSeen := map[string]struct{}{}
@@ -316,6 +350,13 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 	}
 	defer silent.Stop()
 	sawUseful := false
+	toolSilence := time.NewTimer(time.Hour)
+	if !toolSilence.Stop() {
+		select {
+		case <-toolSilence.C:
+		default:
+		}
+	}
 	armSilent := func() {
 		if silentTimeout <= 0 || sawUseful {
 			return
@@ -336,7 +377,14 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 			default:
 			}
 		}
+		if !toolSilence.Stop() {
+			select {
+			case <-toolSilence.C:
+			default:
+			}
+		}
 	}
+	defer toolSilence.Stop()
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -354,6 +402,21 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-finishInline:
+			finishReason = "tool_calls"
+			return finishTurn()
+		case <-toolContinued:
+			if !toolSilence.Stop() {
+				select {
+				case <-toolSilence.C:
+				default:
+				}
+			}
+			toolSilence.Reset(cursorAccountToolStallTimeout)
+		case <-toolSilence.C:
+			logger.Infof("cursor account stream stalled after a tool result request_id=%s model=%s; continuing in a fresh pass", requestID, modelID)
+			finishReason = "tool_calls"
+			return finishTurn()
 		case err := <-appendErr:
 			appendErr = nil
 			if err != nil {
@@ -385,10 +448,20 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 			flags := pending[0]
 			payload := append([]byte(nil), pending[5:5+size]...)
 			pending = pending[5+size:]
-			if denial := cursorAccountAccessDenial(payload); denial != "" {
-				return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
+			if flags&0x01 != 0 {
+				decoded, err := cursorAccountGunzip(payload)
+				if err != nil {
+					if flags&0x02 != 0 {
+						return err
+					}
+					continue
+				}
+				payload = decoded
 			}
 			if flags&0x02 != 0 {
+				if denial := cursorAccountAccessDenial(payload); denial != "" {
+					return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
+				}
 				if text := cursorAccountErrorText(payload); text != "" {
 					return fmt.Errorf("cursor refused the model call: %s", text)
 				}
@@ -396,24 +469,45 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 			}
 			msg := &agentv1.AgentServerMessage{}
 			if err := proto.Unmarshal(payload, msg); err != nil {
+				if denial := cursorAccountAccessDenial(payload); denial != "" {
+					return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
+				}
 				if text := cursorAccountErrorText(payload); text != "" {
 					return fmt.Errorf("cursor refused the model call: %s", text)
 				}
+				cursorAccountNoteFrame(fmt.Sprintf("unmarshal_fail flags=%02x bytes=%d", flags, len(payload)))
+				continue
+			}
+			cursorAccountNoteFrame(cursorAccountServerMessageKind(msg))
+			if kv := msg.GetKvServerMessage(); kv != nil {
+				if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(cursorAccountKVReply(kv))); err != nil {
+					return err
+				}
+				if set := kv.GetSetBlobArgs(); set != nil {
+					if bytes.HasPrefix(set.GetBlobData(), []byte(`{"role":`)) {
+						cursorAccountRememberMessageBlob(conversationID, set.GetBlobId())
+					}
+					if state := cursorAccountStateFromBlob(set.GetBlobData()); state != nil {
+						cursorAccountRememberState(conversationID, state)
+					}
+				}
+				continue
+			}
+			if checkpoint := msg.GetConversationCheckpointUpdate(); checkpoint != nil {
+				cursorAccountRememberState(conversationID, checkpoint)
 				continue
 			}
 			if exec := msg.GetExecServerMessage(); exec != nil {
 				if exec.GetRequestContextArgs() != nil {
-					if err := appendCursorAccount(ctx, authorization, requestID, seq, mustCursorProto(cursorAccountContextReply(exec.GetId(), exec.GetExecId()))); err != nil {
+					if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(cursorAccountContextReply(exec.GetId(), exec.GetExecId(), requestContext))); err != nil {
 						return err
 					}
-					seq++
 					continue
 				}
 				if reply, ok := cursorAccountExecReply(exec); ok {
-					if err := appendCursorAccount(ctx, authorization, requestID, seq, mustCursorProto(reply)); err != nil {
+					if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(reply)); err != nil {
 						return err
 					}
-					seq++
 					continue
 				}
 				name, callID, args, ok := cursorAccountExecTool(exec)
@@ -427,6 +521,12 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 				if err := finishThinking(); err != nil {
 					return err
 				}
+				if toolResults != nil && pendingExecs != nil {
+					select {
+					case pendingExecs <- cursorExecSlot{id: exec.GetId(), execID: exec.GetExecId()}:
+					default:
+					}
+				}
 				if err := sink(ModelEvent{
 					Kind:       ModelEventKindToolLikeCompleted,
 					OccurredAt: time.Now().UTC(),
@@ -438,10 +538,14 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 						CallID:      callID,
 						ToolName:    name,
 						ArgsJSON:    args,
+						NativeExec:  mustCursorProto(exec),
 						ModelCallID: requestID,
 					},
 				}); err != nil {
 					return err
+				}
+				if toolResults != nil {
+					continue
 				}
 				finishReason = "tool_calls"
 				return finishTurn()
@@ -488,6 +592,7 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 				cacheWrite = ended.GetCacheWriteTokens()
 				reasoningTokens = ended.GetReasoningTokens()
 				usagePresent = true
+				finishReason = "stop"
 				return finishTurn()
 			}
 		}
@@ -500,79 +605,459 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 	}
 }
 
+func serveCursorAccountToolResults(ctx context.Context, authorization, requestID string, nextSeq func() int64, toolResults <-chan *agentv1.ExecClientMessage, pendingExecs <-chan cursorExecSlot, finish chan<- struct{}, continued chan<- struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-toolResults:
+			if !ok || msg == nil {
+				select {
+				case finish <- struct{}{}:
+				default:
+				}
+				return
+			}
+			cloned, _ := proto.Clone(msg).(*agentv1.ExecClientMessage)
+			if cloned == nil {
+				cloned = msg
+			}
+			if strings.TrimSpace(cloned.GetExecId()) == "" {
+				select {
+				case slot := <-pendingExecs:
+					cloned.Id = slot.id
+					cloned.ExecId = slot.execID
+				default:
+				}
+			}
+			wrapped := &agentv1.AgentClientMessage{
+				Message: &agentv1.AgentClientMessage_ExecClientMessage{ExecClientMessage: cloned},
+			}
+			if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(wrapped)); err != nil {
+				logger.Warnf("cursor account tool result was not delivered: %v", err)
+				select {
+				case finish <- struct{}{}:
+				default:
+				}
+				return
+			}
+			if id, ok := cursorAccountShellCloseID(cloned); ok {
+				// The IDE closes a shell exec with stream_close after the exit
+				// event. Without it the upstream tool stays open and Fable sits
+				// silent until the stall timer abandons the stream.
+				control := &agentv1.AgentClientMessage{
+					Message: &agentv1.AgentClientMessage_ExecClientControlMessage{
+						ExecClientControlMessage: &agentv1.ExecClientControlMessage{
+							Message: &agentv1.ExecClientControlMessage_StreamClose{
+								StreamClose: &agentv1.ExecClientStreamClose{Id: id},
+							},
+						},
+					},
+				}
+				if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(control)); err != nil {
+					logger.Warnf("cursor account shell stream was not closed: %v", err)
+					select {
+					case finish <- struct{}{}:
+					default:
+					}
+					return
+				}
+			}
+			if continued != nil {
+				select {
+				case continued <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
+}
+
+func cursorAccountRequestedModel(modelID string, effort string, fast bool) *agentv1.RequestedModel {
+	modelID = strings.TrimSpace(modelID)
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	base, slugEffort, slugFast, variant := splitCursorAccountRunVariant(modelID)
+	if variant {
+		modelID = base
+		if effort == "" {
+			effort = slugEffort
+		}
+		fast = fast || slugFast
+	}
+	requested := &agentv1.RequestedModel{ModelId: modelID}
+	switch effort {
+	case "low", "medium", "high", "xhigh", "max":
+		requested.Parameters = append(requested.Parameters, &agentv1.RequestedModel_ModelParameterValue{Id: "effort", Value: effort})
+	}
+	if fast {
+		requested.Parameters = append(requested.Parameters, &agentv1.RequestedModel_ModelParameterValue{Id: "fast", Value: "true"})
+	}
+	return requested
+}
+
+func splitCursorAccountRunVariant(modelID string) (base string, effort string, fast bool, ok bool) {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	if strings.HasSuffix(id, "-fast") {
+		fast = true
+		id = strings.TrimSuffix(id, "-fast")
+	}
+	for _, suffix := range []string{"-xhigh", "-medium", "-high", "-low", "-max"} {
+		if strings.HasSuffix(id, suffix) {
+			return id[:len(id)-len(suffix)], strings.TrimPrefix(suffix, "-"), fast, true
+		}
+	}
+	if fast {
+		return id, "", true, true
+	}
+	return "", "", false, false
+}
+
 func cursorAccountRunMessage(req StreamRequest, modelID string) *agentv1.AgentClientMessage {
 	mode := req.Mode
 	if mode == agentv1.AgentMode_AGENT_MODE_UNSPECIFIED {
 		mode = agentv1.AgentMode_AGENT_MODE_AGENT
 	}
-	conversationID := strings.TrimSpace(req.ConversationID)
-	if conversationID == "" {
-		conversationID = uuid.NewString()
+	conversationID := cursorAccountUpstreamConversationID(req)
+	history, text := cursorAccountTurn(req.Messages)
+	state := cursorAccountLoadState(strings.TrimSpace(req.ConversationID))
+	remembered := state != nil
+	if state == nil {
+		state = &agentv1.ConversationStateStructure{Mode: mode.Enum()}
+	} else if state.Mode == nil {
+		state.Mode = mode.Enum()
+	}
+	action := &agentv1.UserMessageAction{
+		UserMessage: &agentv1.UserMessage{
+			Text:      text,
+			MessageId: uuid.NewString(),
+			Mode:      mode,
+		},
+		RequestContext: cursorAccountRequestContext(req),
+	}
+	// A saved checkpoint is the conversation. The IDE follow-up sends that
+	// state plus the new user message, not a second copy of the transcript.
+	if !remembered && len(history) > 0 {
+		action.ConversationHistory = &agentv1.ConversationHistory{Messages: history}
 	}
 	return &agentv1.AgentClientMessage{
 		Message: &agentv1.AgentClientMessage_RunRequest{
 			RunRequest: &agentv1.AgentRunRequest{
-				ConversationState: &agentv1.ConversationStateStructure{Mode: mode.Enum()},
+				ConversationState: state,
 				Action: &agentv1.ConversationAction{
-					Action: &agentv1.ConversationAction_UserMessageAction{
-						UserMessageAction: &agentv1.UserMessageAction{
-							UserMessage: &agentv1.UserMessage{
-								Text:      cursorAccountPrompt(req.Messages),
-								MessageId: uuid.NewString(),
-								Mode:      mode,
-							},
-						},
-					},
+					Action: &agentv1.ConversationAction_UserMessageAction{UserMessageAction: action},
 				},
-				RequestedModel: &agentv1.RequestedModel{ModelId: modelID},
+				RequestedModel: cursorAccountRequestedModel(modelID, req.ThinkingEffort, req.FastMode),
 				ConversationId: proto.String(conversationID),
 			},
 		},
 	}
 }
 
-func cursorAccountPrompt(messages []Message) string {
-	if len(messages) == 0 {
-		return "Continue."
+// cursorAccountToolTextLimit caps one non-shell tool result inside the flattened
+// follow-up prompt. Shell output uses Cursor's own 10_000-byte head/tail cap.
+const cursorAccountToolTextLimit = 16 * 1024
+
+// Cursor keeps a shell result whole until 10_000 bytes, then shows the first
+// and last 5_000. A longer raw listing makes the open Fable stream go silent.
+const (
+	cursorShellOutputLimit = 10_000
+	cursorShellOutputEdge  = 5_000
+)
+
+// cursorAccountToolStallTimeout is how long the open Cursor stream may sit
+// quiet after a tool result before this process gives up. Fable often thinks
+// for well over ten seconds on a large turn; cutting there closed the stream
+// and the next pass resent the same transcript.
+const cursorAccountToolStallTimeout = 3 * time.Minute
+
+func cursorAccountUpstreamConversationID(req StreamRequest) string {
+	// The tool stream is closed before the local shell result exists. Reusing
+	// that conversation id makes the next RunSSE wait on the unfinished exec.
+	if cursorAccountFollowsToolResult(req.Messages) {
+		fresh := uuid.NewString()
+		logger.Infof("cursor account model follow-up uses a fresh upstream conversation after tool result local=%s upstream=%s", strings.TrimSpace(req.ConversationID), fresh)
+		return fresh
 	}
-	if len(messages) == 1 {
-		text := strings.TrimSpace(messages[0].Content)
-		if text == "" {
-			return "Continue."
-		}
-		return text
+	if id := strings.TrimSpace(req.ConversationID); id != "" {
+		return id
 	}
-	var builder strings.Builder
-	for index, message := range messages {
-		if index > 0 {
-			builder.WriteString("\n\n")
-		}
-		role := strings.TrimSpace(message.Role)
-		if role == "" {
-			role = "user"
-		}
-		builder.WriteString("[")
-		builder.WriteString(role)
-		builder.WriteString("]")
-		if name := strings.TrimSpace(message.Name); name != "" {
-			builder.WriteString(" ")
-			builder.WriteString(name)
-		}
-		if id := strings.TrimSpace(message.ToolCallID); id != "" {
-			builder.WriteString(" ")
-			builder.WriteString(id)
-		}
-		builder.WriteString("\n")
-		builder.WriteString(message.Content)
-		if message.ReasoningContent != "" && role == "assistant" {
-			builder.WriteString("\n")
-			builder.WriteString(message.ReasoningContent)
-		}
-	}
-	return builder.String()
+	return uuid.NewString()
 }
 
-func cursorAccountContextReply(id uint32, execID string) *agentv1.AgentClientMessage {
+func cursorAccountFollowsToolResult(messages []Message) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role == "" {
+			continue
+		}
+		if role == "tool" || strings.TrimSpace(message.ToolCallID) != "" {
+			return true
+		}
+		if role == "user" || role == "system" {
+			return false
+		}
+	}
+	return false
+}
+
+// cursorAccountTurn splits a provider transcript the way the IDE's
+// UserMessageAction does: the newest user text is the action, and earlier
+// turns go in conversation_history. The agent server does not keep those
+// turns when the run is opened with only the latest sentence.
+func cursorAccountTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
+	messages = cursorAccountPromptMessages(messages)
+	if len(messages) == 0 {
+		return nil, "Continue."
+	}
+	split := len(messages)
+	last := messages[len(messages)-1]
+	if !cursorAccountIsToolMessage(last) && !strings.EqualFold(strings.TrimSpace(last.Role), "assistant") {
+		split = len(messages) - 1
+	}
+	history := make([]*agentv1.ConversationHistoryMessage, 0, split)
+	for _, message := range messages[:split] {
+		if item := cursorAccountHistoryMessage(message); item != nil {
+			history = append(history, item)
+		}
+	}
+	if split == len(messages) {
+		return history, "Continue."
+	}
+	text := strings.TrimSpace(cursorAccountMessageText(messages[split]))
+	if text == "" {
+		text = "Continue."
+	}
+	return history, text
+}
+
+func cursorAccountHistoryMessage(message Message) *agentv1.ConversationHistoryMessage {
+	role := strings.ToLower(strings.TrimSpace(message.Role))
+	switch {
+	case role == "assistant":
+		var parts []*agentv1.ConversationHistoryAssistantContent
+		if text := strings.TrimSpace(message.Content); text != "" {
+			parts = append(parts, &agentv1.ConversationHistoryAssistantContent{
+				Content: &agentv1.ConversationHistoryAssistantContent_Text{
+					Text: &agentv1.ConversationHistoryTextContent{Text: text},
+				},
+			})
+		}
+		for _, call := range message.ToolCalls {
+			parts = append(parts, &agentv1.ConversationHistoryAssistantContent{
+				Content: &agentv1.ConversationHistoryAssistantContent_ToolCall{
+					ToolCall: &agentv1.ConversationHistoryToolCall{
+						ToolCallId: call.ID,
+						ToolName:   call.Function.Name,
+						ArgsJson:   call.Function.Arguments,
+					},
+				},
+			})
+		}
+		if len(parts) == 0 {
+			return nil
+		}
+		return &agentv1.ConversationHistoryMessage{
+			Message: &agentv1.ConversationHistoryMessage_Assistant{
+				Assistant: &agentv1.ConversationHistoryAssistantMessage{Content: parts},
+			},
+		}
+	case cursorAccountIsToolMessage(message):
+		return &agentv1.ConversationHistoryMessage{
+			Message: &agentv1.ConversationHistoryMessage_Tool{
+				Tool: &agentv1.ConversationHistoryToolMessage{
+					ToolCallId: message.ToolCallID,
+					ToolName:   message.Name,
+					Content: []*agentv1.ConversationHistoryToolResultContent{{
+						Content: &agentv1.ConversationHistoryToolResultContent_Text{
+							Text: &agentv1.ConversationHistoryTextContent{Text: cursorAccountToolText(message)},
+						},
+					}},
+				},
+			},
+		}
+	default:
+		text := strings.TrimSpace(message.Content)
+		if text == "" {
+			return nil
+		}
+		return &agentv1.ConversationHistoryMessage{
+			Message: &agentv1.ConversationHistoryMessage_User{
+				User: &agentv1.ConversationHistoryUserMessage{
+					Content: []*agentv1.ConversationHistoryUserContent{{
+						Content: &agentv1.ConversationHistoryUserContent_Text{
+							Text: &agentv1.ConversationHistoryTextContent{Text: text},
+						},
+					}},
+				},
+			},
+		}
+	}
+}
+
+// cursorAccountPromptMessages drops the local system prompt and the compiled
+// environment sections. Cursor's agent server builds that prompt from the
+// request context. Sending both makes the next Fable turn sit silent until
+// the upstream aborts, which is the freeze after the first tool call.
+func cursorAccountPromptMessages(messages []Message) []Message {
+	filtered := make([]Message, 0, len(messages))
+	for _, message := range messages {
+		if strings.EqualFold(strings.TrimSpace(message.Role), "system") || cursorAccountScaffoldingMessage(message) {
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	return filtered
+}
+
+func cursorAccountScaffoldingMessage(message Message) bool {
+	if cursorAccountIsToolMessage(message) {
+		return false
+	}
+	role := strings.ToLower(strings.TrimSpace(message.Role))
+	if role == "assistant" || role == "tool" {
+		return false
+	}
+	text := strings.TrimSpace(message.Content)
+	if text == "" {
+		return false
+	}
+	for _, tag := range []string{
+		"<user_info>",
+		"<rules>",
+		"<agent_skills>",
+		"<agent_transcripts>",
+		"<mcp_file_system>",
+		"<custom_subagents>",
+		"<system_reminder>",
+		"<current_user_request>",
+	} {
+		if strings.HasPrefix(text, tag) {
+			return true
+		}
+	}
+	// A compiled prompt pasted into one user message still starts the stall,
+	// even when a short question is buried under the environment dump.
+	if len(text) > 24*1024 && (strings.Contains(text, "<user_info>") || strings.Contains(text, "<agent_skills>") || strings.Contains(text, "<agent_skill ")) {
+		return true
+	}
+	return false
+}
+
+func cursorAccountIsToolMessage(message Message) bool {
+	return strings.EqualFold(strings.TrimSpace(message.Role), "tool") || strings.TrimSpace(message.ToolCallID) != ""
+}
+
+func cursorAccountMessageText(message Message) string {
+	if !cursorAccountIsToolMessage(message) {
+		return message.Content
+	}
+	return cursorAccountToolText(message)
+}
+
+func cursorAccountToolText(message Message) string {
+	if strings.EqualFold(strings.TrimSpace(message.Name), "Shell") {
+		return CursorAccountShellOutput(message.Content)
+	}
+	return cursorAccountTruncateMiddle(message.Content, cursorAccountToolTextLimit)
+}
+
+// CursorAccountShellOutput is the shell text the installed Cursor client puts
+// in front of the model. The terminal UI keeps the full output. The model sees
+// at most 10_000 bytes, split into the head and tail once it grows past that.
+func CursorAccountShellOutput(text string) string {
+	if len(text) <= cursorShellOutputLimit {
+		return text
+	}
+	head := cursorAccountUTF8Prefix(text, cursorShellOutputEdge)
+	tail := cursorAccountUTF8Suffix(text, cursorShellOutputEdge)
+	elided := len(text) - len(head) - len(tail)
+	if elided < 0 {
+		elided = 0
+	}
+	return head + "\n\n[Output too long. " + strconv.Itoa(elided) + " chars elided]\n\n" + tail
+}
+
+func cursorAccountUTF8Prefix(text string, limit int) string {
+	if limit <= 0 || text == "" {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	prefix := text[:limit]
+	for !utf8.ValidString(prefix) && prefix != "" {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return prefix
+}
+
+func cursorAccountUTF8Suffix(text string, limit int) string {
+	if limit <= 0 || text == "" {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	suffix := text[len(text)-limit:]
+	for !utf8.ValidString(suffix) && suffix != "" {
+		suffix = suffix[1:]
+	}
+	return suffix
+}
+
+func cursorAccountShellCloseID(message *agentv1.ExecClientMessage) (uint32, bool) {
+	stream := message.GetShellStream()
+	if stream == nil {
+		return 0, false
+	}
+	switch stream.GetEvent().(type) {
+	case *agentv1.ShellStream_Exit,
+		*agentv1.ShellStream_Rejected,
+		*agentv1.ShellStream_PermissionDenied,
+		*agentv1.ShellStream_Backgrounded,
+		*agentv1.ShellStream_SandboxUnsupported:
+		return message.GetId(), true
+	default:
+		return 0, false
+	}
+}
+
+func cursorAccountTruncateMiddle(text string, limit int) string {
+	if len(text) <= limit || limit < 64 {
+		return text
+	}
+	const marker = "\n…[terminal output truncated]…\n"
+	keep := limit - len(marker)
+	head := keep / 2
+	tail := keep - head
+	return text[:head] + marker + text[len(text)-tail:]
+}
+
+func cursorAccountKVReply(msg *agentv1.KvServerMessage) *agentv1.AgentClientMessage {
+	client := &agentv1.KvClientMessage{Id: msg.GetId()}
+	if set := msg.GetSetBlobArgs(); set != nil {
+		cursorAccountRememberBlob(set.GetBlobId(), set.GetBlobData())
+		client.Message = &agentv1.KvClientMessage_SetBlobResult{SetBlobResult: &agentv1.SetBlobResult{}}
+	} else {
+		result := &agentv1.GetBlobResult{}
+		if data, ok := cursorAccountBlob(msg.GetGetBlobArgs().GetBlobId()); ok {
+			result.BlobData = data
+		}
+		client.Message = &agentv1.KvClientMessage_GetBlobResult{GetBlobResult: result}
+	}
+	return &agentv1.AgentClientMessage{Message: &agentv1.AgentClientMessage_KvClientMessage{KvClientMessage: client}}
+}
+
+func cursorAccountContextReply(id uint32, execID string, requestContext *agentv1.RequestContext) *agentv1.AgentClientMessage {
+	if requestContext == nil {
+		requestContext = cursorAccountRequestContext(StreamRequest{})
+	}
+	cloned, _ := proto.Clone(requestContext).(*agentv1.RequestContext)
+	if cloned == nil {
+		cloned = cursorAccountRequestContext(StreamRequest{})
+	}
+	cursorAccountMarkContextComplete(cloned)
 	return &agentv1.AgentClientMessage{
 		Message: &agentv1.AgentClientMessage_ExecClientMessage{
 			ExecClientMessage: &agentv1.ExecClientMessage{
@@ -581,22 +1066,7 @@ func cursorAccountContextReply(id uint32, execID string) *agentv1.AgentClientMes
 				Message: &agentv1.ExecClientMessage_RequestContextResult{
 					RequestContextResult: &agentv1.RequestContextResult{
 						Result: &agentv1.RequestContextResult_Success{
-							Success: &agentv1.RequestContextSuccess{
-								RequestContext: &agentv1.RequestContext{
-									Env: &agentv1.RequestContextEnv{
-										OsVersion: "windows",
-										Shell:     "powershell",
-										TimeZone:  "UTC",
-									},
-									EnvInfoComplete:             proto.Bool(true),
-									RulesInfoComplete:           proto.Bool(true),
-									RepositoryInfoComplete:      proto.Bool(true),
-									McpInfoComplete:             proto.Bool(true),
-									AgentSkillsInfoComplete:     proto.Bool(true),
-									GitStatusInfoComplete:       proto.Bool(true),
-									CustomSubagentsInfoComplete: proto.Bool(true),
-								},
-							},
+							Success: &agentv1.RequestContextSuccess{RequestContext: cloned},
 						},
 					},
 				},
@@ -662,8 +1132,9 @@ func cursorAccountExecTool(exec *agentv1.ExecServerMessage) (string, string, []b
 	case exec.GetDeleteArgs() != nil:
 		name, msg = "Delete", exec.GetDeleteArgs()
 	case exec.GetGrepArgs() != nil:
-		name, msg = "Grep", exec.GetGrepArgs()
-		if id := strings.TrimSpace(exec.GetGrepArgs().GetToolCallId()); id != "" {
+		args := exec.GetGrepArgs()
+		name, msg = cursorAccountGrepToolName(args), args
+		if id := strings.TrimSpace(args.GetToolCallId()); id != "" {
 			callID = id
 		}
 	case exec.GetShellArgs() != nil || exec.GetShellStreamArgs() != nil:
@@ -685,6 +1156,60 @@ func cursorAccountExecTool(exec *agentv1.ExecServerMessage) (string, string, []b
 		name, msg = "ReadLints", exec.GetDiagnosticsArgs()
 	case exec.GetFetchArgs() != nil:
 		name, msg = "Fetch", exec.GetFetchArgs()
+	case exec.GetMcpArgs() != nil:
+		name, msg = "CallMcpTool", exec.GetMcpArgs()
+	case exec.GetListMcpResourcesExecArgs() != nil:
+		name, msg = "ListMcpResources", exec.GetListMcpResourcesExecArgs()
+	case exec.GetReadMcpResourceExecArgs() != nil:
+		name, msg = "FetchMcpResource", exec.GetReadMcpResourceExecArgs()
+	case exec.GetMcpStateExecArgs() != nil:
+		name, msg = "GetMcpTools", exec.GetMcpStateExecArgs()
+	case exec.GetRecordScreenArgs() != nil:
+		name, msg = "RecordScreen", exec.GetRecordScreenArgs()
+	case exec.GetComputerUseArgs() != nil:
+		name, msg = "ComputerUse", exec.GetComputerUseArgs()
+	case exec.GetWriteShellStdinArgs() != nil:
+		name, msg = "WriteShellStdin", exec.GetWriteShellStdinArgs()
+	case exec.GetForceBackgroundShellArgs() != nil:
+		name, msg = "ForceBackgroundShell", exec.GetForceBackgroundShellArgs()
+	case exec.GetSubagentArgs() != nil:
+		args := exec.GetSubagentArgs()
+		name, msg = "Task", args
+		if id := strings.TrimSpace(args.GetToolCallId()); id != "" {
+			callID = id
+		}
+	case exec.GetForceBackgroundSubagentArgs() != nil:
+		name, msg = "ForceBackgroundSubagent", exec.GetForceBackgroundSubagentArgs()
+	case exec.GetSubagentAwaitArgs() != nil:
+		name, msg = "SubagentAwait", exec.GetSubagentAwaitArgs()
+	case exec.GetExecuteHookArgs() != nil:
+		name, msg = "ExecuteHook", exec.GetExecuteHookArgs()
+	case exec.GetCanvasDiagnosticsArgs() != nil:
+		name, msg = "CanvasDiagnostics", exec.GetCanvasDiagnosticsArgs()
+	case exec.GetGitDiffRequest() != nil:
+		name, msg = "GitDiff", exec.GetGitDiffRequest()
+	case exec.GetConversationSearchArgs() != nil:
+		name, msg = "SearchConversations", exec.GetConversationSearchArgs()
+	case exec.GetBackgroundShellSpawnArgs() != nil:
+		name, msg = "Shell", exec.GetBackgroundShellSpawnArgs()
+	case exec.GetPiReadArgs() != nil:
+		name, msg = "Read", exec.GetPiReadArgs()
+	case exec.GetPiWriteArgs() != nil:
+		name, msg = "Write", exec.GetPiWriteArgs()
+	case exec.GetPiEditArgs() != nil:
+		name, msg = "Edit", exec.GetPiEditArgs()
+	case exec.GetPiBashArgs() != nil:
+		name, msg = "Shell", exec.GetPiBashArgs()
+	case exec.GetPiGrepArgs() != nil:
+		name, msg = "Grep", exec.GetPiGrepArgs()
+	case exec.GetPiFindArgs() != nil:
+		name, msg = "Glob", exec.GetPiFindArgs()
+	case exec.GetPiLsArgs() != nil:
+		name, msg = "Ls", exec.GetPiLsArgs()
+	case exec.GetMiniSweAgentBashArgs() != nil:
+		name, msg = "Shell", exec.GetMiniSweAgentBashArgs()
+	case exec.GetMessage() != nil:
+		name, msg = "Exec", exec
 	default:
 		return "", "", nil, false
 	}
@@ -693,6 +1218,19 @@ func cursorAccountExecTool(exec *agentv1.ExecServerMessage) (string, string, []b
 		return "", "", nil, false
 	}
 	return name, callID, raw, true
+}
+
+// cursorAccountGrepToolName matches the installed IDE: a patternless
+// files_with_matches grep is the Glob tool's exec, not a content search.
+func cursorAccountGrepToolName(args *agentv1.GrepArgs) string {
+	if args == nil || strings.TrimSpace(args.GetPattern()) != "" || strings.TrimSpace(args.GetGlob()) == "" {
+		return "Grep"
+	}
+	mode := strings.TrimSpace(args.GetOutputMode())
+	if mode == "" || mode == "files_with_matches" {
+		return "Glob"
+	}
+	return "Grep"
 }
 
 func cursorAccountAgentHost(ctx context.Context, authorization string) string {
@@ -761,6 +1299,15 @@ func applyCursorAccountHeaders(req *http.Request, authorization, contentType str
 	req.Header.Set("content-type", contentType)
 }
 
+func cursorAccountGunzip(payload []byte) ([]byte, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	return io.ReadAll(io.LimitReader(reader, 8<<20))
+}
+
 func cursorAccountFrame(payload []byte) []byte {
 	header := make([]byte, 5)
 	binary.BigEndian.PutUint32(header[1:], uint32(len(payload)))
@@ -781,7 +1328,11 @@ type readResult struct {
 }
 
 func cursorAccountAccessDenial(raw []byte) string {
-	text := strings.ToLower(string(raw))
+	detail := strings.TrimSpace(cursorAccountErrorText(raw))
+	if detail == "" {
+		return ""
+	}
+	lowered := strings.ToLower(detail)
 	markers := []string{
 		"does not have access",
 		"do not have access",
@@ -796,11 +1347,8 @@ func cursorAccountAccessDenial(raw []byte) string {
 		"usage pricing required",
 	}
 	for _, marker := range markers {
-		if strings.Contains(text, marker) {
-			if detail := cursorAccountErrorText(raw); detail != "" {
-				return detail
-			}
-			return marker
+		if strings.Contains(lowered, marker) {
+			return detail
 		}
 	}
 	return ""

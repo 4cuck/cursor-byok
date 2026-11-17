@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"cursor/gen/aiserverv1"
 	"cursor/internal/backend/server/upstream"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,6 +30,8 @@ type CursorAccountModel struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
 	DefaultOn   bool   `json:"defaultOn"`
+	// PickerSpec is the IDE's parameter definitions, max-mode flag, and context limits.
+	PickerSpec string `json:"pickerSpec,omitempty"`
 }
 
 // CursorAccountModelCatalog is the non-secret result of listing account models.
@@ -57,7 +61,13 @@ func (s *ProxyService) FetchCursorAccountModels() (CursorAccountModelCatalog, er
 		return CursorAccountModelCatalog{}, fmt.Errorf("resolve Cursor account authorization: %w", err)
 	}
 
-	body, err := proto.Marshal(&aiserverv1.AvailableModelsRequest{})
+	// Match the installed IDE: one model per family, with effort and fast as
+	// parameters. An empty request returns every suffix as its own model.
+	body, err := proto.Marshal(&aiserverv1.AvailableModelsRequest{
+		ExcludeMaxNamedModels: true,
+		UseModelParameters:    proto.Bool(true),
+		UseReactModelPicker:   proto.Bool(true),
+	})
 	if err != nil {
 		return CursorAccountModelCatalog{}, err
 	}
@@ -89,29 +99,7 @@ func (s *ProxyService) FetchCursorAccountModels() (CursorAccountModelCatalog, er
 		return CursorAccountModelCatalog{}, fmt.Errorf("decode Cursor model catalog: %w", err)
 	}
 
-	catalog := CursorAccountModelCatalog{Models: []CursorAccountModel{}}
-	seen := map[string]struct{}{}
-	for _, model := range parsed.GetModels() {
-		name := strings.TrimSpace(model.GetName())
-		if name == "" {
-			continue
-		}
-		if _, exists := seen[name]; exists {
-			continue
-		}
-		seen[name] = struct{}{}
-		displayName := name
-		if tooltip := model.GetTooltipData(); tooltip != nil {
-			if title := strings.TrimSpace(tooltip.GetMarkdownContent()); title != "" {
-				displayName = name
-			}
-		}
-		catalog.Models = append(catalog.Models, CursorAccountModel{
-			Name:        name,
-			DisplayName: displayName,
-			DefaultOn:   model.GetDefaultOn(),
-		})
-	}
+	catalog := CursorAccountModelCatalog{Models: collapseCursorCatalogModels(parsed.GetModels())}
 	sort.Slice(catalog.Models, func(i, j int) bool {
 		return catalog.Models[i].Name < catalog.Models[j].Name
 	})
@@ -119,3 +107,170 @@ func (s *ProxyService) FetchCursorAccountModels() (CursorAccountModelCatalog, er
 }
 
 var cursorModelsHTTPClient = &http.Client{Timeout: cursorModelsTimeout}
+
+func collapseCursorCatalogModels(models []*aiserverv1.AvailableModelsResponse_AvailableModel) []CursorAccountModel {
+	type family struct {
+		order int
+		model CursorAccountModel
+	}
+	families := map[string]*family{}
+	order := 0
+	for _, model := range models {
+		if model.GetIsHidden() {
+			continue
+		}
+		name := strings.TrimSpace(model.GetServerModelName())
+		if name == "" {
+			name = strings.TrimSpace(model.GetName())
+		}
+		if name == "" {
+			continue
+		}
+		displayName := strings.TrimSpace(model.GetClientDisplayName())
+		if displayName == "" {
+			displayName = name
+		}
+		base, _, _, variant := splitCursorCatalogVariant(name)
+		key := name
+		storedName := name
+		if variant {
+			key = base
+			storedName = base
+			if pretty := prettyCursorCatalogName(base); pretty != "" {
+				displayName = pretty
+			}
+		}
+		spec := cursorPickerSpecJSON(model)
+		current, exists := families[key]
+		if !exists {
+			families[key] = &family{order: order, model: CursorAccountModel{Name: storedName, DisplayName: displayName, DefaultOn: model.GetDefaultOn(), PickerSpec: spec}}
+			order++
+			continue
+		}
+		if spec != "" && (current.model.PickerSpec == "" || !variant) {
+			current.model.PickerSpec = spec
+		}
+		if model.GetDefaultOn() {
+			current.model.DefaultOn = true
+		}
+		if !variant {
+			current.model.Name = name
+			if strings.TrimSpace(model.GetClientDisplayName()) != "" {
+				current.model.DisplayName = displayName
+			}
+		}
+	}
+	catalog := make([]CursorAccountModel, 0, len(families))
+	ranked := make([]*family, 0, len(families))
+	for _, item := range families {
+		ranked = append(ranked, item)
+	}
+	sort.Slice(ranked, func(i, j int) bool { return ranked[i].order < ranked[j].order })
+	for _, item := range ranked {
+		catalog = append(catalog, item.model)
+	}
+	return catalog
+}
+
+func cursorPickerSpecJSON(model *aiserverv1.AvailableModelsResponse_AvailableModel) string {
+	if model == nil {
+		return ""
+	}
+	spec := map[string]any{}
+	if model.SupportsMaxMode != nil {
+		spec["supportsMaxMode"] = model.GetSupportsMaxMode()
+	}
+	if model.SupportsNonMaxMode != nil {
+		spec["supportsNonMaxMode"] = model.GetSupportsNonMaxMode()
+	}
+	if model.GetContextTokenLimit() > 0 {
+		spec["contextTokenLimit"] = model.GetContextTokenLimit()
+	}
+	if model.GetContextTokenLimitForMaxMode() > 0 {
+		spec["contextTokenLimitForMaxMode"] = model.GetContextTokenLimitForMaxMode()
+	}
+	if defs := marshalCursorProtoList(model.GetParameterDefinitions()); len(defs) > 0 {
+		spec["parameterDefinitions"] = defs
+	}
+	if variants := marshalCursorProtoList(model.GetVariants()); len(variants) > 0 {
+		spec["variants"] = variants
+	}
+	if len(spec) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func marshalCursorProtoList[T proto.Message](items []T) []json.RawMessage {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		raw, err := (protojson.MarshalOptions{EmitUnpopulated: false}).Marshal(item)
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		out = append(out, append(json.RawMessage(nil), raw...))
+	}
+	return out
+}
+
+func splitCursorCatalogVariant(modelID string) (base string, effort string, fast bool, ok bool) {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	if strings.HasSuffix(id, "-fast") {
+		fast = true
+		id = strings.TrimSuffix(id, "-fast")
+	}
+	for _, suffix := range []string{"-xhigh", "-medium", "-high", "-low", "-max"} {
+		if strings.HasSuffix(id, suffix) {
+			return id[:len(id)-len(suffix)], strings.TrimPrefix(suffix, "-"), fast, true
+		}
+	}
+	if fast {
+		return id, "medium", true, true
+	}
+	return "", "", false, false
+}
+
+func prettyCursorCatalogName(base string) string {
+	parts := strings.Split(strings.TrimSpace(base), "-")
+	if len(parts) > 0 && parts[0] == "cursor" {
+		parts = parts[1:]
+	}
+	end := len(parts)
+	for end > 0 && isCatalogDigits(parts[end-1]) {
+		end--
+	}
+	words := make([]string, 0, len(parts))
+	for _, part := range parts[:end] {
+		if part == "" {
+			continue
+		}
+		words = append(words, strings.ToUpper(part[:1])+part[1:])
+	}
+	name := strings.Join(words, " ")
+	if end < len(parts) {
+		if name != "" {
+			name += " "
+		}
+		name += strings.Join(parts[end:], ".")
+	}
+	return name
+}
+
+func isCatalogDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}

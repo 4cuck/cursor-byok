@@ -4,10 +4,52 @@ import (
 	"path/filepath"
 	"strings"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"cursor/gen/agentv1"
 )
+
+// cursorAccountForwardContext is the environment the Cursor account gateway
+// hands to the cloud agent. The IDE's request context wins, because an SSH
+// session reports the remote host rather than the machine running this process.
+func cursorAccountForwardContext(conversation *ConversationFile, workspacePaths []string, terminalsFolder string) *agentv1.RequestContext {
+	if ctx := latestStoredRequestContext(conversation); ctx != nil {
+		if ctx.Env == nil {
+			ctx.Env = &agentv1.RequestContextEnv{}
+		}
+		return ctx
+	}
+	// No IDE context yet. The stream paths are the only workspace we have.
+	ctx := &agentv1.RequestContext{Env: &agentv1.RequestContextEnv{
+		TerminalsFolder: strings.TrimSpace(terminalsFolder),
+	}}
+	if len(workspacePaths) > 0 {
+		ctx.Env.WorkspacePaths = append([]string(nil), workspacePaths...)
+	}
+	if strings.TrimSpace(ctx.Env.ProjectFolder) == "" && len(ctx.Env.WorkspacePaths) == 1 {
+		ctx.Env.ProjectFolder = ctx.Env.WorkspacePaths[0]
+	}
+	return ctx
+}
+
+func latestStoredRequestContext(conversation *ConversationFile) *agentv1.RequestContext {
+	if conversation == nil {
+		return nil
+	}
+	for index := len(conversation.Entries) - 1; index >= 0; index-- {
+		entry := conversation.Entries[index]
+		if strings.TrimSpace(entry.Kind) != "request_context" || len(entry.Payload) == 0 {
+			continue
+		}
+		requestContext := &agentv1.RequestContext{}
+		if err := protojson.Unmarshal(entry.Payload, requestContext); err != nil {
+			continue
+		}
+		return requestContext
+	}
+	return nil
+}
 
 func extractEffectiveRunRequestContext(message *agentv1.AgentClientMessage) *agentv1.RequestContext {
 	if message == nil || message.GetRunRequest() == nil {

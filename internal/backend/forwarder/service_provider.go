@@ -8,6 +8,7 @@ import (
 	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/logger"
 	"cursor/internal/modelcontext"
+	legacyruntime "cursor/internal/runtime"
 	"cursor/internal/safego"
 	"errors"
 	"fmt"
@@ -334,6 +335,21 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		providerRequest.ProviderStreamIdleTimeout = delegatedProviderStreamIdleTimeout
 	}
 	providerRequest.ThinkingEffort = thinkingEffort
+	providerRequest.FastMode = stream.FastMode
+	if service.cursorAccountModel(modelID) {
+		results := make(chan *agentv1.ExecClientMessage, 32)
+		stream.mu.Lock()
+		stream.CursorToolResults = results
+		stream.CursorInlineToolTurn = false
+		stream.cursorToolWaiting = false
+		stream.cursorToolDelivered = false
+		stream.nativeExecSlots = nil
+		workspacePaths := append([]string(nil), stream.WorkspacePaths...)
+		terminalsFolder := stream.TerminalsFolder
+		stream.mu.Unlock()
+		providerRequest.CursorToolResults = results
+		providerRequest.CursorRequestContext = cursorAccountForwardContext(conversation, workspacePaths, terminalsFolder)
+	}
 	service.debug.LogProvider(context.Background(), requestID, conversationID, "provider_request_prepared", map[string]any{
 		"model_call_id":          strings.TrimSpace(modelCallID),
 		"provider_pass":          currentPass,
@@ -552,6 +568,14 @@ func withPreviousCacheFrontierHint(requestKnobs map[string]any, conversation *Co
 // resolveConfiguredProviderMaxOutputTokens 返回渠道解析出的输出预算，以及该值是否
 // 来自渠道显式配置（含 400 降级学习按渠道持久化的值）。false 表示渠道未配置任何值，
 // 预算走协议安全默认值——只有这种情况才允许思考模型按目录上限抬升。
+func (service *Service) cursorAccountModel(modelID string) bool {
+	if service == nil || service.resolver == nil {
+		return false
+	}
+	channel, err := service.resolver.SelectChannelForModel(context.Background(), strings.TrimSpace(modelID))
+	return err == nil && channel != nil && legacyruntime.NormalizeModelSource(channel.Source) == legacyruntime.ModelSourceCursorAccount
+}
+
 func (service *Service) resolveConfiguredProviderMaxOutputTokens(modelID string) (int, bool) {
 	if service == nil || service.resolver == nil {
 		return providerDefaultMaxOutputTokens, false

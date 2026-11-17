@@ -74,6 +74,7 @@ export function buildCursorAccountAdapter(model, owner = {}) {
     supplierID: ownerLabel,
     cursorAccountID: String(owner.accountID || "").trim(),
     modelID: name,
+    cursorModelSpec: String(model?.pickerSpec || "").trim(),
     tooltipData: model?.defaultOn ? `${note} (default)` : note,
     customHeadersEnabled: false,
     customHeadersJSON: "",

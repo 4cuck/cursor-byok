@@ -381,6 +381,203 @@ func patchEditReplayLimit(toolName string) int {
 	}
 }
 
+// compressShellOutput drops ceremony from command output the model will read.
+// It keeps failure lines, a short git log, and a short directory sample.
+// Short output is left unchanged. This does not call another model.
+func compressShellOutput(text string) string {
+	text = stripShellANSI(text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = strings.TrimSpace(text)
+	if len(text) < 1800 {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	if compressed, ok := compressGitLogOutput(lines); ok {
+		return compressed
+	}
+	if compressed, ok := compressDirectoryListing(lines); ok {
+		return compressed
+	}
+	if compressed, ok := compressTestRunnerOutput(lines); ok {
+		return compressed
+	}
+	return strings.TrimSpace(strings.Join(collapseRepeatedShellLines(lines), "\n"))
+}
+
+func stripShellANSI(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		if text[i] == 0x1b && i+1 < len(text) && text[i+1] == '[' {
+			j := i + 2
+			for j < len(text) && ((text[j] >= '0' && text[j] <= '9') || text[j] == ';') {
+				j++
+			}
+			if j < len(text) {
+				j++
+			}
+			i = j
+			continue
+		}
+		b.WriteByte(text[i])
+		i++
+	}
+	return b.String()
+}
+
+func collapseRepeatedShellLines(lines []string) []string {
+	if len(lines) == 0 {
+		return lines
+	}
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		j := i + 1
+		for j < len(lines) && lines[j] == line {
+			j++
+		}
+		out = append(out, line)
+		if j-i >= 3 && strings.TrimSpace(line) != "" {
+			out = append(out, fmt.Sprintf("[%d repeated lines omitted]", j-i-1))
+		}
+		i = j
+	}
+	return out
+}
+
+func compressGitLogOutput(lines []string) (string, bool) {
+	hashLines := 0
+	for _, line := range lines {
+		if gitLogLine(line) {
+			hashLines++
+		}
+	}
+	if hashLines < 12 {
+		return "", false
+	}
+	kept := make([]string, 0, 24)
+	seen := 0
+	omitted := 0
+	for _, line := range lines {
+		if gitLogLine(line) {
+			seen++
+			if seen > 15 {
+				omitted++
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	if omitted > 0 {
+		kept = append(kept, fmt.Sprintf("[%d older git log entries omitted]", omitted))
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), true
+}
+
+func gitLogLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if len(line) < 8 {
+		return false
+	}
+	for i := 0; i < 7; i++ {
+		c := line[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return line[7] == ' ' || line[7] == '\t'
+}
+
+func compressDirectoryListing(lines []string) (string, bool) {
+	entries := 0
+	for _, line := range lines {
+		if directoryEntryLine(line) {
+			entries++
+		}
+	}
+	if entries < 30 {
+		return "", false
+	}
+	kept := make([]string, 0, 28)
+	seen := 0
+	omitted := 0
+	for _, line := range lines {
+		if directoryEntryLine(line) {
+			seen++
+			if seen > 20 {
+				omitted++
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	if omitted > 0 {
+		kept = append(kept, fmt.Sprintf("[%d directory entries omitted]", omitted))
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), true
+}
+
+func directoryEntryLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "total ") {
+		return false
+	}
+	if len(line) < 10 {
+		return false
+	}
+	switch line[0] {
+	case 'd', '-', 'l', 'c', 'b', 'p', 's':
+	default:
+		return false
+	}
+	for i := 1; i < 10; i++ {
+		switch line[i] {
+		case 'r', 'w', 'x', '-':
+		default:
+			return false
+		}
+	}
+	idx := 10
+	if idx < len(line) && (line[idx] == '+' || line[idx] == '.') {
+		idx++
+	}
+	return idx < len(line) && (line[idx] == ' ' || line[idx] == '\t')
+}
+
+func compressTestRunnerOutput(lines []string) (string, bool) {
+	passed := 0
+	signal := 0
+	for _, line := range lines {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		switch {
+		case strings.HasSuffix(lower, " passed") || strings.HasSuffix(lower, " ok") || lower == "passed" || strings.HasPrefix(lower, "ok "):
+			passed++
+		case strings.Contains(lower, "fail") || strings.Contains(lower, "error") || strings.Contains(lower, "panic"):
+			signal++
+		}
+	}
+	if passed < 20 {
+		return "", false
+	}
+	kept := make([]string, 0, signal+8)
+	omitted := 0
+	for _, line := range lines {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		drop := !strings.Contains(lower, "fail") && !strings.Contains(lower, "error") && !strings.Contains(lower, "panic") &&
+			(strings.HasSuffix(lower, " passed") || strings.HasSuffix(lower, " ok") || lower == "passed" || strings.HasPrefix(lower, "ok "))
+		if drop {
+			omitted++
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if omitted > 0 {
+		kept = append(kept, fmt.Sprintf("[%d passing test lines omitted]", omitted))
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), true
+}
+
 func compactProjectedShellToolResultReplay(toolName string, content string) (string, bool) {
 	if strings.TrimSpace(toolName) != "Shell" {
 		return "", false
@@ -391,7 +588,11 @@ func compactProjectedShellToolResultReplay(toolName string, content string) (str
 	}
 	var payload any
 	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return "", false
+		compressed := compressShellOutput(trimmed)
+		if compressed == trimmed {
+			return "", false
+		}
+		return compressed, true
 	}
 	if !compactProjectedShellFields(payload) {
 		return "", false
@@ -411,14 +612,14 @@ func compactProjectedShellFields(value any) bool {
 			if text, ok := child.(string); ok {
 				switch key {
 				case "stdout", "stderr":
-					next := truncateProjectedReplayTextMiddle("Shell "+key, text, projectedShellStreamLimit)
+					next := truncateProjectedReplayTextMiddle("Shell "+key, compressShellOutput(text), projectedShellStreamLimit)
 					if next != text {
 						item[key] = next
 						changed = true
 					}
 					continue
 				case "interleaved_output", "interleavedOutput":
-					next := truncateProjectedReplayTextMiddle("Shell interleaved output", text, projectedShellInterleavedLimit)
+					next := truncateProjectedReplayTextMiddle("Shell interleaved output", compressShellOutput(text), projectedShellInterleavedLimit)
 					if next != text {
 						item[key] = next
 						changed = true

@@ -1012,3 +1012,92 @@ func TestAvailableModelsPayloadAdvertisesCustomThinkingEfforts(t *testing.T) {
 		}
 	}
 }
+
+func TestAvailableModelsGroupsCursorAccountEffortAndFastVariants(t *testing.T) {
+	adapters := []legacyruntime.ModelAdapterConfig{
+		{ID: "cursor_account1:claude-fable-5-2-high", Source: "cursor_account", GroupName: "cursor_account1", DisplayName: "claude-fable-5-2-high", ModelID: "claude-fable-5-2-high", Type: "cursor_account"},
+		{ID: "cursor_account1:claude-fable-5-2-high-fast", Source: "cursor_account", GroupName: "cursor_account1", DisplayName: "claude-fable-5-2-high-fast", ModelID: "claude-fable-5-2-high-fast", Type: "cursor_account"},
+		{ID: "cursor_account1:claude-fable-5-2-max", Source: "cursor_account", GroupName: "cursor_account1", DisplayName: "claude-fable-5-2-max", ModelID: "claude-fable-5-2-max", Type: "cursor_account"},
+		{ID: "cursor_account1:gpt-other", Source: "cursor_account", GroupName: "cursor_account1", DisplayName: "gpt-other", ModelID: "gpt-other", Type: "cursor_account"},
+	}
+	body, err := proto.Marshal(&aiserverv1.AvailableModelsRequest{UseModelParameters: boolPtr(true), VariantsWillBeShownInExplodedList: boolPtr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx := newRequestContextWithAdapters(adapters)
+	reqCtx.RequestBody = body
+	payload, err := AvailableModelsMockBuilder(reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := payload["models"].([]map[string]any)
+	if len(models) != 2 {
+		t.Fatalf("models = %d, want the fable family plus gpt-other", len(models))
+	}
+	var fable map[string]any
+	for _, model := range models {
+		if model["clientDisplayName"] == "Claude Fable 5.2" {
+			fable = model
+		}
+	}
+	if fable == nil {
+		t.Fatalf("fable family missing: %#v", models)
+	}
+	definition, ok := findModelParameterDefinition(fable, "effort")
+	if !ok {
+		t.Fatal("effort parameter missing")
+	}
+	if _, ok := findModelParameterDefinition(fable, "fast"); !ok {
+		t.Fatal("fast parameter missing")
+	}
+	values := definition["parameterType"].(map[string]any)["enumParameter"].(map[string]any)["values"].([]map[string]any)
+	if len(values) != 2 {
+		t.Fatalf("effort values = %#v, want high and max", values)
+	}
+	variants := fable["variants"].([]map[string]any)
+	if len(variants) != 3 {
+		t.Fatalf("variants = %d, want one per synced model", len(variants))
+	}
+}
+
+func TestAvailableModelsUsesCursorPickerSpec(t *testing.T) {
+	adapters := []legacyruntime.ModelAdapterConfig{{
+		ID:              "cursor_account1:claude-fable-5-2",
+		Source:          "cursor_account",
+		DisplayName:     "Claude Fable 5.2",
+		ModelID:         "claude-fable-5-2",
+		Type:            "cursor_account",
+		CursorModelSpec: `{"supportsMaxMode":true,"contextTokenLimit":1000000,"contextTokenLimitForMaxMode":1000000,"parameterDefinitions":[{"id":"fast","name":"Fast","parameterType":{"booleanParameter":{"values":[{"value":"false"},{"value":"true"}]}}},{"id":"effort","name":"Effort","parameterType":{"enumParameter":{"values":[{"value":"high","displayName":"High"},{"value":"max","displayName":"Max"}]}}}]}`,
+	}}
+	body, err := proto.Marshal(&aiserverv1.AvailableModelsRequest{UseModelParameters: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx := newRequestContextWithAdapters(adapters)
+	reqCtx.RequestBody = body
+	payload, err := AvailableModelsMockBuilder(reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := payload["models"].([]map[string]any)
+	if len(models) != 1 {
+		t.Fatalf("models = %d", len(models))
+	}
+	if models[0]["supportsMaxMode"] != true {
+		t.Fatalf("supportsMaxMode = %#v", models[0]["supportsMaxMode"])
+	}
+	if _, ok := findModelParameterDefinition(models[0], "fast"); !ok {
+		t.Fatal("fast parameter missing")
+	}
+	definition, ok := findModelParameterDefinition(models[0], "effort")
+	if !ok {
+		t.Fatal("effort parameter missing")
+	}
+	values := definition["parameterType"].(map[string]any)["enumParameter"].(map[string]any)["values"].([]any)
+	if len(values) != 2 {
+		t.Fatalf("effort values = %#v", values)
+	}
+	if models[0]["contextTokenLimitForMaxMode"] != 1000000 {
+		t.Fatalf("max context = %#v", models[0]["contextTokenLimitForMaxMode"])
+	}
+}

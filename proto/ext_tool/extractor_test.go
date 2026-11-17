@@ -994,3 +994,29 @@ func TestWebpackQualifiedRefResolvesCommonJSReexport(t *testing.T) {
 		}
 	}
 }
+
+func TestMakeMessageTypeExtractsCursor330Fields(t *testing.T) {
+	js := `const Grep=Da.makeMessageType("agent.v1.GrepArgs",(()=>[{no:1,name:"pattern",kind:"scalar",T:9},{no:3,name:"glob",kind:"scalar",T:9,opt:!0},{no:4,name:"output_mode",kind:"scalar",T:9,opt:!0}]));`
+	messages := extractMessages(js, nil, newExtractionDiagnostics())
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d", len(messages))
+	}
+	msg := messages[0]
+	if msg.TypeName != "agent.v1.GrepArgs" || msg.VarName != "Grep" || len(msg.Fields) != 3 {
+		t.Fatalf("message = %+v", msg)
+	}
+	if msg.Fields[1].Name != "glob" || msg.Fields[1].No != 3 || !msg.Fields[1].Opt {
+		t.Fatalf("glob field = %+v", msg.Fields[1])
+	}
+}
+
+func TestMakeEnumExtractsCursor330Values(t *testing.T) {
+	js := `Fdd=E.makeEnum("agent.v1.TimeoutBehavior",[{no:0,name:"TIMEOUT_BEHAVIOR_UNSPECIFIED",localName:"UNSPECIFIED"},{no:1,name:"TIMEOUT_BEHAVIOR_CANCEL",localName:"CANCEL"}]);`
+	enums := extractEnums(js, nil)
+	if len(enums) != 1 || enums[0].TypeName != "agent.v1.TimeoutBehavior" || enums[0].VarName != "Fdd" || len(enums[0].Values) != 2 {
+		t.Fatalf("enums = %+v", enums)
+	}
+	if enums[0].Values[1].No != 1 || enums[0].Values[1].Name != "TIMEOUT_BEHAVIOR_CANCEL" {
+		t.Fatalf("value = %+v", enums[0].Values[1])
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 )
 
 // fakeCursorAPIKeyTransport 复刻 api2.cursor.sh 上 API Key 相关端点的真实行为：
-//   - /auth/exchange_user_api_key 用 Bearer + {apiKey} 换短期 JWT
+//   - /auth/exchange_user_api_key 用 Bearer 原始 key 和空 JSON 对象换短期 JWT
 //   - GetMe 用该 JWT 换身份
 //   - /oauth/token 对这类 token 返回 shouldLogout=true（真实服务就是如此）
 type fakeCursorAPIKeyTransport struct {
@@ -37,11 +38,11 @@ func (fake *fakeCursorAPIKeyTransport) roundTrip(req *http.Request) (*http.Respo
 			return staticHTTPResponse(http.StatusUnauthorized, "application/json",
 				[]byte(`{"error":"Invalid User API Key"}`)), nil
 		}
-		body := map[string]string{}
-		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1024))
+		if err != nil {
 			return nil, err
 		}
-		if body["apiKey"] != fake.apiKey {
+		if strings.TrimSpace(string(rawBody)) != "{}" {
 			return staticHTTPResponse(http.StatusUnauthorized, "application/json",
 				[]byte(`{"error":"Invalid User API Key"}`)), nil
 		}

@@ -184,4 +184,6 @@ type ToolInvocation struct {
 	ProviderStatus string
 	// ModelCallID 表示本轮模型调用标识。
 	ModelCallID string
+	// NativeExec 是 Cursor 账户上游原始 exec。转发时不再按本地工具 schema 重编码。
+	NativeExec []byte
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -784,12 +785,258 @@ func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig) []m
 	return buildAvailableModelEntriesForMode(adapters, true, true)
 }
 
+func cursorAccountVariantFamily(adapters []legacyruntime.ModelAdapterConfig, adapter legacyruntime.ModelAdapterConfig) (string, []legacyruntime.ModelAdapterConfig, bool) {
+	if legacyruntime.NormalizeModelSource(adapter.Source) != legacyruntime.ModelSourceCursorAccount {
+		return "", nil, false
+	}
+	base, _, _, ok := splitCursorAccountModelVariant(adapter.ModelID)
+	if !ok {
+		return "", nil, false
+	}
+	key := strings.TrimSpace(adapter.GroupName) + "\x00" + base
+	members := make([]legacyruntime.ModelAdapterConfig, 0, 4)
+	for _, candidate := range adapters {
+		if legacyruntime.NormalizeModelSource(candidate.Source) != legacyruntime.ModelSourceCursorAccount {
+			continue
+		}
+		candidateBase, _, _, candidateOK := splitCursorAccountModelVariant(candidate.ModelID)
+		if !candidateOK || candidateBase != base {
+			continue
+		}
+		if strings.TrimSpace(candidate.GroupName) != strings.TrimSpace(adapter.GroupName) {
+			continue
+		}
+		members = append(members, candidate)
+	}
+	if len(members) < 2 {
+		return "", nil, false
+	}
+	return key, members, true
+}
+
+func splitCursorAccountModelVariant(modelID string) (base string, effort string, fast bool, ok bool) {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	if strings.HasSuffix(id, "-fast") {
+		fast = true
+		id = strings.TrimSuffix(id, "-fast")
+	}
+	for _, suffix := range []string{"-xhigh", "-medium", "-high", "-low", "-max"} {
+		if strings.HasSuffix(id, suffix) {
+			return id[:len(id)-len(suffix)], strings.TrimPrefix(suffix, "-"), fast, true
+		}
+	}
+	if fast {
+		return id, "medium", true, true
+	}
+	return "", "", false, false
+}
+
+func prettyCursorAccountFamilyName(base string) string {
+	parts := strings.Split(strings.TrimSpace(base), "-")
+	end := len(parts)
+	for end > 0 && isAllDigits(parts[end-1]) {
+		end--
+	}
+	words := make([]string, 0, len(parts))
+	for _, part := range parts[:end] {
+		if part == "" {
+			continue
+		}
+		words = append(words, strings.ToUpper(part[:1])+part[1:])
+	}
+	name := strings.Join(words, " ")
+	if end < len(parts) {
+		if name != "" {
+			name += " "
+		}
+		name += strings.Join(parts[end:], ".")
+	}
+	return name
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func buildCursorAccountFamilyEntry(members []legacyruntime.ModelAdapterConfig, useModelParameters bool) (map[string]any, bool) {
+	if len(members) == 0 {
+		return nil, false
+	}
+	representative := members[0]
+	representativeBase, _, _, _ := splitCursorAccountModelVariant(representative.ModelID)
+	for _, member := range members {
+		_, effort, fast, _ := splitCursorAccountModelVariant(member.ModelID)
+		if effort == "medium" && !fast {
+			representative = member
+			break
+		}
+	}
+	entries := buildAvailableModelEntriesForMode([]legacyruntime.ModelAdapterConfig{representative}, useModelParameters, false)
+	if len(entries) != 1 {
+		return nil, false
+	}
+	entry := entries[0]
+	displayName := prettyCursorAccountFamilyName(representativeBase)
+	if displayName == "" {
+		displayName = strings.TrimSpace(representative.DisplayName)
+	}
+	entry["clientDisplayName"] = displayName
+	entry["inputboxShortModelName"] = displayName
+	if !useModelParameters {
+		return entry, true
+	}
+	efforts := make([]string, 0, 4)
+	seenEffort := map[string]struct{}{}
+	hasFast := false
+	for _, member := range members {
+		_, effort, fast, _ := splitCursorAccountModelVariant(member.ModelID)
+		if fast {
+			hasFast = true
+		}
+		if effort == "" {
+			effort = "medium"
+		}
+		if _, exists := seenEffort[effort]; exists {
+			continue
+		}
+		seenEffort[effort] = struct{}{}
+		efforts = append(efforts, effort)
+	}
+	contextTokens := resolveAvailableModelContextTokens(representative)
+	entry["parameterDefinitions"] = buildCursorAccountFamilyParameters(orderCursorAccountEfforts(efforts), contextTokens, hasFast)
+	entry["variants"] = buildCursorAccountFamilyVariants(members, displayName, contextTokens, hasFast)
+	return entry, true
+}
+
+func orderCursorAccountEfforts(efforts []string) []string {
+	rank := map[string]int{"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4}
+	ordered := append([]string(nil), efforts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, leftOK := rank[ordered[i]]
+		right, rightOK := rank[ordered[j]]
+		if leftOK && rightOK {
+			return left < right
+		}
+		if leftOK {
+			return true
+		}
+		if rightOK {
+			return false
+		}
+		return ordered[i] < ordered[j]
+	})
+	return ordered
+}
+
+func buildCursorAccountFamilyParameters(efforts []string, contextTokens int, hasFast bool) []map[string]any {
+	options := make([]map[string]any, 0, len(efforts))
+	for _, value := range efforts {
+		options = append(options, map[string]any{
+			"displayName":        thinkingEffortDisplayName(value),
+			"increasesModelCost": value == "xhigh" || value == "max",
+			"value":              value,
+		})
+	}
+	definitions := []map[string]any{{
+		"id":                  modelRuntimeThinkingEffortParameterID,
+		"isCycleableByHotkey": true,
+		"markdownTooltip":     "Controls how much reasoning effort the model uses.",
+		"name":                "Effort",
+		"parameterType": map[string]any{
+			"enumParameter": map[string]any{"values": options},
+		},
+	}}
+	if contextTokens > 0 {
+		definitions = append(definitions, map[string]any{
+			"id":              modelRuntimeContextParameterID,
+			"markdownTooltip": "Context size the model has available.",
+			"name":            "Context",
+			"parameterType": map[string]any{
+				"enumParameter": map[string]any{
+					"values": []map[string]any{{
+						"value":       strconv.Itoa(contextTokens),
+						"displayName": formatCompactTokenCount(contextTokens),
+					}},
+				},
+			},
+		})
+	}
+	if hasFast {
+		definitions = append(definitions, map[string]any{
+			"id":              modelRuntimeFastParameterID,
+			"markdownTooltip": "Use the faster variant of this model.",
+			"name":            "Fast",
+			"parameterType": map[string]any{
+				"booleanParameter": map[string]any{
+					"values": []map[string]any{
+						{"value": "false", "displayName": "Off"},
+						{"value": "true", "displayName": "On"},
+					},
+				},
+			},
+		})
+	}
+	return definitions
+}
+
+func buildCursorAccountFamilyVariants(members []legacyruntime.ModelAdapterConfig, displayName string, contextTokens int, hasFast bool) []map[string]any {
+	variants := make([]map[string]any, 0, len(members))
+	for _, member := range members {
+		_, effort, fast, _ := splitCursorAccountModelVariant(member.ModelID)
+		if effort == "" {
+			effort = "medium"
+		}
+		parameterValues := []map[string]any{{"id": modelRuntimeThinkingEffortParameterID, "value": effort}}
+		if contextTokens > 0 {
+			parameterValues = append(parameterValues, map[string]any{"id": modelRuntimeContextParameterID, "value": strconv.Itoa(contextTokens)})
+		}
+		if hasFast {
+			fastValue := "false"
+			if fast {
+				fastValue = "true"
+			}
+			parameterValues = append(parameterValues, map[string]any{"id": modelRuntimeFastParameterID, "value": fastValue})
+		}
+		variantDisplayName := buildThinkingEffortVariantDisplayName(displayName, effort)
+		channelID := strings.TrimSpace(member.ID)
+		variant := map[string]any{
+			"displayName":                 variantDisplayName,
+			"displayNameOutsidePicker":    variantDisplayName,
+			"isDefaultNonMaxConfig":       effort == "medium" && !fast,
+			"isMaxMode":                   false,
+			"parameterValues":             parameterValues,
+			"variantStringRepresentation": channelID + ":" + effort,
+		}
+		variants = append(variants, variant)
+	}
+	return variants
+}
+
 func buildAvailableModelEntriesForMode(adapters []legacyruntime.ModelAdapterConfig, useModelParameters bool, explodedVariants bool) []map[string]any {
 	if len(adapters) == 0 {
 		return []map[string]any{}
 	}
 	output := make([]map[string]any, 0, len(adapters))
+	emittedFamily := map[string]struct{}{}
 	for _, adapter := range adapters {
+		if familyKey, members, grouped := cursorAccountVariantFamily(adapters, adapter); grouped {
+			if _, done := emittedFamily[familyKey]; done {
+				continue
+			}
+			emittedFamily[familyKey] = struct{}{}
+			if entry, ok := buildCursorAccountFamilyEntry(members, useModelParameters); ok {
+				output = append(output, entry)
+				continue
+			}
+		}
 		channelID := strings.TrimSpace(adapter.ID)
 		displayName := strings.TrimSpace(adapter.DisplayName)
 		modelID := strings.TrimSpace(adapter.ModelID)
@@ -850,6 +1097,7 @@ func buildAvailableModelEntriesForMode(adapters []legacyruntime.ModelAdapterConf
 		// 展示价格、长上下文标记与「用户自建」标记。数据源优先 adapter 显式配置，
 		// 其次内置 modelcontext 目录（models.json 规则），缺失时省略对应字段。
 		applyAvailableModelAutoContextMetadata(entry, contextTokens)
+		applyCursorModelSpec(entry, adapter, channelID)
 		entry["isLongContextOnly"] = false
 		entry["isUserAdded"] = true
 		if price := resolveAvailableModelDisplayPrice(adapter); price > 0 {
@@ -964,6 +1212,65 @@ func formatModelPrice(price float64, currency string) string {
 	default:
 		return "$" + text
 	}
+}
+
+func applyCursorModelSpec(entry map[string]any, adapter legacyruntime.ModelAdapterConfig, channelID string) {
+	raw := strings.TrimSpace(adapter.CursorModelSpec)
+	if entry == nil || raw == "" {
+		return
+	}
+	var spec map[string]any
+	if err := json.Unmarshal([]byte(raw), &spec); err != nil {
+		return
+	}
+	if value, ok := spec["supportsMaxMode"].(bool); ok {
+		entry["supportsMaxMode"] = value
+	}
+	if value, ok := spec["supportsNonMaxMode"].(bool); ok {
+		entry["supportsNonMaxMode"] = value
+	}
+	if limit := jsonSpecInt(spec["contextTokenLimit"]); limit > 0 {
+		entry["contextTokenLimit"] = limit
+	}
+	if limit := jsonSpecInt(spec["contextTokenLimitForMaxMode"]); limit > 0 {
+		entry["contextTokenLimitForMaxMode"] = limit
+	}
+	if defs := jsonSpecObjects(spec["parameterDefinitions"]); len(defs) > 0 {
+		entry["parameterDefinitions"] = defs
+	}
+	if variants := jsonSpecObjects(spec["variants"]); len(variants) > 0 {
+		for index, variant := range variants {
+			variant["variantStringRepresentation"] = channelID + ":" + strconv.Itoa(index)
+		}
+		entry["variants"] = variants
+	}
+}
+
+func jsonSpecInt(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case int:
+		return typed
+	default:
+		return 0
+	}
+}
+
+func jsonSpecObjects(value any) []map[string]any {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	objects := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			return nil
+		}
+		objects = append(objects, object)
+	}
+	return objects
 }
 
 func applyAvailableModelAutoContextMetadata(entry map[string]any, contextTokens int) {

@@ -158,15 +158,23 @@ type providerCallTiming struct {
 type ActiveStream struct {
 	mu sync.Mutex
 
-	RequestID                    string
-	ConversationID               string
-	TurnSeq                      int64
-	ModelID                      string
-	ModelName                    string
-	Mode                         agentv1.AgentMode
-	LatestUserText               string
-	Status                       StreamStatus
-	ThinkingEffort               string
+	RequestID      string
+	ConversationID string
+	TurnSeq        int64
+	ModelID        string
+	ModelName      string
+	Mode           agentv1.AgentMode
+	LatestUserText string
+	Status         StreamStatus
+	ThinkingEffort string
+	FastMode       bool
+	// CursorToolResults 在 Cursor 账户回合内把工具结果送回仍打开的上游流。
+	CursorToolResults chan *agentv1.ExecClientMessage
+	// CursorInlineToolTurn 表示本次 provider pass 已把工具结果写回同一条上游流。
+	CursorInlineToolTurn         bool
+	cursorToolWaiting            bool
+	cursorToolDelivered          bool
+	nativeExecSlots              map[string]nativeExecSlot
 	CustomSystemPrompt           string
 	MaxMode                      bool
 	SubagentModelOverrides       map[string]runtimecore.SubagentModelOverrideSelection
@@ -228,6 +236,9 @@ type ActiveStream struct {
 	// （投影/委派等旁路请求的消息与 canonical 不一致，写入会污染锚点）。
 	PromptAnchorMessageCount       int
 	ProviderTerminalToolInvocation bool
+	// MissingReadCounts counts Read results that reported a missing path in this turn.
+	// A second miss on the same path stops the provider from reading it forever.
+	MissingReadCounts map[string]int
 	// SummaryEmittedTurn 记录最近一次已向 RunSSE 流发送会话摘要事件的 turnSeq，
 	// 用于同一 turn 多次 provider pass 时去重（摘要每轮只发一次，内容取最终快照）。
 	SummaryEmittedTurn int64
@@ -443,6 +454,7 @@ type ProviderRequest struct {
 	ReviewerModel       string
 	Mode                agentv1.AgentMode
 	ThinkingEffort      string
+	FastMode            bool
 	MaxMode             bool
 	Messages            []modeladapter.Message
 	StableMessageCount  int
@@ -456,6 +468,10 @@ type ProviderRequest struct {
 	// ProviderStreamIdleTimeout 表示本次调用的 provider 流空闲看门狗时长；
 	// 委派/子代理流显式设置放宽值（父代理流留零，走全局配置默认）。
 	ProviderStreamIdleTimeout time.Duration
+	// CursorToolResults 仅 Cursor 账户回合使用，用来把工具结果写回同一条 RunSSE。
+	CursorToolResults chan *agentv1.ExecClientMessage
+	// CursorRequestContext 是本回合 IDE 上报的执行环境，转交给 Cursor 账户网关。
+	CursorRequestContext *agentv1.RequestContext
 }
 
 type ProviderGateway interface {
@@ -608,6 +624,7 @@ type InboundIntent struct {
 	ModelID                      string
 	ModelName                    string
 	ThinkingEffort               string
+	FastMode                     bool
 	CustomSystemPrompt           string
 	MaxMode                      bool
 	Mode                         agentv1.AgentMode

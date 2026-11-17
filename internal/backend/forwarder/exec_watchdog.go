@@ -166,7 +166,7 @@ func (service *Service) recoverExecWithoutTerminal(stream *ActiveStream, pending
 	if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 		return err
 	}
-	return service.reconcileStream(stream)
+	return service.continueCursorToolOrReconcile(stream, pending.ToolCallID, nil)
 }
 
 // buildSyntheticExecResultPayload 构造超时/丢失终态时的 tool_result 文本。

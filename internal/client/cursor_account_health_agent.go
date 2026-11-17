@@ -12,6 +12,7 @@ import (
 
 	"cursor/gen/agentv1"
 	"cursor/gen/aiserverv1"
+	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/backend/server/upstream"
 
 	"github.com/google/uuid"
@@ -204,20 +205,7 @@ func requestContextReply(id uint32, execID string) *agentv1.AgentClientMessage {
 					RequestContextResult: &agentv1.RequestContextResult{
 						Result: &agentv1.RequestContextResult_Success{
 							Success: &agentv1.RequestContextSuccess{
-								RequestContext: &agentv1.RequestContext{
-									Env: &agentv1.RequestContextEnv{
-										OsVersion: "windows",
-										Shell:     "powershell",
-										TimeZone:  "UTC",
-									},
-									EnvInfoComplete:             proto.Bool(true),
-									RulesInfoComplete:           proto.Bool(true),
-									RepositoryInfoComplete:      proto.Bool(true),
-									McpInfoComplete:             proto.Bool(true),
-									AgentSkillsInfoComplete:     proto.Bool(true),
-									GitStatusInfoComplete:       proto.Bool(true),
-									CustomSubagentsInfoComplete: proto.Bool(true),
-								},
+								RequestContext: modeladapter.CursorHostRequestContext(),
 							},
 						},
 					},

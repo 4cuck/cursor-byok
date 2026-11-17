@@ -20,6 +20,37 @@ func TestBuildUserQueryReplayMessageWrapsUserQuery(t *testing.T) {
 	}
 }
 
+func TestRequestContextSkillsStayInsideTheProject(t *testing.T) {
+	section := buildRequestContextAgentSkillsSection(&agentv1.RequestContext{
+		Env: &agentv1.RequestContextEnv{WorkspacePaths: []string{"/root/teapot"}},
+		SkillOptions: &agentv1.SkillOptions{
+			SkillDescriptors: []*agentv1.SkillDescriptor{
+				{
+					Name:           "superpowers-brainstorming",
+					Description:    "You MUST use this before any creative work.",
+					ReadmeFilePath: "/root/.cursor/skills/superpowers-brainstorming/SKILL.md",
+				},
+				{
+					Name:           "find-skills",
+					Description:    "Search for a skill that matches the task.",
+					ReadmeFilePath: "/root/.cursor/skills/find-skills/SKILL.md",
+				},
+				{
+					Name:           "teapot-review",
+					Description:    "Review teapot changes in this repository.",
+					ReadmeFilePath: "/root/teapot/.cursor/skills/teapot-review/SKILL.md",
+				},
+			},
+		},
+	})
+	if strings.Contains(section, "superpowers") || strings.Contains(section, "find-skills") {
+		t.Fatalf("user-level skill was injected: %s", section)
+	}
+	if !strings.Contains(section, "teapot-review") {
+		t.Fatalf("project skill missing: %s", section)
+	}
+}
+
 func TestBuildUserQueryReplayMessageEmpty(t *testing.T) {
 	if _, ok := BuildUserQueryReplayMessage("   "); ok {
 		t.Fatal("BuildUserQueryReplayMessage() ok = true for blank input")

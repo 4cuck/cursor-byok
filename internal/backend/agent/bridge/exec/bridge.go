@@ -10,6 +10,8 @@ import (
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
 	"cursor/internal/logger"
+
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // ExecApplyResult 表示一次执行桥结果归一化后的最小产物。
@@ -48,6 +50,8 @@ type OpenExecContext struct {
 type ExecBridge interface {
 	// OpenExec 打开一条执行桥请求。
 	OpenExec(openContext OpenExecContext, toolCall runtimecore.ToolInvocation) (*agentv1.AgentServerMessage, runtimecore.PendingExec, error)
+	// OpenNativeExec 原样转发 Cursor 账户上游的 exec。
+	OpenNativeExec(exec *agentv1.ExecServerMessage, toolCall runtimecore.ToolInvocation) (*agentv1.AgentServerMessage, runtimecore.PendingExec, error)
 	// OpenExecuteHook 打开一条 execute hook 请求。
 	OpenExecuteHook(request *agentv1.ExecuteHookRequest, execKind string) (*agentv1.AgentServerMessage, runtimecore.PendingExec, error)
 	// ApplyExecClientMessage 处理客户端执行结果。
@@ -357,6 +361,15 @@ func (bridge *Bridge) ApplyExecClientMessage(msg *agentv1.ExecClientMessage, pen
 		result.IsTerminal = true
 		return result, nil
 	case "shell":
+		if completed := msg.GetShellResult(); completed != nil {
+			raw, err := protojson.Marshal(completed)
+			if err != nil {
+				return ExecApplyResult{}, err
+			}
+			result.ToolResultPayload = string(raw)
+			result.IsTerminal = true
+			return result, nil
+		}
 		shellResult := msg.GetShellStream()
 		if shellResult == nil {
 			return ExecApplyResult{}, fmt.Errorf("shell stream payload is required")
@@ -441,6 +454,14 @@ func (bridge *Bridge) ApplyExecClientMessage(msg *agentv1.ExecClientMessage, pen
 			logger.Infof("exec bridge ignored unsupported shell stream event exec_id=%s tool_call_id=%s event_type=%T", strings.TrimSpace(pending.ExecID), strings.TrimSpace(pending.ToolCallID), event)
 			return result, nil
 		}
+	case "native":
+		raw, err := (protojson.MarshalOptions{EmitUnpopulated: false}).Marshal(msg)
+		if err != nil {
+			return ExecApplyResult{}, err
+		}
+		result.ToolResultPayload = string(raw)
+		result.IsTerminal = msg.GetMessage() != nil
+		return result, nil
 	default:
 		return ExecApplyResult{}, fmt.Errorf("unsupported pending exec kind: %s", pending.ExecKind)
 	}

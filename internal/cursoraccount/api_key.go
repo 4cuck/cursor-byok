@@ -1,7 +1,6 @@
 package cursoraccount
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,7 +12,8 @@ import (
 // Cursor 用户 API Key（Dashboard → API Keys，前缀 crsr_）不是 IDE 直接可用的
 // Bearer 凭据：api2.cursor.sh 的 aiserver.v1.* 只接受 WorkOS JWT。
 //
-// 两者之间的桥是 /auth/exchange_user_api_key：用 Bearer + {apiKey} 换一对
+// 两者之间的桥是 /auth/exchange_user_api_key：Authorization 用原始 key，
+// body 是空 JSON 对象，换一对
 // type=api_key_token 的 JWT（accessToken 与 refreshToken 是同一枚 token），
 // 有效期约 1 小时。该 JWT 可直接作为 IDE 控制面与模型面的 Bearer 身份。
 //
@@ -44,11 +44,10 @@ func (manager *Manager) ExchangeCursorAPIKey(ctx context.Context, apiKey string)
 	if !IsCursorAPIKey(apiKey) {
 		return credentials{}, accountError("account_import_invalid_api_key", "cursor api key must start with crsr_")
 	}
-	payload, err := json.Marshal(map[string]string{"apiKey": apiKey})
-	if err != nil {
-		return credentials{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, backendURL+apiKeyExchangePath, bytes.NewReader(payload))
+	// The agent host sends Authorization: Bearer <api key> and an empty JSON
+	// object. The key is not a body field. See loginWithApiKey in
+	// cursor-agent-host/dist/6907.js.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, backendURL+apiKeyExchangePath, strings.NewReader("{}"))
 	if err != nil {
 		return credentials{}, err
 	}

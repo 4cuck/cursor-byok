@@ -849,7 +849,11 @@ func DecodeGrepToolArgs(raw []byte, toolCallID string) (*agentv1.GrepArgs, error
 		ToolCallId: strings.TrimSpace(toolCallID),
 	}
 	if result.Pattern == "" {
-		return result, fmt.Errorf("Grep pattern is required")
+		mode := strings.TrimSpace(result.GetOutputMode())
+		if strings.TrimSpace(result.GetGlob()) != "" && (mode == "" || mode == "files_with_matches") {
+			return result, nil
+		}
+		return result, fmt.Errorf("pattern is empty. Pass \".\" to match every line.")
 	}
 	if contextBefore, found, err := runtimecore.ReadInt32Arg(args, "-B"); err != nil {
 		return result, err
@@ -1314,7 +1318,7 @@ func buildGlobToolArgs(args map[string]any) *agentv1.GlobToolArgs {
 }
 
 func readGlobPatternArg(args map[string]any) string {
-	return strings.TrimSpace(readStringArg(args, "glob_pattern", "globPattern", "pattern"))
+	return strings.TrimSpace(readStringArg(args, "glob_pattern", "globPattern", "glob", "pattern"))
 }
 
 func readGlobTargetDirectoryArg(args map[string]any) string {

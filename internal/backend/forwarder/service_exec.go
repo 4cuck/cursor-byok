@@ -185,7 +185,52 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 	if err := service.publishExecCheckpoint(stream, pending); err != nil {
 		return err
 	}
-	return service.reconcileStream(stream)
+	if preface := shellStreamOutputPreface(pending, intent.ExecClientMessage); preface != nil {
+		if !deliverCursorToolResult(stream, pending.ToolCallID, preface) {
+			return service.reconcileStream(stream)
+		}
+	}
+	if !deliverCursorToolResult(stream, pending.ToolCallID, intent.ExecClientMessage) {
+		if repeatedMissingFileRead(stream, pending, result.ToolResultPayload) {
+			stream.mu.Lock()
+			if stream.PendingProviderCompletion != nil {
+				stream.PendingProviderCompletion.Disposition = completionDispositionCompleteAfterExternal
+			}
+			stream.mu.Unlock()
+		}
+		return service.reconcileStream(stream)
+	}
+	return nil
+}
+
+func repeatedMissingFileRead(stream *ActiveStream, pending runtimecore.PendingExec, payload string) bool {
+	if stream == nil || !strings.EqualFold(strings.TrimSpace(deriveToolNameFromPendingExec(pending)), "Read") {
+		return false
+	}
+	path := missingReadPath(payload)
+	if path == "" {
+		return false
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.MissingReadCounts == nil {
+		stream.MissingReadCounts = map[string]int{}
+	}
+	stream.MissingReadCounts[path]++
+	return stream.MissingReadCounts[path] >= 2
+}
+
+func missingReadPath(payload string) string {
+	const prefix = "file not found:"
+	text := strings.TrimSpace(payload)
+	if !strings.HasPrefix(strings.ToLower(text), prefix) {
+		return ""
+	}
+	rest := strings.TrimSpace(text[len(prefix):])
+	if cut := strings.Index(rest, ". "); cut >= 0 {
+		rest = rest[:cut]
+	}
+	return strings.ToLower(strings.TrimSpace(rest))
 }
 
 func execMessageHasEffectiveProgress(message *agentv1.ExecClientMessage, result execbridge.ExecApplyResult) bool {
@@ -499,7 +544,7 @@ func (service *Service) recoverNonStreamingExecAfterStreamClose(stream *ActiveSt
 	if err := service.publishCheckpointForce(stream.RequestID, stream.ConversationID); err != nil {
 		return err
 	}
-	return service.reconcileStream(stream)
+	return service.continueCursorToolOrReconcile(stream, pending.ToolCallID, nil)
 }
 
 func (service *Service) observeShellStreamClose(stream *ActiveStream, pending runtimecore.PendingExec) {

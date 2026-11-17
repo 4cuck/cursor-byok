@@ -9,7 +9,6 @@ import {
   beginCursorAccountLogin,
   cancelCursorAccountLogin,
   checkCursorAccountHealth,
-  getCursorAccountPlan,
   clearCursorAccountLock,
   deleteCursorAccounts,
   executeCursorAccountRecoveryExport,
@@ -212,26 +211,41 @@ function healthPanelClass(entry) {
   }
 }
 
-async function loadPlan(account) {
-  if (!account?.id) return;
-  planLoadingIDs.value = { ...planLoadingIDs.value, [account.id]: true };
+const accountStatusCacheKey = "cursor-byok.cursor-account-status";
+
+function readAccountStatusCache() {
   try {
-    const plan = await getCursorAccountPlan(account.id);
-    plansByID.value = { ...plansByID.value, [account.id]: plan };
-  } catch (error) {
-    plansByID.value = {
-      ...plansByID.value,
-      [account.id]: { usageKnown: false, message: toUserError(error) || "Could not load plan." },
-    };
-  } finally {
-    const next = { ...planLoadingIDs.value };
-    delete next[account.id];
-    planLoadingIDs.value = next;
+    const parsed = JSON.parse(localStorage.getItem(accountStatusCacheKey) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
   }
 }
 
-function loadPlans(list) {
-  for (const account of list || []) void loadPlan(account);
+function restoreAccountStatus(list) {
+  const cache = readAccountStatusCache();
+  const health = {};
+  const plans = {};
+  for (const account of list || []) {
+    const saved = cache[account?.id];
+    if (!saved) continue;
+    if (saved.health) health[account.id] = saved.health;
+    if (saved.plan) plans[account.id] = saved.plan;
+  }
+  healthByID.value = health;
+  plansByID.value = plans;
+}
+
+function persistAccountStatus() {
+  const cache = readAccountStatusCache();
+  for (const account of accounts.value || []) {
+    if (!account?.id) continue;
+    cache[account.id] = {
+      health: healthByID.value[account.id] || null,
+      plan: plansByID.value[account.id] || null,
+    };
+  }
+  localStorage.setItem(accountStatusCacheKey, JSON.stringify(cache));
 }
 
 async function runHealthCheck(account) {
@@ -243,6 +257,7 @@ async function runHealthCheck(account) {
     const id = result?.accountId || target.id;
     healthByID.value = { ...healthByID.value, [id]: result };
     if (result?.plan) plansByID.value = { ...plansByID.value, [id]: result.plan };
+    persistAccountStatus();
   } catch (error) {
     healthByID.value = {
       ...healthByID.value,
@@ -274,13 +289,14 @@ async function showActionError(title, error) {
 async function reloadAccounts() {
   const listed = await listCursorAccounts();
   accounts.value = Array.isArray(listed) ? listed : [];
-  loadPlans(accounts.value);
+  restoreAccountStatus(accounts.value);
 }
 
 // 账号变更后仅广播刷新事件；余额同步由后端在账号变更钩子中后台执行，
 // 前端不再重复触发全量上游查询（此前会触发 2-3 轮重复同步）。
 async function afterAccountChanged() {
   await reloadAccounts();
+  restoreAccountStatus(accounts.value);
   notifyAccountSync();
 }
 
@@ -351,6 +367,12 @@ async function syncCursorAccountModels() {
       return { count: 0, error: "Cursor returned no models for this account", label: ownerLabel };
     }
     await removeModelAdaptersWhere(isSharedCursorAccountAdapter);
+    const keep = new Set(adapters.map((adapter) => adapter.id));
+    await removeModelAdaptersWhere((adapter) => (
+      String(adapter?.source || "").trim().toLowerCase() === "cursor_account"
+      && String(adapter?.cursorAccountID || "").trim() === String(current.id)
+      && !keep.has(adapter.id)
+    ));
     const result = await saveModelAdaptersBatch(adapters);
     if (!result?.ok) {
       return { count: 0, error: result?.error || "Saving the model list failed", label: ownerLabel };
@@ -613,10 +635,7 @@ async function handleDelete(account) {
 onMounted(() => {
   void reloadAccounts()
     .then(() => {
-      // Surface the real state without requiring a click. Failures stay silent
-      // here: the explicit "Check status" button reports errors.
-      const current = accounts.value.find((item) => item.isCurrent);
-      if (current) void runHealthCheck(current);
+      restoreAccountStatus(accounts.value);
     })
     .catch((error) => {
       void showActionError("Failed to load accounts", error);

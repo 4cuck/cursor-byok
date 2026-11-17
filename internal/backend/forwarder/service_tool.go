@@ -19,6 +19,7 @@ import (
 
 // handleToolInvocation 把模型产生的工具意图转成 exec/interaction 请求并下发给客户端。
 func (service *Service) handleToolInvocation(stream *ActiveStream, invocation runtimecore.ToolInvocation) error {
+	armCursorToolContinuation(stream)
 	if err := providerLoopInterruptErr(nil, stream, invocation.ModelCallID); err != nil {
 		return err
 	}
@@ -143,6 +144,12 @@ func (service *Service) handleToolInvocation(stream *ActiveStream, invocation ru
 			return service.completePreDispatchToolError(stream, invocation, nil, false, false, cause)
 		}
 		return err
+	}
+	if len(invocation.NativeExec) > 0 {
+		rememberNativeExecSlot(stream, invocation)
+		if !nativeExecIsWrite(invocation.NativeExec) {
+			return service.dispatchNativeCursorExec(stream, invocation)
+		}
 	}
 	if isPatchEditToolName(trimmedToolName) {
 		if err := service.handlePatchEditToolInvocation(stream, invocation); err != nil {
