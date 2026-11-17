@@ -33,7 +33,9 @@ func shouldResumeAfterToolResults(finishReason string) bool {
 
 // parentAgentProviderPassSafetyLimit 是父 agent 单次回合 provider pass 的硬上限。
 // 正常 agent 回合的工具调用循环远低于该值；达到上限说明模型陷入死循环，兜底收口防止无限空转。
-const parentAgentProviderPassSafetyLimit = 200
+// 从 200 降至 50：Fix 1（AwaitShell 真实等待）使正常轮询路径不再消耗 pass，
+// 因此 50 对合法工作流已经绰绰有余，同时把死循环的最大代价压缩 4 倍。
+const parentAgentProviderPassSafetyLimit = 50
 
 // parentAgentProviderTurnDurationLimit 是父 agent 单次回合的墙钟时长兜底（自 handleRunIntent 起算）。
 const parentAgentProviderTurnDurationLimit = 3 * time.Hour
@@ -71,6 +73,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	stream.CurrentProviderToken++
 	currentToken := stream.CurrentProviderToken
 	stream.ProviderAccumulatedText = nil
+	stream.ProviderPassFlushedAssistantText = false
 	stream.ProviderAccumulatedReasoning = nil
 	stream.ProviderAccumulatedReasoningSignature = ""
 	stream.ProviderAccumulatedReasoningSignatureSource = ""

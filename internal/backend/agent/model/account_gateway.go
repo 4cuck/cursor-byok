@@ -7,10 +7,17 @@ import (
 	"strings"
 )
 
-var ErrCursorAccountModelGatewayUnavailable = errors.New("Cursor 账户模型执行通道尚未完成协议验证")
+var ErrCursorAccountModelGatewayUnavailable = errors.New("Cursor account model gateway is not configured")
 
-// AccountModelGateway 将来承载 Cursor 账户模型的专用 relay。它与 OpenAI、Anthropic、
-// Gemini 适配器刻意分离，避免 OAuth 凭据被误当作第三方 API Key。
+// CursorAccountAuthorizer supplies the signed-in Cursor account bearer token.
+// Account models must not reuse a third-party API key.
+type CursorAccountAuthorizer interface {
+	Authorization(context.Context) (string, error)
+}
+
+// AccountModelGateway carries Cursor account model calls. It stays separate from
+// the OpenAI, Anthropic, and Gemini adapters so OAuth credentials are never sent
+// as a third-party API key.
 type AccountModelGateway interface {
 	Stream(context.Context, StreamRequest, func(ModelEvent) error) error
 }
@@ -25,5 +32,13 @@ func (unavailableAccountModelGateway) Stream(_ context.Context, req StreamReques
 	if modelID == "" {
 		return ErrCursorAccountModelGatewayUnavailable
 	}
-	return fmt.Errorf("%w：模型 %s 已隔离，完成真实 RunSSE/BidiAppend 上游抓包验证后才能启用", ErrCursorAccountModelGatewayUnavailable, modelID)
+	return fmt.Errorf("%w: model %s", ErrCursorAccountModelGatewayUnavailable, modelID)
+}
+
+// EnableCursorAccountGateway turns on the verified Cursor agent relay.
+func (router *Router) EnableCursorAccountGateway(auth CursorAccountAuthorizer) {
+	if router == nil || auth == nil {
+		return
+	}
+	router.accountGateway = newCursorAccountGateway(auth)
 }

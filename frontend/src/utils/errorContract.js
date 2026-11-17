@@ -1,25 +1,58 @@
+// Error presentation for the whole UI. Messages are English by design: the
+// backend returns stable codes, and this module turns them into one readable
+// sentence. Keep user-visible copy here so localization stays in one place.
+
 const STATUS_CODES = new Map([
-  [400, { code: "configuration_invalid", kind: "configuration", disposition: "blocked", message: "请求参数或配置不正确，请检查配置" }],
-  [401, { code: "authentication_required", kind: "authentication", disposition: "blocked", message: "密钥无效或暂无可用额度，请检查供应商配置" }],
-  [402, { code: "quota_exceeded", kind: "quota", disposition: "blocked", message: "当前供应商额度不足，请检查账户或切换供应商" }],
-  [403, { code: "permission_denied", kind: "permission", disposition: "blocked", message: "当前密钥没有访问权限，请检查供应商配置" }],
-  [404, { code: "resource_not_found", kind: "configuration", disposition: "blocked", message: "模型或接口地址不存在，请检查配置" }],
-  [408, { code: "timeout", kind: "timeout", disposition: "retryable", message: "请求超时，正在准备恢复" }],
-  [429, { code: "rate_limited", kind: "rate_limit", disposition: "retryable", message: "请求过于频繁，稍后会自动重试" }],
-  [500, { code: "provider_unavailable", kind: "provider", disposition: "retryable", message: "供应商暂时不可用，正在准备恢复" }],
-  [502, { code: "provider_unavailable", kind: "provider", disposition: "retryable", message: "供应商网关异常，正在准备恢复" }],
-  [503, { code: "provider_unavailable", kind: "provider", disposition: "retryable", message: "供应商暂时不可用，正在准备恢复" }],
-  [504, { code: "provider_unavailable", kind: "provider", disposition: "retryable", message: "供应商网关超时，正在准备恢复" }],
+  [400, { code: "configuration_invalid", kind: "configuration", disposition: "blocked", message: "Request parameters or configuration are invalid. Check your configuration." }],
+  [401, { code: "authentication_required", kind: "authentication", disposition: "blocked", message: "Invalid key or no available quota. Check the supplier configuration." }],
+  [402, { code: "quota_exceeded", kind: "quota", disposition: "blocked", message: "This supplier has insufficient quota. Check the account or switch suppliers." }],
+  [403, { code: "permission_denied", kind: "permission", disposition: "blocked", message: "This key has no access permission. Check the supplier configuration." }],
+  [404, { code: "resource_not_found", kind: "configuration", disposition: "blocked", message: "The model or endpoint does not exist. Check your configuration." }],
+  [408, { code: "timeout", kind: "timeout", disposition: "retryable", message: "Request timed out. Preparing recovery." }],
+  [429, { code: "rate_limited", kind: "rate_limit", disposition: "retryable", message: "Too many requests. It will retry automatically shortly." }],
+  [500, { code: "provider_unavailable", kind: "provider", disposition: "retryable", message: "Supplier is temporarily unavailable. Preparing recovery." }],
+  [502, { code: "provider_unavailable", kind: "provider", disposition: "retryable", message: "Supplier gateway error. Preparing recovery." }],
+  [503, { code: "provider_unavailable", kind: "provider", disposition: "retryable", message: "Supplier is temporarily unavailable. Preparing recovery." }],
+  [504, { code: "provider_unavailable", kind: "provider", disposition: "retryable", message: "Supplier gateway timed out. Preparing recovery." }],
 ]);
 
 export const MCP_WORKSPACE_TRUST_REQUIRED_CODE = "mcp_workspace_trust_required";
+
+// Account switch / import codes from internal/cursoraccount. These cross the
+// Wails boundary as text only, so they are matched by name. Without this table
+// every account failure degraded into a generic "service error" message.
+const ACCOUNT_ERROR_MESSAGES = new Map([
+  ["account_not_found", "Account not found. Refresh the account list."],
+  ["account_unusable", "This account is missing required credentials. Import it again."],
+  ["account_switch_busy", "A switch is already in progress. Try again in a moment."],
+  ["confirmation_expired", "The confirmation expired. Start the switch again."],
+  ["confirmation_already_used", "This confirmation was already used. Start the switch again."],
+  ["cursor_process_probe_failed", "Could not detect the Cursor process. Verify Cursor is installed."],
+  ["cursor_state_db_missing", "Cursor's state database was not found. Launch Cursor once first."],
+  ["cursor_process_close_failed", "Could not close Cursor. Quit it manually and retry."],
+  ["account_switch_backup_failed", "Backing up Cursor state failed. Nothing was modified."],
+  ["account_switch_write_failed", "Writing the Cursor login state failed."],
+  ["account_switch_verify_failed", "Verifying the written Cursor login state failed."],
+  ["cursor_restart_failed", "Restarting Cursor failed. Rolled back to the previous state."],
+  ["account_switch_rollback_failed", "The switch failed and the rollback also failed. Check Cursor manually."],
+  ["account_import_api_key_rejected", "This API key is invalid or has been revoked."],
+  ["account_import_api_key_unreachable", "Could not reach Cursor. Check your network or proxy."],
+  ["account_import_api_key_invalid_response", "Cursor returned an unexpected response for this API key."],
+  ["account_import_identity_unavailable", "Could not read this account's identity. Verify the credential is valid."],
+  ["account_import_invalid_api_key", "API key format is invalid. It must start with crsr_."],
+  ["account_import_empty", "No credential was provided."],
+  ["account_import_too_large", "The credential is too large."],
+  ["account_import_invalid_schema", "The import file does not match the expected format."],
+  ["account_import_local_state_missing", "No local Cursor login state was found to import."],
+  ["account_export_empty", "No accounts were selected to export."],
+]);
 
 const DIAGNOSTIC_CODES = new Map([
   [MCP_WORKSPACE_TRUST_REQUIRED_CODE, {
     code: MCP_WORKSPACE_TRUST_REQUIRED_CODE,
     kind: "authorization",
     disposition: "user_action_required",
-    message: "工作区 MCP 配置需要确认信任后才能连接",
+    message: "The workspace MCP configuration must be trusted before connecting.",
   }],
 ]);
 
@@ -74,13 +107,25 @@ export function normalizeClientError(error, { operation = "ui.operation", traceI
   const mapped = DIAGNOSTIC_CODES.get(diagnosticCode) || STATUS_CODES.get(status);
   let result = mapped;
 
+  // Account codes take precedence over HTTP status mapping: the backend has no
+  // status code for these, only a stable name.
+  if (!result) {
+    for (const [code, message] of ACCOUNT_ERROR_MESSAGES) {
+      if (structuredCode === code || lower.includes(code)) {
+        result = { code, kind: "account", disposition: "blocked", message };
+        break;
+      }
+    }
+  }
+
   if (!result && (lower.includes("cancel") || lower.includes("aborted") || lower.includes("已取消"))) {
-    result = { code: "canceled", kind: "canceled", disposition: "canceled", message: "操作已取消" };
+    result = { code: "canceled", kind: "canceled", disposition: "canceled", message: "The operation was cancelled." };
   } else if (!result && (lower.includes("timeout") || lower.includes("deadline") || lower.includes("超时"))) {
-    result = { code: "timeout", kind: "timeout", disposition: "retryable", message: "请求超时，正在准备恢复" };
+    result = { code: "timeout", kind: "timeout", disposition: "retryable", message: "Request timed out. Preparing recovery." };
   } else if (!result && (
-    // 后端错误文本跨 Wails 直传，中英文网络措辞都要覆盖，
-    // 否则本地代理未启动这类故障会被兜底成「服务发生异常」。
+    // Backend error text crosses the Wails boundary verbatim, so cover both
+    // English and Chinese network wording; otherwise "proxy not running"
+    // degrades into a generic service error.
     lower.includes("network")
     || lower.includes("connection")
     || lower.includes("proxyconnect")
@@ -93,10 +138,10 @@ export function normalizeClientError(error, { operation = "ui.operation", traceI
     || lower.includes("代理")
     || /\beof\b/.test(lower)
   )) {
-    result = { code: "network_error", kind: "network", disposition: "retryable", message: "暂时无法连接服务，正在准备恢复" };
+    result = { code: "network_error", kind: "network", disposition: "retryable", message: "Cannot reach the service right now. Preparing recovery." };
   }
 
-  result ||= { code: "internal_error", kind: "internal", disposition: "fatal", message: "服务发生异常，请重试或导出诊断信息" };
+  result ||= { code: "internal_error", kind: "internal", disposition: "fatal", message: "The service encountered an error. Retry or export diagnostic information." };
   const structuredKind = typeof error?.kind === "string" ? error.kind.trim() : "";
   const structuredDisposition = typeof error?.disposition === "string" ? error.disposition.trim() : "";
   const structuredUserMessage = typeof error?.userMessage === "string" ? error.userMessage.trim() : "";

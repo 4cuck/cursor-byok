@@ -7,7 +7,8 @@ import (
 )
 
 // DefaultLocale is the safe fallback when a request does not carry locale data.
-const DefaultLocale = "zh-CN"
+// English is the default so diagnostics stay readable regardless of the UI locale.
+const DefaultLocale = "en-US"
 
 const (
 	LocaleZhCN = "zh-CN"

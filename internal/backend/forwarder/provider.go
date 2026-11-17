@@ -172,6 +172,32 @@ type DefaultProviderGateway struct {
 	router modeladapter.ModelAdapterRouter
 }
 
+// EnableCursorAccountModels routes Cursor account models through the verified
+// agent relay instead of the isolated stub.
+func (gateway *DefaultProviderGateway) EnableCursorAccountModels(auth modeladapter.CursorAccountAuthorizer) {
+	if gateway == nil || auth == nil {
+		return
+	}
+	router, ok := gateway.router.(*modeladapter.Router)
+	if !ok {
+		return
+	}
+	router.EnableCursorAccountGateway(auth)
+}
+
+// EnableCursorAccountModels turns on Cursor account model calls for this service.
+func (service *Service) EnableCursorAccountModels(auth modeladapter.CursorAccountAuthorizer) {
+	if service == nil || auth == nil {
+		return
+	}
+	switch gateway := service.provider.(type) {
+	case *DefaultProviderGateway:
+		gateway.EnableCursorAccountModels(auth)
+	case *cachingProviderGateway:
+		gateway.EnableCursorAccountModels(auth)
+	}
+}
+
 // NewProviderGateway 创建默认 provider 网关。
 //
 // 当 resolver 能提供本地响应缓存配置时，返回一个精确匹配响应缓存包装网关；

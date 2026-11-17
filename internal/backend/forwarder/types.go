@@ -16,35 +16,35 @@ import (
 )
 
 type ConversationFile struct {
-	SchemaVersion                   int                                   `json:"schema_version,omitempty"`
-	ConversationID                  string                                `json:"conversation_id"`
-	RootConversationID              string                                `json:"root_conversation_id"`
-	ParentConversationID            string                                `json:"parent_conversation_id"`
-	ParentToolCallID                string                                `json:"parent_tool_call_id"`
-	SubagentTypeName                string                                `json:"subagent_type_name,omitempty"`
-	AgentTranscriptsFolder          string                                `json:"agent_transcripts_folder,omitempty"`
-	Mode                            string                                `json:"mode"`
-	ContextVersion                  int64                                 `json:"context_version,omitempty"`
-	CurrentLoopID                   string                                `json:"current_loop_id,omitempty"`
-	CurrentLoopStatus               string                                `json:"current_loop_status,omitempty"`
-	CurrentRequestID                string                                `json:"current_request_id,omitempty"`
-	CurrentTurnSeq                  int64                                 `json:"current_turn_seq,omitempty"`
-	TokenDetailsUsedTokens          uint32                                `json:"token_details_used_tokens,omitempty"`
-	TokenDetailsMaxTokens           uint32                                `json:"token_details_max_tokens,omitempty"`
-	AutoCompactionPending           bool                                  `json:"auto_compaction_pending,omitempty"`
-	AutoCompactionPromptTokens      int64                                 `json:"auto_compaction_prompt_tokens,omitempty"`
-	AutoCompactionReserveTokens     int64                                 `json:"auto_compaction_reserve_tokens,omitempty"`
-	AutoCompactionTriggeredAt       string                                `json:"auto_compaction_triggered_at,omitempty"`
-	AutoCompactionSourceModelCallID string                                `json:"auto_compaction_source_model_call_id,omitempty"`
+	SchemaVersion                   int    `json:"schema_version,omitempty"`
+	ConversationID                  string `json:"conversation_id"`
+	RootConversationID              string `json:"root_conversation_id"`
+	ParentConversationID            string `json:"parent_conversation_id"`
+	ParentToolCallID                string `json:"parent_tool_call_id"`
+	SubagentTypeName                string `json:"subagent_type_name,omitempty"`
+	AgentTranscriptsFolder          string `json:"agent_transcripts_folder,omitempty"`
+	Mode                            string `json:"mode"`
+	ContextVersion                  int64  `json:"context_version,omitempty"`
+	CurrentLoopID                   string `json:"current_loop_id,omitempty"`
+	CurrentLoopStatus               string `json:"current_loop_status,omitempty"`
+	CurrentRequestID                string `json:"current_request_id,omitempty"`
+	CurrentTurnSeq                  int64  `json:"current_turn_seq,omitempty"`
+	TokenDetailsUsedTokens          uint32 `json:"token_details_used_tokens,omitempty"`
+	TokenDetailsMaxTokens           uint32 `json:"token_details_max_tokens,omitempty"`
+	AutoCompactionPending           bool   `json:"auto_compaction_pending,omitempty"`
+	AutoCompactionPromptTokens      int64  `json:"auto_compaction_prompt_tokens,omitempty"`
+	AutoCompactionReserveTokens     int64  `json:"auto_compaction_reserve_tokens,omitempty"`
+	AutoCompactionTriggeredAt       string `json:"auto_compaction_triggered_at,omitempty"`
+	AutoCompactionSourceModelCallID string `json:"auto_compaction_source_model_call_id,omitempty"`
 	// UsageAnchor* 是「真实用量锚点」：最近一次非投影 parent pass 发送时的 compiled
 	// 消息数与 provider 实报输入 token（input + cache 读写）。估算侧以此真实值锚定
 	// 历史前缀、只对增量消息做启发式，消除全量估算随历史累积的系统性漂移。
-	UsageAnchorTokens              uint32                                `json:"usage_anchor_tokens,omitempty"`
-	UsageAnchorMessageCount        int                                   `json:"usage_anchor_message_count,omitempty"`
-	CurrentPlanText                 string                                `json:"current_plan_text,omitempty"`
-	CurrentPlans                    map[string]*agentv1.PlanRegistryEntry `json:"current_plans,omitempty"`
-	MCPTools                        []*agentv1.McpToolDefinition          `json:"mcp_tools,omitempty"`
-	MCPToolsInitialized             bool                                  `json:"mcp_tools_initialized,omitempty"`
+	UsageAnchorTokens       uint32                                `json:"usage_anchor_tokens,omitempty"`
+	UsageAnchorMessageCount int                                   `json:"usage_anchor_message_count,omitempty"`
+	CurrentPlanText         string                                `json:"current_plan_text,omitempty"`
+	CurrentPlans            map[string]*agentv1.PlanRegistryEntry `json:"current_plans,omitempty"`
+	MCPTools                []*agentv1.McpToolDefinition          `json:"mcp_tools,omitempty"`
+	MCPToolsInitialized     bool                                  `json:"mcp_tools_initialized,omitempty"`
 	// LastActivatedSkills 记录该会话最近一次稀疏激活注入的技能名列表，
 	// 供子代理会话读取作保底候选（调用链传递）。不进 model-visible history，不影响 replay prefix。
 	LastActivatedSkills []string                   `json:"last_activated_skills,omitempty"`
@@ -202,10 +202,13 @@ type ActiveStream struct {
 	// attachDelegationRunStates 会把它写入 RUNNING run 的 detail 随 checkpoint 推送，
 	// 让 Cursor Task 卡片在运行期间持续显示实时进度；detail 变化会改变 wire hash，
 	// 避免周期性 checkpoint 被 duplicate 去重跳过（否则卡片停留在 stopped）。
-	DelegationRunProgress                       map[string]string
-	TimerTokens                                 map[string]uint64
-	StreamTimers                                map[string]*time.Timer
-	ProviderAccumulatedText                     []byte
+	DelegationRunProgress   map[string]string
+	TimerTokens             map[string]uint64
+	StreamTimers            map[string]*time.Timer
+	ProviderAccumulatedText []byte
+	// ProviderPassFlushedAssistantText 表示本 provider pass 已经把可见正文写给客户端。
+	// send_final_summary 出现在正文之后时不能再续写一轮，否则同一答复会显示两次。
+	ProviderPassFlushedAssistantText            bool
 	ProviderTextDeltaCount                      int
 	ProviderAccumulatedReasoning                []byte
 	ProviderAccumulatedReasoningSignature       string
@@ -223,8 +226,8 @@ type ActiveStream struct {
 	// PromptAnchorMessageCount 记录本 pass 发送的 compiled 消息数（仅非投影 parent pass），
 	// pass 结束时与真实 usage 配对写入会话的用量锚点；0 表示本 pass 不更新锚点
 	// （投影/委派等旁路请求的消息与 canonical 不一致，写入会污染锚点）。
-	PromptAnchorMessageCount                    int
-	ProviderTerminalToolInvocation              bool
+	PromptAnchorMessageCount       int
+	ProviderTerminalToolInvocation bool
 	// SummaryEmittedTurn 记录最近一次已向 RunSSE 流发送会话摘要事件的 turnSeq，
 	// 用于同一 turn 多次 provider pass 时去重（摘要每轮只发一次，内容取最终快照）。
 	SummaryEmittedTurn int64
@@ -242,6 +245,14 @@ type ActiveStream struct {
 	// OrphanCancelDeferrals 记录 orphan-cancel 因「客户端断连但任务仍在推进」而延期复查的次数，
 	// 达到 orphanCancelMaxDeferrals 后不再延期，按 interrupted 收口并释放流。
 	OrphanCancelDeferrals int
+
+	// PendingAwaits 保存尚未完成的 AwaitShell 延迟等待（key = shell_id）。
+	// 当 shell 仍在运行且 block_until_ms 尚未到期时，工具调用挂起于此，
+	// 由 streamTimerAwaitShell 定期唤醒检查，完成后再发 tool_result。
+	PendingAwaits map[string]pendingAwaitShell
+	// AwaitDeadlines 保存每个 shell_id 对应的绝对截止时刻，
+	// 仅在第一次 defer 时写入，后续复查不重置。
+	AwaitDeadlines map[string]time.Time
 	// TurnStaleGraceStartedAt 记录 turn-staleness 看门狗「阶段一（重对齐 append 序列）」的触发时刻。
 	// 零值表示尚未进入宽限期；非零值表示已重对齐过序列并进入宽限，再次触发即走「阶段二强制收口」。
 	TurnStaleGraceStartedAt time.Time
@@ -287,9 +298,9 @@ type ActiveStream struct {
 	lastDoomLoopSignature string
 	pendingDoomLoopNotice string
 
-	Backlog                         []StreamEvent
-	BacklogStartCursor              int
-	Subscribers                     map[string]*StreamSubscriber
+	Backlog                []StreamEvent
+	BacklogStartCursor     int
+	Subscribers            map[string]*StreamSubscriber
 	CheckpointConversation *ConversationFile
 	// CheckpointPersistMu 串行化 persistCheckpointDelta 的完整执行（快照→落盘→回写）
 	// 以及 applyCompactionPlan 的 ReplaceEntries：防抖定时器回调与同步 flush 并发时，

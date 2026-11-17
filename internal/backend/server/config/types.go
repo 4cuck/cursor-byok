@@ -63,11 +63,14 @@ type ModelAdapterConfig struct {
 	GroupName       string `json:"groupName,omitempty" yaml:"groupName,omitempty"`
 	Type            string `json:"type" yaml:"type"`
 	// SupplierID 是品牌供应商标识，仅用于模板、展示和供应商专用能力；协议仍由 Type 决定。
-	SupplierID    string `json:"supplierID,omitempty" yaml:"supplierID,omitempty"`
-	ProtocolMode  string `json:"protocolMode,omitempty" yaml:"protocolMode,omitempty"`
-	ProtocolGroup string `json:"protocolGroup,omitempty" yaml:"protocolGroup,omitempty"`
-	BaseURL       string `json:"baseURL" yaml:"baseURL"`
-	APIKey        string `json:"apiKey" yaml:"apiKey"`
+	SupplierID string `json:"supplierID,omitempty" yaml:"supplierID,omitempty"`
+	// CursorAccountID 是这批模型所属的 cursor-byok 账户 id。多个 Cursor 账户
+	// 不能共用一个 cursor_account 标签，否则目录、测试和用量会混在一起。
+	CursorAccountID string `json:"cursorAccountID,omitempty" yaml:"cursorAccountID,omitempty"`
+	ProtocolMode    string `json:"protocolMode,omitempty" yaml:"protocolMode,omitempty"`
+	ProtocolGroup   string `json:"protocolGroup,omitempty" yaml:"protocolGroup,omitempty"`
+	BaseURL         string `json:"baseURL" yaml:"baseURL"`
+	APIKey          string `json:"apiKey" yaml:"apiKey"`
 	// APIKeys 是同渠道的备用密钥池（不含主 apiKey）：请求时按渠道维度轮换使用，
 	// 每把密钥是独立的冷却单元——单把限流/失效只冷却该密钥，不拖垮整个模型。
 	APIKeys         []string `json:"apiKeys,omitempty" yaml:"apiKeys,omitempty"`
@@ -354,7 +357,7 @@ func NormalizeConfig(input Config) (Config, error) {
 	output.BillingQuery = input.BillingQuery
 	output.ExternalAPI = normalizeExternalAPIConfig(input.ExternalAPI)
 	if output.ExternalAPI.Enabled && output.ExternalAPI.APIKey == "" {
-		return Config{}, fmt.Errorf("外部 API 启用时 apiKey 不能为空")
+		return Config{}, fmt.Errorf("apiKey is required when the external API is enabled")
 	}
 	output.LocalResponseCache = normalizeLocalResponseCache(input.LocalResponseCache)
 	output.MirrorCapture = input.MirrorCapture
@@ -469,33 +472,43 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 	for _, item := range input {
 		source := legacyruntime.NormalizeModelSource(item.Source)
 		if source == "" {
-			return nil, i18n.NewError("error.model_adapter.source_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 source 仅支持 third_party 或 cursor_account")
+			return nil, i18n.NewError("error.model_adapter.source_invalid", i18n.CodeInvalidModelAdapter, "Model adapter source must be third_party or cursor_account")
 		}
 		credentialScope := legacyruntime.NormalizeCredentialScope(source, item.CredentialScope)
 		if credentialScope == "" {
-			return nil, i18n.NewError("error.model_adapter.credential_scope_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 credentialScope 与 source 不匹配")
+			return nil, i18n.NewError("error.model_adapter.credential_scope_invalid", i18n.CodeInvalidModelAdapter, "Model adapter credentialScope does not match source")
 		}
 		if source == legacyruntime.ModelSourceCursorAccount {
 			if strings.TrimSpace(item.BaseURL) != "" || strings.TrimSpace(item.APIKey) != "" || item.CustomHeadersEnabled || strings.TrimSpace(item.CustomHeadersJSON) != "" {
-				return nil, i18n.NewError("error.model_adapter.cursor_account_credentials", i18n.CodeInvalidModelAdapter, "Cursor 账户模型不能配置第三方接口地址、API Key 或自定义请求头")
+				return nil, i18n.NewError("error.model_adapter.cursor_account_credentials", i18n.CodeInvalidModelAdapter, "Cursor account models cannot set a third-party base URL, API key, or custom headers")
+			}
+			ownerLabel := cursorAccountOwnerLabel(item.SupplierID, item.GroupName)
+			groupName := strings.TrimSpace(item.GroupName)
+			if groupName == "" || groupName == "Cursor account" {
+				groupName = ownerLabel
 			}
 			next := ModelAdapterConfig{
 				Source:              source,
 				CredentialScope:     credentialScope,
 				DisplayName:         strings.TrimSpace(item.DisplayName),
-				GroupName:           strings.TrimSpace(item.GroupName),
+				GroupName:           groupName,
 				Type:                legacyruntime.ModelSourceCursorAccount,
+				SupplierID:          ownerLabel,
+				CursorAccountID:     strings.TrimSpace(item.CursorAccountID),
 				TooltipData:         strings.TrimSpace(item.TooltipData),
 				ModelID:             strings.TrimSpace(item.ModelID),
+				ReasoningEffort:     strings.TrimSpace(item.ReasoningEffort),
 				ContextWindowTokens: modelcontext.Resolve(item.ModelID, normalizeMaxCompletionTokens(item.ContextWindowTokens)),
 				MaxCompletionTokens: normalizeMaxCompletionTokens(item.MaxCompletionTokens),
 				Pricing:             item.Pricing,
+				FastMode:            item.FastMode,
+				Disabled:            item.Disabled,
 			}
 			if next.TooltipData == "" {
 				next.TooltipData = "Cursor 账户模型"
 			}
 			if next.DisplayName == "" || next.ModelID == "" {
-				return nil, i18n.NewError("error.model_adapter.cursor_account_identity", i18n.CodeInvalidModelAdapter, "Cursor 账户模型 displayName 和 modelID 不能为空")
+				return nil, i18n.NewError("error.model_adapter.cursor_account_identity", i18n.CodeInvalidModelAdapter, "Cursor account model displayName and modelID are required")
 			}
 			identity := modelAdapterConfigIdentity(next)
 			explicitID := strings.TrimSpace(item.ID)
@@ -504,13 +517,13 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				next.ID = identity
 			}
 			if ownerIdentity, exists := identityByAdapterID[next.ID]; exists && ownerIdentity != identity {
-				return nil, i18n.NewError("error.model_adapter.id_duplicate", i18n.CodeInvalidModelAdapter, "模型适配器 id 不能被不同模型配置重复使用")
+				return nil, i18n.NewError("error.model_adapter.id_duplicate", i18n.CodeInvalidModelAdapter, "Model adapter id cannot be reused by a different model configuration")
 			}
 			if existingIndex, exists := channelIndexByIdentity[identity]; exists {
 				if explicitID != "" {
 					existing := normalized[existingIndex]
 					if previousExplicitID := explicitIDByIdentity[identity]; previousExplicitID != "" && previousExplicitID != explicitID {
-						return nil, i18n.NewError("error.model_adapter.id_conflict", i18n.CodeInvalidModelAdapter, "相同模型连接不能配置不同的持久化 id")
+						return nil, i18n.NewError("error.model_adapter.id_conflict", i18n.CodeInvalidModelAdapter, "The same model connection cannot use different persisted ids")
 					}
 					if existing.ID != explicitID {
 						delete(identityByAdapterID, existing.ID)
@@ -605,27 +618,27 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		next.CustomHeadersJSON = strings.TrimSpace(item.CustomHeadersJSON)
 		switch {
 		case next.DisplayName == "":
-			return nil, i18n.NewError("error.model_adapter.display_name_required", i18n.CodeInvalidModelAdapter, "模型适配器 displayName 不能为空")
+			return nil, i18n.NewError("error.model_adapter.display_name_required", i18n.CodeInvalidModelAdapter, "Model adapter displayName is required")
 		case next.Type == "":
-			return nil, i18n.NewError("error.model_adapter.type_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 type 仅支持 openai、anthropic 或 gemini")
+			return nil, i18n.NewError("error.model_adapter.type_invalid", i18n.CodeInvalidModelAdapter, "Model adapter type must be openai, anthropic, or gemini")
 		case next.APIKey == "":
-			return nil, i18n.NewError("error.model_adapter.api_key_required", i18n.CodeInvalidModelAdapter, "模型适配器 apiKey 不能为空")
+			return nil, i18n.NewError("error.model_adapter.api_key_required", i18n.CodeInvalidModelAdapter, "Model adapter apiKey is required")
 		case next.TooltipData == "":
-			return nil, i18n.NewError("error.model_adapter.tooltip_required", i18n.CodeInvalidModelAdapter, "模型适配器 tooltipData 不能为空")
+			return nil, i18n.NewError("error.model_adapter.tooltip_required", i18n.CodeInvalidModelAdapter, "Model adapter tooltipData is required")
 		case next.ModelID == "":
-			return nil, i18n.NewError("error.model_adapter.model_id_required", i18n.CodeInvalidModelAdapter, "模型适配器 modelID 不能为空")
+			return nil, i18n.NewError("error.model_adapter.model_id_required", i18n.CodeInvalidModelAdapter, "Model adapter modelID is required")
 		case next.ProtocolMode == "":
-			return nil, i18n.NewError("error.model_adapter.protocol_mode_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 protocolMode 仅支持 auto 或 fixed")
+			return nil, i18n.NewError("error.model_adapter.protocol_mode_invalid", i18n.CodeInvalidModelAdapter, "Model adapter protocolMode must be auto or fixed")
 		case next.ProtocolGroup == "":
-			return nil, i18n.NewError("error.model_adapter.protocol_group_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 protocolGroup 与 provider 不匹配")
+			return nil, i18n.NewError("error.model_adapter.protocol_group_invalid", i18n.CodeInvalidModelAdapter, "Model adapter protocolGroup does not match the provider")
 		case next.Type == "openai" && next.ReasoningEffort == "":
-			return nil, i18n.NewError("error.model_adapter.reasoning_effort_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 reasoningEffort 仅支持 low、medium、high、xhigh、max 或自定义思考档位（customThinkingEfforts）内的值")
+			return nil, i18n.NewError("error.model_adapter.reasoning_effort_invalid", i18n.CodeInvalidModelAdapter, "Model adapter reasoningEffort must be low, medium, high, xhigh, or max 或自定义思考档位（customThinkingEfforts）内的值")
 		case next.Type == "gemini" && next.ReasoningEffort == "":
-			return nil, i18n.NewError("error.model_adapter.reasoning_effort_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 reasoningEffort 仅支持 low、medium、high、xhigh、max")
+			return nil, i18n.NewError("error.model_adapter.reasoning_effort_invalid", i18n.CodeInvalidModelAdapter, "Model adapter reasoningEffort must be low, medium, high, xhigh, or max")
 		case next.Type == "openai" && next.OpenAIEndpoint == "":
 			return nil, i18n.NewError("error.model_adapter.endpoint_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 openAIEndpoint 仅支持 /v1/responses、/v1/chat/completions 或 /custom（自定义路径）")
 		case next.Type == "openai" && next.OpenAIRequestGroup == "":
-			return nil, i18n.NewError("error.model_adapter.request_group_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 openAIRequestGroup 仅支持 responses、chat_completions、chat_completions_compat")
+			return nil, i18n.NewError("error.model_adapter.request_group_invalid", i18n.CodeInvalidModelAdapter, "Model adapter openAIRequestGroup must be responses, chat_completions, or chat_completions_compat")
 		case next.Type == "openai" && next.OpenAIExtraParamsEnabled:
 			if err := validateJSONMap(next.OpenAIExtraParamsJSON, "openAIExtraParamsJSON"); err != nil {
 				return nil, err
@@ -635,7 +648,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				return nil, err
 			}
 		case next.AnthropicAuthMode == "":
-			return nil, i18n.NewError("error.model_adapter.anthropic_auth_mode_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 anthropicAuthMode 仅支持 legacy_dual、auto、x_api_key 或 bearer")
+			return nil, i18n.NewError("error.model_adapter.anthropic_auth_mode_invalid", i18n.CodeInvalidModelAdapter, "Model adapter anthropicAuthMode must be legacy_dual, auto, x_api_key, or bearer")
 		case next.Type == "anthropic" && next.AnthropicExtraParamsEnabled:
 			if err := validateJSONMap(next.AnthropicExtraParamsJSON, "anthropicExtraParamsJSON"); err != nil {
 				return nil, err
@@ -643,7 +656,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		case next.ToolCallMode != "" && next.ToolCallMode != modeladapter.ToolCallModeNative && next.ToolCallMode != modeladapter.ToolCallModeXMLPrompt:
 			return nil, i18n.NewError("error.model_adapter.tool_call_mode_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 toolCallMode 仅支持 native 或 xml_prompt")
 		case next.Type == "anthropic" && next.AnthropicThinkingEffort == "":
-			return nil, i18n.NewError("error.model_adapter.thinking_effort_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 anthropicThinkingEffort 仅支持 low、medium、high、xhigh、max")
+			return nil, i18n.NewError("error.model_adapter.thinking_effort_invalid", i18n.CodeInvalidModelAdapter, "Model adapter anthropicThinkingEffort must be low, medium, high, xhigh, or max")
 		}
 		identity := modelAdapterConfigDedupeIdentity(next)
 		explicitID := strings.TrimSpace(item.ID)
@@ -652,13 +665,13 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			next.ID = modelAdapterConfigStableID(next)
 		}
 		if ownerIdentity, exists := identityByAdapterID[next.ID]; exists && ownerIdentity != identity {
-			return nil, i18n.NewError("error.model_adapter.id_duplicate", i18n.CodeInvalidModelAdapter, "模型适配器 id 不能被不同模型配置重复使用")
+			return nil, i18n.NewError("error.model_adapter.id_duplicate", i18n.CodeInvalidModelAdapter, "Model adapter id cannot be reused by a different model configuration")
 		}
 		if existingIndex, exists := channelIndexByIdentity[identity]; exists {
 			existing := normalized[existingIndex]
 			if explicitID != "" {
 				if previousExplicitID := explicitIDByIdentity[identity]; previousExplicitID != "" && previousExplicitID != explicitID {
-					return nil, i18n.NewError("error.model_adapter.id_conflict", i18n.CodeInvalidModelAdapter, "相同模型连接不能配置不同的持久化 id")
+					return nil, i18n.NewError("error.model_adapter.id_conflict", i18n.CodeInvalidModelAdapter, "The same model connection cannot use different persisted ids")
 				}
 				if existing.ID != explicitID {
 					delete(identityByAdapterID, existing.ID)
@@ -752,7 +765,31 @@ func modelAdapterConfigIdentity(adapter ModelAdapterConfig) string {
 		adapter.DisplayName,
 		adapter.OpenAIEndpoint,
 	)
-	return channelID + "\n" + strings.TrimSpace(adapter.GroupName)
+	return channelID + "\n" + strings.TrimSpace(adapter.GroupName) + "\n" + strings.TrimSpace(adapter.CursorAccountID)
+}
+
+// cursorAccountOwnerLabel keeps cursor_account and cursor_accountN, and folds
+// the old shared "Cursor account" bucket back to cursor_account.
+func cursorAccountOwnerLabel(supplierID, groupName string) string {
+	for _, candidate := range []string{strings.TrimSpace(supplierID), strings.TrimSpace(groupName)} {
+		if candidate == "cursor_account" || cursorAccountSlotLabel(candidate) {
+			return candidate
+		}
+	}
+	return "cursor_account"
+}
+
+func cursorAccountSlotLabel(value string) bool {
+	rest, ok := strings.CutPrefix(value, "cursor_account")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func modelAdapterConfigDedupeIdentity(adapter ModelAdapterConfig) string {
@@ -828,14 +865,14 @@ func firstNonEmptyProtocolGroup(values ...string) string {
 func validateJSONMap(value string, fieldName string) error {
 	text := strings.TrimSpace(value)
 	if text == "" {
-		return i18n.NewError("error.model_adapter.json_required", i18n.CodeInvalidModelAdapter, fmt.Sprintf("模型适配器 %s 不能为空", fieldName))
+		return i18n.NewError("error.model_adapter.json_required", i18n.CodeInvalidModelAdapter, fmt.Sprintf("Model adapter %s is required", fieldName))
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
-		return i18n.NewError("error.model_adapter.json_required", i18n.CodeInvalidModelAdapter, fmt.Sprintf("模型适配器 %s 必须是合法 JSON 对象", fieldName))
+		return i18n.NewError("error.model_adapter.json_required", i18n.CodeInvalidModelAdapter, fmt.Sprintf("Model adapter %s must be a valid JSON object", fieldName))
 	}
 	if parsed == nil {
-		return i18n.NewError("error.model_adapter.json_required", i18n.CodeInvalidModelAdapter, fmt.Sprintf("模型适配器 %s 必须是 JSON 对象", fieldName))
+		return i18n.NewError("error.model_adapter.json_required", i18n.CodeInvalidModelAdapter, fmt.Sprintf("Model adapter %s must be a JSON object", fieldName))
 	}
 	return nil
 }
@@ -847,11 +884,11 @@ func validateHeadersJSON(value string) error {
 	}
 	var parsed map[string]string
 	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
-		return i18n.NewError("error.model_adapter.headers_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 customHeadersJSON 的值必须是字符串")
+		return i18n.NewError("error.model_adapter.headers_invalid", i18n.CodeInvalidModelAdapter, "Model adapter customHeadersJSON values must be strings")
 	}
 	for key := range parsed {
 		if strings.TrimSpace(key) == "" {
-			return i18n.NewError("error.model_adapter.headers_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 customHeadersJSON 的请求头名称不能为空")
+			return i18n.NewError("error.model_adapter.headers_invalid", i18n.CodeInvalidModelAdapter, "Model adapter customHeadersJSON header names cannot be empty")
 		}
 	}
 	return nil
@@ -896,18 +933,18 @@ func normalizeListenAddr(value string, defaultValue string, fieldName string, al
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return "", fmt.Errorf("%s 必须是 host:port 格式", fieldName)
+		return "", fmt.Errorf("%s must be in host:port format", fieldName)
 	}
 	host = strings.TrimSpace(host)
 	if host == "" {
-		return "", fmt.Errorf("%s host 不能为空", fieldName)
+		return "", fmt.Errorf("%s host cannot be empty", fieldName)
 	}
 	parsedPort, err := strconv.Atoi(port)
 	if err != nil || parsedPort < 1 || parsedPort > 65535 {
-		return "", fmt.Errorf("%s port 必须在 1-65535 之间", fieldName)
+		return "", fmt.Errorf("%s port must be between 1 and 65535", fieldName)
 	}
 	if !allowNonLoopback && !isLoopbackListenHost(host) {
-		return "", fmt.Errorf("%s 仅允许环回地址（127.0.0.1 或 ::1）；绑定非环回地址需设置 allowNonLoopbackListen: true", fieldName)
+		return "", fmt.Errorf("%s only allows loopback addresses (127.0.0.1 or ::1); set allowNonLoopbackListen: true to bind a non-loopback address", fieldName)
 	}
 	return net.JoinHostPort(host, strconv.Itoa(parsedPort)), nil
 }

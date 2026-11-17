@@ -494,17 +494,33 @@ func buildGenerateImageToolCall(args *agentv1.GenerateImageArgs, result *agentv1
 }
 
 // handleSendFinalSummaryToolInvocation 处理 Cursor 的 send_final_summary 工具：
-// final_summary 只用于会话列表摘要，不是面向用户的最终答复。完成工具调用后由
-// provider 继续生成正文；重复调用由通用工具调用熔断处理，不能提前终止正常续写。
+// final_summary 只用于会话列表摘要，不是面向用户的最终答复。
+// 本 pass 还没有可见正文时，完成工具后继续让 provider 写真正的回复。
+// 正文已经流式展示过时，再续写会把同一段回复打印第二次，所以这一轮到此结束。
 func (service *Service) handleSendFinalSummaryToolInvocation(stream *ActiveStream, invocation runtimecore.ToolInvocation) error {
+	alreadyVisible := false
+	if stream != nil {
+		stream.mu.Lock()
+		alreadyVisible = stream.ProviderPassFlushedAssistantText
+		stream.mu.Unlock()
+	}
 	args, decodeErr := decodeSendFinalSummaryArgs(invocation.ArgsJSON)
+	var err error
 	if decodeErr != nil {
 		result, payload := buildSendFinalSummaryErrorResult(decodeErr.Error())
-		return service.completeImmediateToolResult(stream, invocation, payload, buildSendFinalSummaryToolCall(args, result))
+		err = service.completeImmediateToolResult(stream, invocation, payload, buildSendFinalSummaryToolCall(args, result))
+	} else {
+		summary := strings.TrimSpace(args.GetFinalSummary())
+		result, payload := buildSendFinalSummarySuccessResult(summary)
+		err = service.completeImmediateToolResult(stream, invocation, payload, buildSendFinalSummaryToolCall(args, result))
 	}
-	summary := strings.TrimSpace(args.GetFinalSummary())
-	result, payload := buildSendFinalSummarySuccessResult(summary)
-	return service.completeImmediateToolResult(stream, invocation, payload, buildSendFinalSummaryToolCall(args, result))
+	if err != nil {
+		return err
+	}
+	if alreadyVisible {
+		markProviderTerminalToolInvocation(stream)
+	}
+	return nil
 }
 
 type sendFinalSummaryArgsJSON struct {

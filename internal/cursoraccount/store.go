@@ -35,6 +35,11 @@ type CursorAccountSummary struct {
 	Tags             []string `json:"tags,omitempty"`
 	IsCurrent        bool     `json:"isCurrent"`
 	LastUsedAtUnixMS int64    `json:"lastUsedAtUnixMs,omitempty"`
+	// Lock state. Cursor caps how many distinct devices may use one account
+	// within 24 hours; once tripped, requests fail with "Too many computers"
+	// and keep failing until the window rolls over.
+	LockedUntilUnixMS int64  `json:"lockedUntilUnixMs,omitempty"`
+	LockReason        string `json:"lockReason,omitempty"`
 }
 
 // AccountStore is the restricted on-disk account library under <root>/cursor-accounts/.
@@ -54,6 +59,10 @@ type accountRecord struct {
 	LastUsedAt   int64    `json:"lastUsedAtUnixMs,omitempty"`
 	AccessToken  string   `json:"accessToken"`
 	RefreshToken string   `json:"refreshToken"`
+	// Lock state, persisted so a restart does not reset the cooldown.
+	LockedUntilUnixMS int64  `json:"lockedUntilUnixMs,omitempty"`
+	LockReason        string `json:"lockReason,omitempty"`
+	LockedAtUnixMS    int64  `json:"lockedAtUnixMs,omitempty"`
 }
 
 type accountIndex struct {
@@ -67,6 +76,10 @@ type indexEntry struct {
 	Tags             []string `json:"tags,omitempty"`
 	CreatedAt        int64    `json:"createdAt,omitempty"`
 	LastUsedAtUnixMS int64    `json:"lastUsedAtUnixMs,omitempty"`
+	// Mirrored into the index so List() can report lock state without opening
+	// every account file.
+	LockedUntilUnixMS int64  `json:"lockedUntilUnixMs,omitempty"`
+	LockReason        string `json:"lockReason,omitempty"`
 }
 
 type currentPointer struct {
@@ -193,6 +206,69 @@ func (s *AccountStore) UpdateTags(id string, tags []string) (CursorAccountSummar
 		return CursorAccountSummary{}, err
 	}
 	return s.updateTagsLocked(id, tags)
+}
+
+// MarkAccountLocked records that Cursor refused this account for device-count
+// reasons. The cooldown is persisted so restarting the app does not let the
+// user hammer the account again immediately.
+func (s *AccountStore) MarkAccountLocked(id, reason string, until time.Time) (CursorAccountSummary, error) {
+	if s == nil {
+		return CursorAccountSummary{}, fmt.Errorf("account store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.migrateIfNeededLocked(); err != nil {
+		return CursorAccountSummary{}, err
+	}
+	return s.setLockLocked(id, reason, until.UnixMilli())
+}
+
+// ClearAccountLock removes the cooldown. Used by the explicit "try anyway"
+// action and when a request finally succeeds.
+func (s *AccountStore) ClearAccountLock(id string) (CursorAccountSummary, error) {
+	if s == nil {
+		return CursorAccountSummary{}, fmt.Errorf("account store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.migrateIfNeededLocked(); err != nil {
+		return CursorAccountSummary{}, err
+	}
+	return s.setLockLocked(id, "", 0)
+}
+
+// setLockLocked mutates the lock fields on the record, the account file and the
+// index entry, so List() and LoadCurrentCredentials() stay consistent.
+// setLockLocked mutates the lock fields on the account file and its index entry,
+// so List() and LoadCurrentCredentials() stay consistent.
+func (s *AccountStore) setLockLocked(id, reason string, untilUnixMS int64) (CursorAccountSummary, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return CursorAccountSummary{}, fmt.Errorf("account id is empty")
+	}
+	record, err := s.readAccountLocked(id)
+	if err != nil {
+		return CursorAccountSummary{}, err
+	}
+	record.LockReason = strings.TrimSpace(reason)
+	record.LockedUntilUnixMS = untilUnixMS
+	if untilUnixMS > 0 {
+		record.LockedAtUnixMS = time.Now().UnixMilli()
+	} else {
+		record.LockedAtUnixMS = 0
+	}
+	if err := s.replaceRecordLocked(record); err != nil {
+		return CursorAccountSummary{}, err
+	}
+	records, err := s.loadRecordsLocked()
+	if err != nil {
+		return CursorAccountSummary{}, err
+	}
+	if err := s.writeIndexLocked(records); err != nil {
+		return CursorAccountSummary{}, err
+	}
+	currentID, _ := s.readCurrentIDLocked()
+	return recordToSummary(record, currentID == id), nil
 }
 
 func (s *AccountStore) Delete(req CursorAccountDeleteRequest) error {
@@ -517,7 +593,7 @@ func (s *AccountStore) upsertLocked(value credentials) (CursorAccountSummary, er
 			records[matched].AuthID = value.AuthID
 		}
 		records[matched].AccessToken = value.AccessToken
-		if value.RefreshToken != "" && (matchedByAuthID || records[matched].RefreshToken == "") {
+		if value.RefreshToken != "" && (matchedByAuthID || records[matched].RefreshToken == "") && !keepDurableAPIKey(records[matched].RefreshToken, value.RefreshToken) {
 			records[matched].RefreshToken = value.RefreshToken
 		}
 		records[matched].LastUsedAt = now
@@ -619,6 +695,12 @@ func (s *AccountStore) setCurrentLocked(id string) (CursorAccountSummary, error)
 	return recordToSummary(record, true), nil
 }
 
+// keepDurableAPIKey 拒绝用短期 JWT 覆盖已保存的 crsr_ key。
+// 那个 key 是唯一能在一小时后续期的凭据。
+func keepDurableAPIKey(existing, incoming string) bool {
+	return IsCursorAPIKey(existing) && incoming != "" && !IsCursorAPIKey(incoming)
+}
+
 func (s *AccountStore) updateCredentialsLocked(id string, value credentials) error {
 	if err := validateAccountID(id); err != nil {
 		return err
@@ -638,7 +720,7 @@ func (s *AccountStore) updateCredentialsLocked(id string, value credentials) err
 		return fmt.Errorf("access token is empty")
 	}
 	record.AccessToken = value.AccessToken
-	if value.RefreshToken != "" {
+	if value.RefreshToken != "" && !keepDurableAPIKey(record.RefreshToken, value.RefreshToken) {
 		record.RefreshToken = value.RefreshToken
 	}
 	if value.Email != "" {
@@ -649,6 +731,76 @@ func (s *AccountStore) updateCredentialsLocked(id string, value credentials) err
 	}
 	record.LastUsedAt = time.Now().UnixMilli()
 	return s.replaceRecordLocked(record)
+}
+
+type storedCredential struct {
+	ID    string
+	Creds credentials
+}
+
+// accountsForPresentedToken 找出客户端拿来刷新的 token 属于哪个已保存账号。
+// 先精确匹配 access/refresh，再匹配 JWT sub 与 AuthID，最后在只有一个
+// API Key 账号且出示的 JWT 已过期时回落到那个账号。
+func (s *AccountStore) accountsForPresentedToken(presented, subject string) ([]storedCredential, error) {
+	if s == nil {
+		return nil, fmt.Errorf("account store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.migrateIfNeededLocked(); err != nil {
+		return nil, err
+	}
+	records, err := s.loadRecordsLocked()
+	if err != nil {
+		return nil, err
+	}
+	presented = strings.TrimSpace(presented)
+	subject = strings.TrimSpace(subject)
+	exact := make([]storedCredential, 0, 1)
+	bySubject := make([]storedCredential, 0, 1)
+	apiKeys := make([]storedCredential, 0, 1)
+	for _, record := range records {
+		item := storedCredential{
+			ID: record.ID,
+			Creds: credentials{
+				AccessToken:  strings.TrimSpace(record.AccessToken),
+				RefreshToken: strings.TrimSpace(record.RefreshToken),
+				AuthID:       strings.TrimSpace(record.AuthID),
+				Email:        strings.TrimSpace(record.Email),
+			},
+		}
+		if presented != "" && (item.Creds.AccessToken == presented || item.Creds.RefreshToken == presented) {
+			exact = append(exact, item)
+		}
+		if authIDsMatch(item.Creds.AuthID, subject) {
+			bySubject = append(bySubject, item)
+		}
+		if IsCursorAPIKey(item.Creds.RefreshToken) {
+			apiKeys = append(apiKeys, item)
+		}
+	}
+	if len(exact) > 0 {
+		return exact, nil
+	}
+	if len(bySubject) > 0 {
+		return bySubject, nil
+	}
+	if len(apiKeys) == 1 && tokenNeedsRefresh(presented, time.Now()) {
+		return apiKeys, nil
+	}
+	return nil, nil
+}
+
+func authIDsMatch(stored, subject string) bool {
+	stored = strings.TrimSpace(stored)
+	subject = strings.TrimSpace(subject)
+	if stored == "" || subject == "" {
+		return false
+	}
+	if stored == subject {
+		return true
+	}
+	return strings.HasSuffix(subject, "|"+stored) || strings.HasSuffix(stored, "|"+subject)
 }
 
 func (s *AccountStore) updateTagsLocked(id string, tags []string) (CursorAccountSummary, error) {
@@ -981,12 +1133,14 @@ func indexEntryFromRecord(record accountRecord) indexEntry {
 		tags = []string{}
 	}
 	return indexEntry{
-		ID:               record.ID,
-		Email:            record.Email,
-		AuthIDHint:       record.AuthID,
-		Tags:             tags,
-		CreatedAt:        record.CreatedAt,
-		LastUsedAtUnixMS: record.LastUsedAt,
+		ID:                record.ID,
+		Email:             record.Email,
+		AuthIDHint:        record.AuthID,
+		Tags:              tags,
+		CreatedAt:         record.CreatedAt,
+		LastUsedAtUnixMS:  record.LastUsedAt,
+		LockedUntilUnixMS: record.LockedUntilUnixMS,
+		LockReason:        record.LockReason,
 	}
 }
 
@@ -996,12 +1150,14 @@ func summaryFromIndexEntry(entry indexEntry, isCurrent bool) CursorAccountSummar
 		tags = []string{}
 	}
 	return CursorAccountSummary{
-		ID:               entry.ID,
-		Email:            entry.Email,
-		AuthIDHint:       entry.AuthIDHint,
-		Tags:             tags,
-		IsCurrent:        isCurrent,
-		LastUsedAtUnixMS: entry.LastUsedAtUnixMS,
+		ID:                entry.ID,
+		Email:             entry.Email,
+		AuthIDHint:        entry.AuthIDHint,
+		Tags:              tags,
+		IsCurrent:         isCurrent,
+		LastUsedAtUnixMS:  entry.LastUsedAtUnixMS,
+		LockedUntilUnixMS: entry.LockedUntilUnixMS,
+		LockReason:        entry.LockReason,
 	}
 }
 

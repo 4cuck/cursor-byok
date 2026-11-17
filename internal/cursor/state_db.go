@@ -68,22 +68,22 @@ type CursorAuthImportResult struct {
 func ImportCursorAuthState(sourcePath, destinationPath string) (CursorAuthImportResult, error) {
 	sourcePath, err := filepath.Abs(sourcePath)
 	if err != nil {
-		return CursorAuthImportResult{}, errors.New("定位真实 Cursor 登录态失败")
+		return CursorAuthImportResult{}, errors.New("Failed to locate the real Cursor login state")
 	}
 	destinationPath, err = filepath.Abs(destinationPath)
 	if err != nil {
-		return CursorAuthImportResult{}, errors.New("定位隔离 Cursor 登录态失败")
+		return CursorAuthImportResult{}, errors.New("Failed to locate the isolated Cursor login state")
 	}
 	if sameCursorStateDBPath(sourcePath, destinationPath) {
-		return CursorAuthImportResult{}, errors.New("隔离 Cursor 登录态路径不能与真实状态库相同")
+		return CursorAuthImportResult{}, errors.New("The isolated login state path must differ from the real state database")
 	}
 	if info, err := os.Stat(sourcePath); err != nil || info.IsDir() {
-		return CursorAuthImportResult{}, errors.New("读取真实 Cursor 登录态失败")
+		return CursorAuthImportResult{}, errors.New("Failed to read the real Cursor login state")
 	}
 	if _, err := os.Stat(destinationPath); err == nil {
-		return CursorAuthImportResult{}, errors.New("隔离 Cursor 登录态已存在")
+		return CursorAuthImportResult{}, errors.New("The isolated Cursor login state already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return CursorAuthImportResult{}, errors.New("检查隔离 Cursor 登录态失败")
+		return CursorAuthImportResult{}, errors.New("Failed to check the isolated Cursor login state")
 	}
 
 	values, err := readCursorAuthStateReadOnly(sourcePath)
@@ -116,7 +116,7 @@ func readCursorAuthStateReadOnly(sourcePath string) (map[string]string, error) {
 	}
 	db, err := sql.Open("sqlite", sourceURL.String())
 	if err != nil {
-		return nil, errors.New("读取真实 Cursor 登录态失败")
+		return nil, errors.New("Failed to read the real Cursor login state")
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
@@ -124,7 +124,7 @@ func readCursorAuthStateReadOnly(sourcePath string) (map[string]string, error) {
 
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", cursorStateSQLiteBusyTimeoutMS)); err != nil {
-		return nil, errors.New("读取真实 Cursor 登录态失败")
+		return nil, errors.New("Failed to read the real Cursor login state")
 	}
 
 	values := make(map[string]string, len(cursorAuthBackupKeys))
@@ -133,13 +133,13 @@ func readCursorAuthStateReadOnly(sourcePath string) (map[string]string, error) {
 		err := db.QueryRowContext(ctx, "SELECT value FROM ItemTable WHERE key = ?", key).Scan(&raw)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return nil, errors.New("真实 Cursor 登录态不完整")
+				return nil, errors.New("The real Cursor login state is incomplete")
 			}
-			return nil, errors.New("读取真实 Cursor 登录态失败")
+			return nil, errors.New("Failed to read the real Cursor login state")
 		}
 		value := strings.TrimSpace(string(raw))
 		if value == "" {
-			return nil, errors.New("真实 Cursor 登录态不完整")
+			return nil, errors.New("The real Cursor login state is incomplete")
 		}
 		values[key] = value
 	}
@@ -189,11 +189,11 @@ func ReadCursorAuth(path string) (CursorAuthValues, error) {
 
 func writeIsolatedCursorAuthState(destinationPath string, values map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o700); err != nil {
-		return errors.New("创建隔离 Cursor 登录态失败")
+		return errors.New("Failed to create the isolated Cursor login state")
 	}
 	db, err := sql.Open("sqlite", destinationPath)
 	if err != nil {
-		return errors.New("创建隔离 Cursor 登录态失败")
+		return errors.New("Failed to create the isolated Cursor login state")
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
@@ -201,15 +201,15 @@ func writeIsolatedCursorAuthState(destinationPath string, values map[string]stri
 
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", cursorStateSQLiteBusyTimeoutMS)); err != nil {
-		return errors.New("写入隔离 Cursor 登录态失败")
+		return errors.New("Failed to write the isolated Cursor login state")
 	}
 	if _, err := db.ExecContext(ctx, "CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)"); err != nil {
-		return errors.New("创建隔离 Cursor 登录态失败")
+		return errors.New("Failed to create the isolated Cursor login state")
 	}
 
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
-		return errors.New("写入隔离 Cursor 登录态失败")
+		return errors.New("Failed to write the isolated Cursor login state")
 	}
 	committed := false
 	defer func() {
@@ -219,11 +219,11 @@ func writeIsolatedCursorAuthState(destinationPath string, values map[string]stri
 	}()
 	for _, key := range cursorAuthBackupKeys {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO ItemTable(key, value) VALUES(?, ?)", key, values[key]); err != nil {
-			return errors.New("写入隔离 Cursor 登录态失败")
+			return errors.New("Failed to write the isolated Cursor login state")
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return errors.New("写入隔离 Cursor 登录态失败")
+		return errors.New("Failed to write the isolated Cursor login state")
 	}
 	committed = true
 	return nil
@@ -231,24 +231,31 @@ func writeIsolatedCursorAuthState(destinationPath string, values map[string]stri
 
 // InjectCursorUserInfo synchronizes the Cursor user-level auth cache used by the
 // Settings page. It does not modify the installed Cursor app bundle.
-func InjectCursorUserInfo(email, token string) error {
+// access 和 refresh 相同时用于占位会话；API Key 会话必须把短期 JWT 和原始
+// crsr_ key 分开写入，否则客户端一小时后会拿过期 JWT 去刷新。
+func InjectCursorUserInfo(email, accessToken, refreshToken string) error {
 	stateDBPath, err := resolveCursorStateDBPath()
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(stateDBPath), 0o755); err != nil {
-		return fmt.Errorf("创建 Cursor 状态目录失败: %w", err)
+		return fmt.Errorf("Failed to create the Cursor state directory: %w", err)
+	}
+	accessToken = strings.TrimSpace(accessToken)
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		refreshToken = accessToken
 	}
 
 	// 注入前备份官方账号状态（仅在备份不存在时抓取一次），
 	// 供停止服务/直连模式时 RestoreCursorUserInfo 恢复。
-	if err := backupCursorAuthState(stateDBPath, token, email); err != nil {
+	if err := backupCursorAuthState(stateDBPath, accessToken, refreshToken, email); err != nil {
 		logger.Errorf("backupCursorAuthState failed: %v", err)
 	}
 
-	values := buildCursorAuthStateValues(email, token)
+	values := buildCursorAuthStateValues(email, accessToken, refreshToken)
 	if err := syncCursorAuthStateDB(stateDBPath, values); err != nil {
-		return fmt.Errorf("同步 Cursor 状态库失败 path=%s: %w", stateDBPath, err)
+		return fmt.Errorf("Failed to sync the Cursor state database path=%s: %w", stateDBPath, err)
 	}
 
 	logger.Infof(
@@ -262,15 +269,19 @@ func InjectCursorUserInfo(email, token string) error {
 	return nil
 }
 
-func buildCursorAuthStateValues(email, token string) map[string]string {
+func buildCursorAuthStateValues(email, accessToken, refreshToken string) map[string]string {
 	email = strings.TrimSpace(email)
-	token = strings.TrimSpace(token)
+	accessToken = strings.TrimSpace(accessToken)
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		refreshToken = accessToken
+	}
 
 	return map[string]string{
-		"cursorAuth/accessToken":              token,
+		"cursorAuth/accessToken":              accessToken,
 		"cursorAuth/cachedEmail":              email,
 		"cursorAuth/cachedSignUpType":         cursorStateDefaultSignUpType,
-		"cursorAuth/refreshToken":             token,
+		"cursorAuth/refreshToken":             refreshToken,
 		"cursorAuth/stripeMembershipType":     cursorStateMembershipType,
 		"cursorAuth/stripeSubscriptionStatus": cursorStateSubscriptionStatus,
 	}
@@ -374,14 +385,54 @@ func cursorAuthBackupHasRealValue(backup map[string]any) bool {
 	return false
 }
 
+// isRotatedInjectedCursorAuth reports a previous cursor-byok injection.
+// Older injections stored the same JWT as access and refresh. API-key sessions
+// now store the short JWT as access and the crsr_ key as refresh. Either form
+// can rotate the access token without becoming a new official login.
+func isRotatedInjectedCursorAuth(stateDBPath, injectedAccess, injectedRefresh string) bool {
+	db, err := sql.Open("sqlite", stateDBPath)
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	var accessRaw, refreshRaw []byte
+	if err := db.QueryRow("SELECT value FROM ItemTable WHERE key = ?", "cursorAuth/accessToken").Scan(&accessRaw); err != nil {
+		return false
+	}
+	if err := db.QueryRow("SELECT value FROM ItemTable WHERE key = ?", "cursorAuth/refreshToken").Scan(&refreshRaw); err != nil {
+		return false
+	}
+	access := strings.TrimSpace(string(accessRaw))
+	refresh := strings.TrimSpace(string(refreshRaw))
+	injectedAccess = strings.TrimSpace(injectedAccess)
+	injectedRefresh = strings.TrimSpace(injectedRefresh)
+	if injectedRefresh == "" {
+		injectedRefresh = injectedAccess
+	}
+	if access == "" || refresh == "" {
+		return false
+	}
+	if refresh == injectedRefresh && injectedRefresh != injectedAccess {
+		return true
+	}
+	return access == refresh && access != injectedAccess && access != injectedRefresh
+}
+
 // isInjectedCursorAuthValue 判断 state.vscdb 中某键的当前值是否就是我们注入的
 // 模拟值（token/email 与注入参数一致）。若是，说明该键已被污染，备份记为 null。
-func isInjectedCursorAuthValue(key, value, injectedToken, injectedEmail string) bool {
+func isInjectedCursorAuthValue(key, value, injectedAccess, injectedRefresh, injectedEmail string) bool {
+	injectedAccess = strings.TrimSpace(injectedAccess)
+	injectedRefresh = strings.TrimSpace(injectedRefresh)
+	if injectedRefresh == "" {
+		injectedRefresh = injectedAccess
+	}
+	value = strings.TrimSpace(value)
 	switch key {
 	case "cursorAuth/accessToken", "cursorAuth/refreshToken":
-		return value != "" && value == injectedToken
+		return value != "" && (value == injectedAccess || value == injectedRefresh)
 	case "cursorAuth/cachedEmail":
-		return value != "" && value == injectedEmail
+		return value != "" && value == strings.TrimSpace(injectedEmail)
 	default:
 		return false
 	}
@@ -396,15 +447,15 @@ func isInjectedCursorAuthValue(key, value, injectedToken, injectedEmail string) 
 //   - 已有有效备份且账号未变：保留，不覆盖。
 //
 // 值为注入态/不存在时记为 null，恢复时删除对应键。
-func backupCursorAuthState(stateDBPath, injectedToken, injectedEmail string) error {
+func backupCursorAuthState(stateDBPath, injectedAccess, injectedRefresh, injectedEmail string) error {
 	backupPath := cursorAuthBackupPath()
 	if data, err := os.ReadFile(backupPath); err == nil {
 		var existing map[string]any
 		hasValidBackup := json.Unmarshal(data, &existing) == nil && cursorAuthBackupHasRealValue(existing)
 		if hasValidBackup {
-			changed, err := cursorAuthChangedSinceBackup(stateDBPath, existing, injectedToken, injectedEmail)
+			changed, err := cursorAuthChangedSinceBackup(stateDBPath, existing, injectedAccess, injectedRefresh, injectedEmail)
 			if err != nil {
-				logger.Errorf("backupCursorAuthState: 对比当前官方账号失败，保留既有备份 err=%v", err)
+				logger.Errorf("backupCursorAuthState: comparing the current official account failed; keeping the existing backup err=%v", err)
 				return nil
 			}
 			if !changed {
@@ -450,7 +501,7 @@ func backupCursorAuthState(stateDBPath, injectedToken, injectedEmail string) err
 	backup := map[string]any{}
 	for _, key := range cursorAuthBackupKeys {
 		value, ok := existing[key]
-		if !ok || isInjectedCursorAuthValue(key, value, injectedToken, injectedEmail) {
+		if !ok || isInjectedCursorAuthValue(key, value, injectedAccess, injectedRefresh, injectedEmail) {
 			backup[key] = nil
 		} else {
 			backup[key] = value
@@ -474,7 +525,7 @@ func backupCursorAuthState(stateDBPath, injectedToken, injectedEmail string) err
 // cursorAuthChangedSinceBackup 判断当前 state.vscdb 中的官方账号相对备份是否已变更
 // （用户重新登录了其他官方账号）。当前值仍为注入模拟值时视为未变更，
 // 避免把备份刷新成注入值/空值。任一备份键的当前值（排除注入态）与备份不一致即视为变更。
-func cursorAuthChangedSinceBackup(stateDBPath string, backup map[string]any, injectedToken, injectedEmail string) (bool, error) {
+func cursorAuthChangedSinceBackup(stateDBPath string, backup map[string]any, injectedAccess, injectedRefresh, injectedEmail string) (bool, error) {
 	db, err := sql.Open("sqlite", stateDBPath)
 	if err != nil {
 		return false, err
@@ -496,8 +547,8 @@ func cursorAuthChangedSinceBackup(stateDBPath string, backup map[string]any, inj
 		default:
 			return false, err
 		}
-		if isInjectedCursorAuthValue(key, current, injectedToken, injectedEmail) {
-			continue // 当前仍是注入模拟值，不算真实账号变更
+		if isInjectedCursorAuthValue(key, current, injectedAccess, injectedRefresh, injectedEmail) || isRotatedInjectedCursorAuth(stateDBPath, injectedAccess, injectedRefresh) {
+			continue // 当前仍是注入值（含已轮换的 API key JWT），不算真实账号变更
 		}
 		backupValue := ""
 		if text, ok := backup[key].(string); ok {
@@ -623,7 +674,7 @@ func RestoreCursorUserInfo() error {
 		return nil
 	}
 	if err := restoreCursorAuthStateDB(stateDBPath, values, removes); err != nil {
-		return fmt.Errorf("恢复 Cursor 状态库失败 path=%s: %w", stateDBPath, err)
+		return fmt.Errorf("Failed to restore the Cursor state database path=%s: %w", stateDBPath, err)
 	}
 	logger.Infof("restoreCursorUserInfo done path=%s restored=%d removed=%d", stateDBPath, len(values), len(removes))
 	return nil
@@ -641,7 +692,7 @@ func disableCursorStatsigGates(ctx context.Context, tx *sql.Tx) error {
 
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return fmt.Errorf("解析 Cursor Statsig bootstrap 失败: %w", err)
+		return fmt.Errorf("Failed to parse the Cursor Statsig bootstrap: %w", err)
 	}
 	if payload == nil {
 		// DB 值可能为 JSON null，Unmarshal 后保持 nil，写入会 panic。
@@ -664,7 +715,7 @@ func disableCursorStatsigGates(ctx context.Context, tx *sql.Tx) error {
 
 	updated, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("编码 Cursor Statsig bootstrap 失败: %w", err)
+		return fmt.Errorf("Failed to encode the Cursor Statsig bootstrap: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE ItemTable SET value = ? WHERE key = ?", updated, cursorStateStatsigBootstrapKey); err != nil {
 		return err
@@ -700,7 +751,7 @@ func cursorStateDJB2Hash(value string) string {
 func resolveCursorStateDBPath() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("获取用户目录失败: %w", err)
+		return "", fmt.Errorf("Failed to resolve the user home directory: %w", err)
 	}
 
 	switch runtime.GOOS {
@@ -719,6 +770,6 @@ func resolveCursorStateDBPath() (string, error) {
 		}
 		return filepath.Join(configDir, filepath.FromSlash(cursorStateDBRelativePath)), nil
 	default:
-		return "", fmt.Errorf("不支持的系统: %s", runtime.GOOS)
+		return "", fmt.Errorf("Unsupported platform: %s", runtime.GOOS)
 	}
 }

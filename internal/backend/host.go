@@ -38,16 +38,17 @@ const tabServerBaseURL = "https://tab.leokun.cn"
 const delegationExecutorProbeConcurrency = 3
 
 type Host struct {
-	store             *serverconfig.Store
-	listenAddr        string
-	configs           *serverconfig.Manager
-	executorRegistry  *delegation.ExecutorRegistry
-	executorMu        sync.Mutex
-	customExecutorIDs map[delegation.ExecutorID]struct{}
-	executorInstaller delegationExecutorInstaller
-	executorInstalls  map[delegation.ExecutorID]struct{}
-	healthHTTP        *http.Client
-	controlPlaneAuth  upstream.AuthorizationProvider
+	store               *serverconfig.Store
+	listenAddr          string
+	configs             *serverconfig.Manager
+	executorRegistry    *delegation.ExecutorRegistry
+	executorMu          sync.Mutex
+	customExecutorIDs   map[delegation.ExecutorID]struct{}
+	executorInstaller   delegationExecutorInstaller
+	executorInstalls    map[delegation.ExecutorID]struct{}
+	healthHTTP          *http.Client
+	controlPlaneAuth    upstream.AuthorizationProvider
+	deviceLimitReporter upstream.DeviceLimitReporter
 
 	runMu      sync.RWMutex
 	httpServer *http.Server
@@ -82,12 +83,17 @@ func NewHost(store *serverconfig.Store, controlPlaneAuth upstream.AuthorizationP
 		healthHTTP:        newLoopbackHTTPClient(),
 		controlPlaneAuth:  controlPlaneAuth,
 	}
+	// The account manager doubles as the device-limit reporter: it owns the
+	// per-account cooldown state that the UI renders.
+	if reporter, ok := controlPlaneAuth.(upstream.DeviceLimitReporter); ok {
+		host.deviceLimitReporter = reporter
+	}
 	if err := host.syncDelegationExecutors(cfg); err != nil {
 		return nil, err
 	}
 	configs.Subscribe(func(next serverconfig.Config) {
 		if err := host.syncDelegationExecutors(next); err != nil {
-			logger.Errorf("同步 delegation executor 配置失败 err=%v", err)
+			logger.Errorf("sync delegation executor config failed err=%v", err)
 		}
 	})
 	if err := host.rebuild(cfg); err != nil {
@@ -522,7 +528,7 @@ func (host *Host) Start() error {
 	}
 	listener, err := net.Listen("tcp", host.listenAddr)
 	if err != nil {
-		host.lastRunErr = fmt.Errorf("监听内置后端 %s 失败: %w", host.listenAddr, err)
+		host.lastRunErr = fmt.Errorf("Failed to listen for the built-in backend on %s: %w", host.listenAddr, err)
 		return host.lastRunErr
 	}
 	host.listenAddr = listener.Addr().String()
@@ -534,7 +540,7 @@ func (host *Host) Start() error {
 	safego.Go("backend:http-serve", func() {
 		logger.Infof("内置后端开始提供服务 listen_addr=%s", servingListener.Addr().String())
 		if err := servingServer.Serve(servingListener); err != nil && err != http.ErrServerClosed {
-			runErr := fmt.Errorf("内置后端在 %s 上异常退出: %w", servingListener.Addr().String(), err)
+			runErr := fmt.Errorf("The built-in backend exited unexpectedly on %s: %w", servingListener.Addr().String(), err)
 			host.runMu.Lock()
 			if host.httpServer == servingServer {
 				host.httpServer = nil
@@ -595,16 +601,16 @@ func (host *Host) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		inProcessErr := host.InProcessHealthCheck()
 		if inProcessErr == nil {
-			return fmt.Errorf("内置后端进程内健康检查成功，但本机 loopback 访问失败: %w", err)
+			return fmt.Errorf("In-process health check passed but loopback access failed: %w", err)
 		}
 		if runErr := host.LastRunError(); runErr != nil {
 			return runErr
 		}
-		return fmt.Errorf("内置后端 loopback 与进程内健康检查均失败: %w (in-process: %v)", err, inProcessErr)
+		return fmt.Errorf("Both loopback and in-process health checks failed for the built-in backend: %w (in-process: %v)", err, inProcessErr)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("内置后端健康检查返回状态码 %d", response.StatusCode)
+		return fmt.Errorf("Built-in backend health check returned status %d", response.StatusCode)
 	}
 	return nil
 }
@@ -666,6 +672,9 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 		host.agentModule.Service.CloseDebugRecorder()
 	}
 	agentModule := forwarder.NewModuleWithExecutorRegistry(appdata.HistoryRootPath(), host.configs, host.executorRegistry)
+	if agentModule != nil && agentModule.Service != nil {
+		agentModule.Service.EnableCursorAccountModels(host.controlPlaneAuth)
+	}
 	host.agentModule = agentModule
 	agentContractHandler := forwarder.NewAgentContractHandler(agentModule.Service, host.agentContractModels)
 	legacyBidiAppendProcedure := "/aiserver.v1.BidiService/BidiAppend"
@@ -673,6 +682,10 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 	routeDeps := upstream.Dependencies{
 		SystemSettingService: &serverSystemSettings{configs: host.configs},
 		HTTPClient:           netproxy.NewHTTPClient(30000 * time.Second),
+		DeviceLimitReporter:  host.deviceLimitReporter,
+	}
+	if refresher, ok := host.controlPlaneAuth.(upstream.SessionRefresher); ok {
+		routeDeps.SessionRefresher = refresher
 	}
 
 	host.mux = server.New(
@@ -1173,7 +1186,7 @@ func tabServerProcedure(pattern string, name string, protocol server.RouteOption
 		if ctx != nil && ctx.Request != nil && ctx.Request.URL != nil {
 			baseURL, err := url.Parse(tabServerBaseURL)
 			if err != nil {
-				return fmt.Errorf("解析 tab server 地址失败: %w", err)
+				return fmt.Errorf("Failed to parse the tab server address: %w", err)
 			}
 			targetURL := *ctx.Request.URL
 			targetURL.Scheme = baseURL.Scheme
@@ -1237,7 +1250,7 @@ func tabServerForwardAction(name string, deps upstream.Dependencies) server.Hand
 		if ctx != nil && ctx.Request != nil && ctx.Request.URL != nil {
 			baseURL, err := url.Parse(tabServerBaseURL)
 			if err != nil {
-				return fmt.Errorf("解析 tab server 地址失败: %w", err)
+				return fmt.Errorf("Failed to parse the tab server address: %w", err)
 			}
 			targetURL := *ctx.Request.URL
 			targetURL.Scheme = baseURL.Scheme
@@ -1278,7 +1291,7 @@ func cursorControlPlaneAction(
 			return fallback(ctx)
 		}
 		if ctx == nil || ctx.Request == nil || ctx.Request.URL == nil {
-			return fmt.Errorf("Cursor 控制面请求上下文无效")
+			return fmt.Errorf("Invalid Cursor control-plane request context")
 		}
 		targetURL := *ctx.Request.URL
 		targetURL.Scheme = "https"

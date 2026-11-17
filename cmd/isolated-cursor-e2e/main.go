@@ -161,7 +161,7 @@ func run(sourceConfigPath string, cursorPath string) error {
 			fmt.Printf("isolated_login_import=success imported_keys=%d\n", result.ImportedKeyCount)
 		}
 	} else {
-		if err := cursor.InjectCursorUserInfo(localruntime.InjectAccountEmail, localruntime.InjectAuthToken); err != nil {
+		if err := cursor.InjectCursorUserInfo(localruntime.InjectAccountEmail, localruntime.InjectAuthToken, localruntime.InjectAuthToken); err != nil {
 			return fmt.Errorf("注入隔离 Cursor 状态失败: %w", err)
 		}
 	}

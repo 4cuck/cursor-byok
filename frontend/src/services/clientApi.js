@@ -15,7 +15,9 @@ import {
   GetControlCenterOverview, ListCursorAccounts, ImportCursorAccount,
   PrepareCursorAccountRecoveryExport, ExecuteCursorAccountRecoveryExport,
   SetCurrentCursorAccount, UpdateCursorAccountTags, DeleteCursorAccounts,
-  PrepareCursorClientAccountSwitch, ExecuteCursorClientAccountSwitch,
+  ClearCursorAccountLock, CheckCursorAccountHealth, GetCursorAccountPlan,
+  PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
+  FetchCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
   ListRequestSources, BuildRequestComparison, ExportSanitizedRequestComparison,
   GetRoutingPolicy, SaveRoutingPolicy, PreviewRoutingDecision, GetRoutingDecisionHistory,
@@ -80,7 +82,9 @@ const desktopMethods = {
   GetControlCenterOverview, ListCursorAccounts, ImportCursorAccount,
   PrepareCursorAccountRecoveryExport, ExecuteCursorAccountRecoveryExport,
   SetCurrentCursorAccount, UpdateCursorAccountTags, DeleteCursorAccounts,
-  PrepareCursorClientAccountSwitch, ExecuteCursorClientAccountSwitch,
+  ClearCursorAccountLock, CheckCursorAccountHealth, GetCursorAccountPlan,
+  PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
+  FetchCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
   ListRequestSources, BuildRequestComparison, ExportSanitizedRequestComparison,
   GetRoutingPolicy, SaveRoutingPolicy, PreviewRoutingDecision, GetRoutingDecisionHistory,
@@ -249,12 +253,93 @@ export function updateCursorAccountTags(accountID, tags) {
   return withApiLogging("UpdateCursorAccountTags", { accountID }, () => desktopOrMockRaw(() => UpdateCursorAccountTags(accountID, tags), "@bindings/cursor/internal/bridge/proxyservice.js", "UpdateCursorAccountTags", [accountID, tags]));
 }
 
+// Ends a device-limit cooldown early. The UI exposes this as "try anyway": the
+// user accepts that another attempt may fail if Cursor's window is still open.
+export function clearCursorAccountLock(accountID) {
+  if (isBrowserPreview) {
+    return Promise.resolve({ id: accountID, lockedUntilUnixMs: 0, lockReason: "" });
+  }
+  return withApiLogging("ClearCursorAccountLock", { accountID }, () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "ClearCursorAccountLock", [accountID]));
+}
+
+const PREVIEW_ACCOUNT_PLAN = {
+  planName: "Pro",
+  membershipType: "pro",
+  subscriptionStatus: "active",
+  price: "$20/mo",
+  includedCents: 2000,
+  remainingCents: 1500,
+  limitCents: 2000,
+  usedCents: 500,
+  percentUsed: 25,
+  billingCycleEnd: Date.now() + 12 * 24 * 60 * 60 * 1000,
+  usageKnown: true,
+};
+
+// Probes one saved account. The id is required so the card can mark only that
+// row as in progress; an empty id still probes the current account.
+export function checkCursorAccountHealth(accountID = "") {
+  if (isBrowserPreview) {
+    return Promise.resolve({
+      state: "ok",
+      message: "Account is working. Model calls are accepted.",
+      email: "preview@cursor.test",
+      model: "composer-2.5",
+      modelCallOk: true,
+      checkedAtUnixMs: Date.now(),
+      accountId: accountID,
+      plan: { ...PREVIEW_ACCOUNT_PLAN },
+    });
+  }
+  return withApiLogging(
+    "CheckCursorAccountHealth",
+    { accountID },
+    () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "CheckCursorAccountHealth", [accountID]),
+    { timeoutMs: 60_000 },
+  );
+}
+
+// Reads the plan name and included usage left for one saved account.
+export function getCursorAccountPlan(accountID = "") {
+  if (isBrowserPreview) {
+    return Promise.resolve({ ...PREVIEW_ACCOUNT_PLAN });
+  }
+  return withApiLogging(
+    "GetCursorAccountPlan",
+    { accountID },
+    () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "GetCursorAccountPlan", [accountID]),
+    { timeoutMs: 30_000 },
+  );
+}
+
 export function deleteCursorAccounts(request) {
   return withApiLogging("DeleteCursorAccounts", { count: request?.accountIds?.length ?? 0 }, () => desktopOrMockRaw(() => DeleteCursorAccounts(request), "@bindings/cursor/internal/bridge/proxyservice.js", "DeleteCursorAccounts", [request]));
 }
 
 export function prepareCursorClientAccountSwitch(accountID) {
-  return withApiLogging("PrepareCursorClientAccountSwitch", { accountID }, () => desktopOrMockRaw(() => PrepareCursorClientAccountSwitch(accountID), "@bindings/cursor/internal/bridge/proxyservice.js", "PrepareCursorClientAccountSwitch", [accountID]));
+  return prepareCursorClientAccountSwitchWithOptions(accountID, { skipBackup: false });
+}
+
+export function prepareCursorClientAccountSwitchWithOptions(accountID, options = {}) {
+  if (isBrowserPreview) {
+    return Promise.resolve({
+      operationId: "preview-switch",
+      confirmationToken: "preview-switch-token",
+      expiresAtUnixMs: Date.now() + 60_000,
+      impactCodes: ["cursor_restart_required", "cursor_state_auth_overwrite"],
+      rollbackAvailable: !options?.skipBackup,
+      account: { id: accountID },
+      cursorRunning: false,
+      requiresRestart: true,
+      backupFileCount: options?.skipBackup ? 0 : 3,
+      backupSkipped: Boolean(options?.skipBackup),
+    });
+  }
+  return withApiLogging(
+    "PrepareCursorClientAccountSwitchWithOptions",
+    { accountID, skipBackup: Boolean(options?.skipBackup) },
+    () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "PrepareCursorClientAccountSwitchWithOptions", [accountID, options]),
+  );
 }
 
 export function executeCursorClientAccountSwitch(confirmationToken) {
@@ -559,6 +644,23 @@ export function fetchMetricsTokenBuckets(startUnixMs = 0, endUnixMs = 0, model =
 export function fetchModelCatalog(request) {
   if (isBrowserPreview) return Promise.resolve({ models: [] });
   return withApiLogging("FetchModelCatalog", request, () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "FetchModelCatalog", [request]));
+}
+
+// Lists the models the signed-in Cursor account may use. This is what makes an
+// imported API-key account usable as a BYOK upstream: the returned names are
+// materialized into cursor_account adapters so the user can choose between the
+// official upstream and third-party suppliers.
+export function fetchCursorAccountModels() {
+  if (isBrowserPreview) {
+    return Promise.resolve({
+      models: [
+        { name: "composer-2.5", displayName: "composer-2.5", defaultOn: true },
+        { name: "claude-4.5-sonnet", displayName: "claude-4.5-sonnet", defaultOn: false },
+      ],
+      email: "preview@cursor.test",
+    });
+  }
+  return withApiLogging("FetchCursorAccountModels", undefined, () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "FetchCursorAccountModels", []));
 }
 
 // 一键自动配对所有模型适配器的上下文窗口：目录命中仅下调（保留用户手动设置的更小窗口），目录未命中则探测 provider /models 回填。

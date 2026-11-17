@@ -75,6 +75,7 @@ const (
 	streamTimerCheckpointBlobs      streamTimerKind = "checkpoint_blobs"
 	streamTimerOrphanCancel         streamTimerKind = "orphan_cancel"
 	streamTimerTurnStale            streamTimerKind = "turn_stale"
+	streamTimerAwaitShell           streamTimerKind = "await_shell"
 )
 
 // orphan cancel 在「客户端已断连、但任务仍在推进」时不立刻取消，而是按更长的间隔反复
@@ -887,7 +888,8 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 		reasoningItemIDForTool := accumulatedReasoningItemID
 		reasoningStatusForTool := accumulatedReasoningStatus
 		reasoningSummaryForTool := append([]byte(nil), accumulatedReasoningSummary...)
-		if strings.TrimSpace(accumulatedText) != "" {
+		flushedVisibleText := strings.TrimSpace(accumulatedText) != ""
+		if flushedVisibleText {
 			if err := service.flushAssistantText(stream, conversationID, turnSeq, requestID, accumulatedText, accumulatedReasoning, accumulatedReasoningSignature, accumulatedReasoningSignatureSource, accumulatedReasoningItemID, accumulatedReasoningStatus, accumulatedReasoningSummary, false); err != nil {
 				return err
 			}
@@ -904,6 +906,9 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 		invocation.ReasoningProviderSummary = reasoningSummaryForTool
 		invocation.ModelCallID = modelCallID
 		stream.mu.Lock()
+		if flushedVisibleText {
+			stream.ProviderPassFlushedAssistantText = true
+		}
 		stream.ProviderAccumulatedText = nil
 		stream.UpdatedAt = time.Now().UTC()
 		stream.mu.Unlock()
@@ -1126,9 +1131,6 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	if err := service.syncSummaryCarryForward(conversationID, requestID, modelCallID); err != nil {
 		return service.failStreamIfNonTerminal(stream, "unknown", err)
 	}
-	if err := service.emitTurnSummary(stream, requestID, modelCallID); err != nil {
-		return service.failStreamIfNonTerminal(stream, "unknown", err)
-	}
 
 	pendingCount := pendingBridgeCount(stream)
 	if pendingCount > 0 {
@@ -1183,6 +1185,9 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 			}
 			return nil
 		}
+		if err := service.emitTurnSummary(stream, requestID, completion.ModelCallID); err != nil {
+			return service.failStreamIfNonTerminal(stream, "unknown", err)
+		}
 		if err := service.completeSuccessfulTurn(stream, completion); err != nil {
 			return service.failStreamIfNonTerminal(stream, "unknown", err)
 		}
@@ -1236,6 +1241,9 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	}
 
 	clearPendingProviderCompletion(stream)
+	if err := service.emitTurnSummary(stream, requestID, modelCallID); err != nil {
+		return service.failStreamIfNonTerminal(stream, "unknown", err)
+	}
 	if err := service.completeSuccessfulTurn(stream, pendingTurnCompletion{
 		ConversationID: conversationID,
 		RequestID:      requestID,
@@ -1360,6 +1368,8 @@ func (service *Service) handleTimerEvent(stream *ActiveStream, payload *streamTi
 		return service.recoverStaleInteractionWithoutResponse(stream, payload)
 	case streamTimerTurnStale:
 		return service.handleTurnStaleTimeout(stream, payload)
+	case streamTimerAwaitShell:
+		return service.handleAwaitShellTimer(stream, payload)
 	case streamTimerCheckpointBlobs:
 		// checkpoint blob 同步超时：Cursor 断连/blob 确认丢失时，若无人处理，
 		// stream 会永久卡在 TurnPhaseCheckpointing，终态 endstream 永不发出，

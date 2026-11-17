@@ -36,6 +36,15 @@ type CursorAccountSwitchPreparation struct {
 	CursorRunning   bool                 `json:"cursorRunning"`
 	RequiresRestart bool                 `json:"requiresRestart"`
 	BackupFileCount int                  `json:"backupFileCount"`
+	BackupSkipped   bool                 `json:"backupSkipped"`
+}
+
+// CursorAccountSwitchOptions tunes a client account switch.
+type CursorAccountSwitchOptions struct {
+	// SkipBackup skips copying state.vscdb and its sidecars. state.vscdb can grow
+	// to tens of gigabytes, and copying it is the slowest part of a switch.
+	// Skipping removes the automatic rollback safety net, so callers must opt in.
+	SkipBackup bool `json:"skipBackup"`
 }
 
 // CursorAccountSwitchResult is the execute DTO for switching the local Cursor client.
@@ -52,9 +61,14 @@ type pendingSwitch struct {
 	accountID   string
 	previousID  string
 	used        bool
+	skipBackup  bool
 }
 
 func (manager *Manager) PrepareCursorClientAccountSwitch(accountID string) (CursorAccountSwitchPreparation, error) {
+	return manager.PrepareCursorClientAccountSwitchWithOptions(accountID, CursorAccountSwitchOptions{})
+}
+
+func (manager *Manager) PrepareCursorClientAccountSwitchWithOptions(accountID string, options CursorAccountSwitchOptions) (CursorAccountSwitchPreparation, error) {
 	if manager == nil || manager.store == nil {
 		return CursorAccountSwitchPreparation{}, fmt.Errorf("cursor account store is not initialized")
 	}
@@ -93,12 +107,18 @@ func (manager *Manager) PrepareCursorClientAccountSwitch(accountID string) (Curs
 	operationID := uuid.NewString()
 	expiresAt := time.Now().Add(exportConfirmTTL)
 	running := runtime.Running()
+	skipBackup := options.SkipBackup
 	manager.pendingSwitch = &pendingSwitch{
 		operationID: operationID,
 		token:       token,
 		expiresAt:   expiresAt,
 		accountID:   record.ID,
 		previousID:  manager.store.CurrentAccountID(),
+		skipBackup:  skipBackup,
+	}
+	backupFileCount := countStateSidecars(dbPath)
+	if skipBackup {
+		backupFileCount = 0
 	}
 	return CursorAccountSwitchPreparation{
 		PreparedOperation: controlcenter.PreparedOperation{
@@ -106,12 +126,13 @@ func (manager *Manager) PrepareCursorClientAccountSwitch(accountID string) (Curs
 			ConfirmationToken: token,
 			ExpiresAtUnixMS:   expiresAt.UnixMilli(),
 			ImpactCodes:       []string{impactCursorRestart, impactCursorStateOverwrite},
-			RollbackAvailable: true,
+			RollbackAvailable: !skipBackup,
 		},
 		Account:         recordToSummary(record, record.ID == manager.store.CurrentAccountID()),
 		CursorRunning:   running,
 		RequiresRestart: true,
-		BackupFileCount: countStateSidecars(dbPath),
+		BackupFileCount: backupFileCount,
+		BackupSkipped:   skipBackup,
 	}, nil
 }
 
@@ -182,11 +203,17 @@ func (manager *Manager) executeSwitch(ctx context.Context, pending *pendingSwitc
 	stopped = true
 
 	dest := filepath.Join(manager.store.root, storeDirName, "backups", pending.operationID)
-	backup, err = cursor.BackupCursorStateFiles(dbPath, dest)
-	if err != nil {
-		return failedSwitchResult(pending.operationID, "account_switch_backup_failed"), wrapAccountError("account_switch_backup_failed", "backup cursor state failed", err)
+	if pending.skipBackup {
+		// 用户显式选择跳过备份：state.vscdb 可能达到数十 GB，复制是切换耗时的主要来源。
+		// 代价是失去自动回滚能力，失败时只回滚账号指针，不还原登录态。
+		logger.Infof("cursor client account switch backup skipped operation=%s", pending.operationID)
+	} else {
+		backup, err = cursor.BackupCursorStateFiles(dbPath, dest)
+		if err != nil {
+			return failedSwitchResult(pending.operationID, "account_switch_backup_failed"), wrapAccountError("account_switch_backup_failed", "backup cursor state failed", err)
+		}
+		backedUp = true
 	}
-	backedUp = true
 
 	replaceValues := cursor.CursorAuthValues{
 		AccessToken:  record.AccessToken,

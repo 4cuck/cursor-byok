@@ -26,6 +26,13 @@ type AuthorizationProvider interface {
 	SignedIn() bool
 }
 
+// SessionRefresher exchanges an expired Cursor session presented by the IDE
+// for a new access token. refreshToken is the durable secret the client must
+// keep, not the short-lived JWT.
+type SessionRefresher interface {
+	RefreshPresentedToken(ctx context.Context, presented string) (accessToken string, refreshToken string, ok bool)
+}
+
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
@@ -35,6 +42,19 @@ type Dependencies struct {
 	HTTPClient           HTTPClient
 	LogRoot              string
 	Routes               []Route
+	// DeviceLimitReporter is notified when upstream refuses a request because
+	// too many devices used the account in 24 hours. Optional.
+	DeviceLimitReporter DeviceLimitReporter
+	// SessionRefresher renews Cursor IDE sessions whose access token expired.
+	// Optional. Without it, /oauth/token echoes a non-crsr_ refresh token.
+	SessionRefresher SessionRefresher
+}
+
+// DeviceLimitReporter starts a cooldown for the account currently in use.
+// Cursor returns this condition as ordinary error text, so it has to be sniffed
+// out of the response stream rather than read from a status code.
+type DeviceLimitReporter interface {
+	ReportDeviceLimit(reason string)
 }
 
 type RequestContext struct {

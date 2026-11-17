@@ -108,10 +108,12 @@ func (s *ProxyService) StartProxy() (ProxyState, error) {
 	}
 	logPhase("proxy-ensure")
 
-	// 启动时注入账号信息
-	if err := cursor.InjectCursorUserInfo(localruntime.InjectAccountEmail, localruntime.InjectAuthToken); err != nil {
+	// 启动时注入账号信息。
+	// 已导入 Cursor 账号（OAuth 或 crsr_ API Key）时注入真实身份：官方上游模式下
+	// Cursor 客户端会用这个 token 直连 api2.cursor.sh，占位 token 会被拒绝并弹出登录页。
+	// 只有完全未配置账号时才退回本地模拟身份。注入失败不改写已有凭据。
+	if err := s.reinjectActiveCursorAccount(); err != nil {
 		logger.Errorf("injectCursorUserInfo failed: %v", err)
-		// 不阻断启动，仅记录日志
 	}
 
 	// 自动拉取 Cursor 客户端已登录的官方账号（注入前已备份到 cursor-auth-backup.json），
@@ -158,6 +160,38 @@ func (s *ProxyService) StartProxy() (ProxyState, error) {
 		state.CursorSettingsApplied,
 	)
 	return state, nil
+}
+
+// reinjectActiveCursorAccount writes the selected cursor-byok account back into
+// Cursor. A signed-in API key or OAuth session is used as-is. The placeholder
+// token is only written when no account is signed in, so a failed refresh cannot
+// replace a real key.
+func (s *ProxyService) reinjectActiveCursorAccount() error {
+	email := localruntime.InjectAccountEmail
+	accessToken := localruntime.InjectAuthToken
+	refreshToken := accessToken
+	if s != nil && s.cursorAccount != nil && s.cursorAccount.SignedIn() {
+		authorization, err := s.cursorAccount.Authorization(context.Background())
+		if err != nil {
+			return err
+		}
+		accessToken = strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+		if accessToken == "" {
+			return fmt.Errorf("cursor account has no access token")
+		}
+		// 续期凭据必须和短期 access token 分开写入。API Key 的 refresh 是 crsr_ key，
+		// OAuth 的 refresh 是长期 refresh token。两者都写成 access token 时，
+		// Cursor 大约一小时后会拿过期 JWT 调 /oauth/token，模型随之失效。
+		if durable := strings.TrimSpace(s.cursorAccount.CurrentRefreshToken()); durable != "" {
+			refreshToken = durable
+		} else {
+			refreshToken = accessToken
+		}
+		if accountEmail := strings.TrimSpace(s.cursorAccount.Status().Email); accountEmail != "" {
+			email = accountEmail
+		}
+	}
+	return cursor.InjectCursorUserInfo(email, accessToken, refreshToken)
 }
 
 // StopProxy 用于处理与 StopProxy 相关的逻辑。

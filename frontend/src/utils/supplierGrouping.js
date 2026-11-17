@@ -93,11 +93,18 @@ export function groupModelAdaptersAsSuppliers(adapters, mode = SUPPLIER_GROUP_MO
     const groupNameRaw = String(adapter.groupName || "").trim();
     const groupNameDisplay = displayGroupName(groupNameRaw);
 
+    const cursorOwner = source === SUPPLIER_MODEL_SOURCE_CURSOR_ACCOUNT
+      ? (String(adapter.supplierID || "").trim() || groupNameRaw || "cursor_account")
+      : "";
     let key;
     if (resolved === SUPPLIER_GROUP_MODE_NAME) {
       key = `name::${source}::${groupNameRaw}`;
     } else if (resolved === SUPPLIER_GROUP_MODE_LEGACY) {
-      key = `legacy::${source}::${baseURL}::${groupNameRaw}`;
+      key = `legacy::${source}::${baseURL}::${groupNameRaw}::${cursorOwner}`;
+    } else if (cursorOwner) {
+      // Cursor account models have no base URL. Grouping only by source would
+      // merge every account into one supplier.
+      key = `connection::${source}::${cursorOwner}`;
     } else {
       key = `connection::${source}::${baseURL}`;
     }

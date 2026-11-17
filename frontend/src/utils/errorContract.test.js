@@ -68,7 +68,7 @@ test("summarizes payload without leaking secrets or full prompts", () => {
 test("does not expose sensitive technical message to the user", () => {
   const error = normalizeClientError(new Error("Authorization: Bearer sk-secret"));
 
-  assert.equal(error.userMessage, "服务发生异常，请重试或导出诊断信息");
+  assert.equal(error.userMessage, "The service encountered an error. Retry or export diagnostic information.");
   assert.doesNotMatch(error.technicalMessage, /sk-secret/);
 });
 

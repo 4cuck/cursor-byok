@@ -92,7 +92,7 @@ func completedOpenAIToolArgsJSON(accumulator *openAIToolAccumulator) ([]byte, er
 		if toolName == "" {
 			toolName = "tool"
 		}
-		return nil, fmt.Errorf("openai returned incomplete or malformed tool input for %s: %w", toolName, err)
+		return nil, fmt.Errorf("openai returned incomplete or malformed tool input for %s: %w", toolName, fmt.Errorf("%w: %w", ErrIncompleteToolCallArgs, err))
 	}
 	if value == nil {
 		toolName := strings.TrimSpace(accumulator.Name)

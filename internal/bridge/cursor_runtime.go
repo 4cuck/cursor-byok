@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"cursor/internal/cursoraccount"
 )
@@ -23,5 +25,14 @@ func (runtime cursorProcessRuntime) Stop(context.Context) error {
 }
 
 func (runtime cursorProcessRuntime) Start(context.Context) error {
-	return launchCursorProcess("", "")
+	// ShellExecuteW with an empty path opens Explorer at the process working
+	// directory instead of launching Cursor, so the path must be resolved first.
+	path := ""
+	if runtime.windows != nil {
+		path = runtime.windows.DetectCursorPath("")
+	}
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("Cursor executable not found; set the path in settings")
+	}
+	return launchCursorProcess(path, "")
 }

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"cursor/internal/agentops"
+	"cursor/internal/client"
 	"cursor/internal/configprofile"
 	"cursor/internal/controlcenter"
 	"cursor/internal/cursoraccount"
@@ -23,6 +24,11 @@ type CursorAccountLoginSession = cursoraccount.CursorAccountLoginSession
 type CursorAccountLoginStatus = cursoraccount.CursorAccountLoginStatus
 type CursorAccountSwitchPreparation = cursoraccount.CursorAccountSwitchPreparation
 type CursorAccountSwitchResult = cursoraccount.CursorAccountSwitchResult
+type CursorAccountSwitchOptions = cursoraccount.CursorAccountSwitchOptions
+type CursorAccountModel = client.CursorAccountModel
+type CursorAccountModelCatalog = client.CursorAccountModelCatalog
+type CursorAccountHealth = client.CursorAccountHealth
+type CursorAccountPlan = client.CursorAccountPlan
 type RequestSourceQuery = requestlab.RequestSourceQuery
 type RequestSourcePage = requestlab.RequestSourcePage
 type RequestComparisonRequest = requestlab.RequestComparisonRequest
@@ -77,12 +83,41 @@ func (s *ProxyService) UpdateCursorAccountTags(accountID string, tags []string) 
 	return s.core.UpdateCursorAccountTags(accountID, tags)
 }
 
+// ClearCursorAccountLock ends a device-limit cooldown early ("try anyway").
+func (s *ProxyService) ClearCursorAccountLock(accountID string) (CursorAccountSummary, error) {
+	return s.core.ClearCursorAccountLock(accountID)
+}
+
+// CheckCursorAccountHealth probes one saved account end to end and reports
+// whether it can actually serve model calls. An empty accountID probes the
+// current account. The card must pass the clicked account so only that row
+// is marked as checking.
+func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccountHealth, error) {
+	return s.core.CheckCursorAccountHealth(accountID)
+}
+
+// GetCursorAccountPlan reads the plan name and how much included usage is left
+// for one saved account. An empty accountID uses the current account.
+func (s *ProxyService) GetCursorAccountPlan(accountID string) (CursorAccountPlan, error) {
+	return s.core.GetCursorAccountPlan(accountID)
+}
+
 func (s *ProxyService) DeleteCursorAccounts(req CursorAccountDeleteRequest) error {
 	return s.core.DeleteCursorAccounts(req)
 }
 
 func (s *ProxyService) PrepareCursorClientAccountSwitch(accountID string) (CursorAccountSwitchPreparation, error) {
 	return s.core.PrepareCursorClientAccountSwitch(accountID)
+}
+
+func (s *ProxyService) PrepareCursorClientAccountSwitchWithOptions(accountID string, options CursorAccountSwitchOptions) (CursorAccountSwitchPreparation, error) {
+	return s.core.PrepareCursorClientAccountSwitchWithOptions(accountID, options)
+}
+
+// FetchCursorAccountModels lists the models the signed-in Cursor account may use,
+// so an imported API-key account can be materialized as BYOK model adapters.
+func (s *ProxyService) FetchCursorAccountModels() (CursorAccountModelCatalog, error) {
+	return s.core.FetchCursorAccountModels()
 }
 
 func (s *ProxyService) ExecuteCursorClientAccountSwitch(confirmationToken string) (CursorAccountSwitchResult, error) {

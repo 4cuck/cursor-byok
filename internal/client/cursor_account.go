@@ -26,7 +26,7 @@ func (s *ProxyService) GetCursorAccountStatus() CursorAccountStatus {
 
 func (s *ProxyService) StartCursorAccountLogin() (CursorAccountStatus, error) {
 	if s == nil || s.cursorAccount == nil {
-		return CursorAccountStatus{State: cursoraccount.StateError}, fmt.Errorf("Cursor 账号服务未初始化")
+		return CursorAccountStatus{State: cursoraccount.StateError}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	return s.cursorAccount.StartLogin()
 }
@@ -40,14 +40,14 @@ func (s *ProxyService) DisconnectCursorAccount() (CursorAccountStatus, error) {
 
 func (s *ProxyService) ListCursorAccounts() ([]cursoraccount.CursorAccountSummary, error) {
 	if s == nil || s.cursorAccount == nil {
-		return []cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return []cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	return s.cursorAccount.ListAccounts()
 }
 
 func (s *ProxyService) ImportCursorAccount(req cursoraccount.CursorAccountImportRequest) (cursoraccount.CursorAccountSummary, error) {
 	if s == nil || s.cursorAccount == nil {
-		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	var (
 		summary cursoraccount.CursorAccountSummary
@@ -91,7 +91,7 @@ func (s *ProxyService) ImportCursorAccount(req cursoraccount.CursorAccountImport
 
 func (s *ProxyService) PrepareCursorAccountRecoveryExport(req cursoraccount.CursorAccountRecoveryExportRequest) (controlcenter.PreparedOperation, error) {
 	if s == nil || s.cursorAccount == nil {
-		return controlcenter.PreparedOperation{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return controlcenter.PreparedOperation{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	for _, id := range req.AccountIDs {
 		if strings.TrimSpace(id) == "" {
@@ -103,7 +103,7 @@ func (s *ProxyService) PrepareCursorAccountRecoveryExport(req cursoraccount.Curs
 
 func (s *ProxyService) ExecuteCursorAccountRecoveryExport(confirmationToken, destinationPath string) (cursoraccount.CursorAccountRecoveryExportResult, error) {
 	if s == nil || s.cursorAccount == nil {
-		return cursoraccount.CursorAccountRecoveryExportResult{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return cursoraccount.CursorAccountRecoveryExportResult{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	dest := strings.TrimSpace(destinationPath)
 	if dest == "" {
@@ -114,7 +114,7 @@ func (s *ProxyService) ExecuteCursorAccountRecoveryExport(confirmationToken, des
 
 func (s *ProxyService) SetCurrentCursorAccount(accountID string) (cursoraccount.CursorAccountSummary, error) {
 	if s == nil || s.cursorAccount == nil {
-		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	if strings.TrimSpace(accountID) == "" {
 		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("account id is empty")
@@ -128,7 +128,7 @@ func (s *ProxyService) SetCurrentCursorAccount(accountID string) (cursoraccount.
 
 func (s *ProxyService) UpdateCursorAccountTags(accountID string, tags []string) (cursoraccount.CursorAccountSummary, error) {
 	if s == nil || s.cursorAccount == nil {
-		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	if strings.TrimSpace(accountID) == "" {
 		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("account id is empty")
@@ -136,9 +136,21 @@ func (s *ProxyService) UpdateCursorAccountTags(accountID string, tags []string) 
 	return s.cursorAccount.UpdateTags(accountID, tags)
 }
 
+// ClearCursorAccountLock ends a device-limit cooldown early. This backs the
+// explicit "try anyway" action in the UI.
+func (s *ProxyService) ClearCursorAccountLock(accountID string) (cursoraccount.CursorAccountSummary, error) {
+	if s == nil || s.cursorAccount == nil {
+		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("Cursor account service is not initialized")
+	}
+	if strings.TrimSpace(accountID) == "" {
+		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("account id is empty")
+	}
+	return s.cursorAccount.ClearAccountLockByID(accountID)
+}
+
 func (s *ProxyService) DeleteCursorAccounts(req cursoraccount.CursorAccountDeleteRequest) error {
 	if s == nil || s.cursorAccount == nil {
-		return fmt.Errorf("Cursor 账号服务未初始化")
+		return fmt.Errorf("Cursor account service is not initialized")
 	}
 	for _, id := range req.AccountIDs {
 		if strings.TrimSpace(id) == "" {
@@ -149,18 +161,22 @@ func (s *ProxyService) DeleteCursorAccounts(req cursoraccount.CursorAccountDelet
 }
 
 func (s *ProxyService) PrepareCursorClientAccountSwitch(accountID string) (cursoraccount.CursorAccountSwitchPreparation, error) {
+	return s.PrepareCursorClientAccountSwitchWithOptions(accountID, cursoraccount.CursorAccountSwitchOptions{})
+}
+
+func (s *ProxyService) PrepareCursorClientAccountSwitchWithOptions(accountID string, options cursoraccount.CursorAccountSwitchOptions) (cursoraccount.CursorAccountSwitchPreparation, error) {
 	if s == nil || s.cursorAccount == nil {
-		return cursoraccount.CursorAccountSwitchPreparation{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return cursoraccount.CursorAccountSwitchPreparation{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	if strings.TrimSpace(accountID) == "" {
 		return cursoraccount.CursorAccountSwitchPreparation{}, fmt.Errorf("account id is empty")
 	}
-	return s.cursorAccount.PrepareCursorClientAccountSwitch(accountID)
+	return s.cursorAccount.PrepareCursorClientAccountSwitchWithOptions(accountID, options)
 }
 
 func (s *ProxyService) ExecuteCursorClientAccountSwitch(confirmationToken string) (cursoraccount.CursorAccountSwitchResult, error) {
 	if s == nil || s.cursorAccount == nil {
-		return cursoraccount.CursorAccountSwitchResult{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return cursoraccount.CursorAccountSwitchResult{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	result, err := s.cursorAccount.ExecuteCursorClientAccountSwitch(confirmationToken)
 	if err == nil && result.State == "succeeded" {

@@ -85,9 +85,12 @@ func TestIsInjectedCursorAuthValue(t *testing.T) {
 		{"cursorAuth/stripeMembershipType", "ultra", "t", "x", false},
 	}
 	for _, tc := range cases {
-		if got := isInjectedCursorAuthValue(tc.key, tc.value, tc.token, tc.email); got != tc.want {
+		if got := isInjectedCursorAuthValue(tc.key, tc.value, tc.token, tc.token, tc.email); got != tc.want {
 			t.Fatalf("isInjectedCursorAuthValue(%q,%q): got %v, want %v", tc.key, tc.value, got, tc.want)
 		}
+	}
+	if !isInjectedCursorAuthValue("cursorAuth/refreshToken", "crsr_durable", "api-key-jwt", "crsr_durable", "x@x.com") {
+		t.Fatal("durable api key refresh token must count as injected")
 	}
 }
 
@@ -102,7 +105,7 @@ func TestBackupAndRestoreCursorAuthRoundTrip(t *testing.T) {
 	})
 
 	// 注入前备份官方值。
-	if err := backupCursorAuthState(statePath, "fake-token", "cursor@ai.com"); err != nil {
+	if err := backupCursorAuthState(statePath, "fake-token", "fake-token", "cursor@ai.com"); err != nil {
 		t.Fatalf("backup: %v", err)
 	}
 	backupData, err := os.ReadFile(cursorAuthBackupPath())
@@ -116,7 +119,7 @@ func TestBackupAndRestoreCursorAuthRoundTrip(t *testing.T) {
 	}
 
 	// 注入模拟账号。
-	if err := syncCursorAuthStateDB(statePath, buildCursorAuthStateValues("cursor@ai.com", "fake-token")); err != nil {
+	if err := syncCursorAuthStateDB(statePath, buildCursorAuthStateValues("cursor@ai.com", "fake-token", "fake-token")); err != nil {
 		t.Fatalf("inject: %v", err)
 	}
 	if got, _ := readCursorAuthValue(t, statePath, "cursorAuth/accessToken"); got != "fake-token" {
@@ -184,7 +187,7 @@ func TestBackupReplacesNullBackupWhenOfficialValuePresent(t *testing.T) {
 	}
 
 	// 用户重新登录官方后再次注入：全 null 备份应被官方值覆盖。
-	if err := backupCursorAuthState(statePath, "fake-token", "cursor@ai.com"); err != nil {
+	if err := backupCursorAuthState(statePath, "fake-token", "fake-token", "cursor@ai.com"); err != nil {
 		t.Fatalf("backup: %v", err)
 	}
 	data, err := os.ReadFile(cursorAuthBackupPath())
@@ -198,7 +201,7 @@ func TestBackupReplacesNullBackupWhenOfficialValuePresent(t *testing.T) {
 	}
 
 	// 再次调用不应覆盖有效备份。
-	if err := backupCursorAuthState(statePath, "fake-token", "cursor@ai.com"); err != nil {
+	if err := backupCursorAuthState(statePath, "fake-token", "fake-token", "cursor@ai.com"); err != nil {
 		t.Fatalf("second backup: %v", err)
 	}
 }
@@ -226,7 +229,7 @@ func TestBackupRefreshesWhenOfficialAccountChanged(t *testing.T) {
 		"cursorAuth/cachedEmail":  "a@real.com",
 	})
 	// 首次注入前备份官方 A。
-	if err := backupCursorAuthState(statePath, "fake-token", "cursor@ai.com"); err != nil {
+	if err := backupCursorAuthState(statePath, "fake-token", "fake-token", "cursor@ai.com"); err != nil {
 		t.Fatalf("first backup: %v", err)
 	}
 
@@ -240,7 +243,7 @@ func TestBackupRefreshesWhenOfficialAccountChanged(t *testing.T) {
 	}
 
 	// 再次启动本地服务：有效备份存在但账号已变更，应刷新为 B。
-	if err := backupCursorAuthState(statePath, "fake-token", "cursor@ai.com"); err != nil {
+	if err := backupCursorAuthState(statePath, "fake-token", "fake-token", "cursor@ai.com"); err != nil {
 		t.Fatalf("second backup: %v", err)
 	}
 	data, err := os.ReadFile(cursorAuthBackupPath())
@@ -273,16 +276,16 @@ func TestBackupKeepsValidWhenStateStillInjected(t *testing.T) {
 		"cursorAuth/refreshToken": "official-refresh-A",
 		"cursorAuth/cachedEmail":  "a@real.com",
 	})
-	if err := backupCursorAuthState(statePath, "fake-token", "cursor@ai.com"); err != nil {
+	if err := backupCursorAuthState(statePath, "fake-token", "fake-token", "cursor@ai.com"); err != nil {
 		t.Fatalf("first backup: %v", err)
 	}
 
 	// 注入模拟账号（模拟服务运行中状态库被改写）。
-	if err := syncCursorAuthStateDB(statePath, buildCursorAuthStateValues("cursor@ai.com", "fake-token")); err != nil {
+	if err := syncCursorAuthStateDB(statePath, buildCursorAuthStateValues("cursor@ai.com", "fake-token", "fake-token")); err != nil {
 		t.Fatalf("inject: %v", err)
 	}
 	// 服务重启再次备份：当前为注入值，不算账号变更，备份应保留官方 A。
-	if err := backupCursorAuthState(statePath, "fake-token", "cursor@ai.com"); err != nil {
+	if err := backupCursorAuthState(statePath, "fake-token", "fake-token", "cursor@ai.com"); err != nil {
 		t.Fatalf("second backup: %v", err)
 	}
 	data, err := os.ReadFile(cursorAuthBackupPath())
@@ -296,6 +299,67 @@ func TestBackupKeepsValidWhenStateStillInjected(t *testing.T) {
 	}
 	if contains(string(data), "fake-token") {
 		t.Fatalf("注入态下备份不应写入模拟 token: %s", string(data))
+	}
+}
+
+// TestBackupKeepsOfficialWhenInjectedAPIKeyRotates covers switching upstream
+// after an API-key JWT refresh. The previous injected token must not replace
+// the saved official login.
+func TestBackupKeepsOfficialWhenInjectedAPIKeyRotates(t *testing.T) {
+	statePath := newTestCursorStateDB(t, map[string]string{
+		"cursorAuth/accessToken":  "official-A",
+		"cursorAuth/refreshToken": "official-refresh-A",
+		"cursorAuth/cachedEmail":  "a@real.com",
+	})
+	if err := backupCursorAuthState(statePath, "api-key-jwt-1", "api-key-jwt-1", "cursor@ai.com"); err != nil {
+		t.Fatalf("first backup: %v", err)
+	}
+	if err := syncCursorAuthStateDB(statePath, buildCursorAuthStateValues("cursor@ai.com", "api-key-jwt-1", "api-key-jwt-1")); err != nil {
+		t.Fatalf("inject first jwt: %v", err)
+	}
+	if err := backupCursorAuthState(statePath, "api-key-jwt-2", "api-key-jwt-2", "cursor@ai.com"); err != nil {
+		t.Fatalf("backup after rotation: %v", err)
+	}
+	data, err := os.ReadFile(cursorAuthBackupPath())
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	for _, want := range []string{"official-A", "official-refresh-A", "a@real.com"} {
+		if !contains(string(data), want) {
+			t.Fatalf("rotated API key must not replace official backup %q: %s", want, string(data))
+		}
+	}
+	if contains(string(data), "api-key-jwt-1") || contains(string(data), "api-key-jwt-2") {
+		t.Fatalf("backup contains an injected API key token: %s", string(data))
+	}
+}
+
+func TestBackupKeepsOfficialWhenAPIKeyRefreshStaysDurable(t *testing.T) {
+	statePath := newTestCursorStateDB(t, map[string]string{
+		"cursorAuth/accessToken":  "official-A",
+		"cursorAuth/refreshToken": "official-refresh-A",
+		"cursorAuth/cachedEmail":  "a@real.com",
+	})
+	if err := backupCursorAuthState(statePath, "api-key-jwt-1", "crsr_durable", "cursor@ai.com"); err != nil {
+		t.Fatalf("first backup: %v", err)
+	}
+	if err := syncCursorAuthStateDB(statePath, buildCursorAuthStateValues("cursor@ai.com", "api-key-jwt-1", "crsr_durable")); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	if err := backupCursorAuthState(statePath, "api-key-jwt-2", "crsr_durable", "cursor@ai.com"); err != nil {
+		t.Fatalf("backup after rotation: %v", err)
+	}
+	data, err := os.ReadFile(cursorAuthBackupPath())
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	for _, want := range []string{"official-A", "official-refresh-A", "a@real.com"} {
+		if !contains(string(data), want) {
+			t.Fatalf("durable API key refresh must not replace official backup %q: %s", want, string(data))
+		}
+	}
+	if contains(string(data), "crsr_durable") || contains(string(data), "api-key-jwt") {
+		t.Fatalf("backup contains injected API key material: %s", string(data))
 	}
 }
 

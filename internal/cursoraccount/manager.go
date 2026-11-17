@@ -43,7 +43,7 @@ const (
 	refreshMargin = 2 * time.Minute
 )
 
-var ErrNotSignedIn = errors.New("尚未在 cursor-byok 中登录 Cursor 账号")
+var ErrNotSignedIn = errors.New("Not signed in to a Cursor account in cursor-byok")
 
 type codedError struct {
 	code string
@@ -54,6 +54,11 @@ type codedError struct {
 func (e *codedError) Error() string {
 	if e == nil {
 		return ""
+	}
+	// 前端只拿到错误字符串（跨 Wails 边界会丢失类型），因此把码名一并带上，
+	// 让 UI 能把 account_* / cursor_* 映射成具体文案，而不是退化成通用提示。
+	if e.code != "" && e.msg != "" {
+		return e.code + ": " + e.msg
 	}
 	if e.msg != "" {
 		return e.msg
@@ -150,7 +155,7 @@ func NewManager(dataRoot, legacyPath string, client *http.Client) *Manager {
 	}
 	if err := manager.load(); err != nil {
 		manager.state = StateError
-		manager.lastError = fmt.Sprintf("读取 Cursor 账号凭据失败: %v", err)
+		manager.lastError = fmt.Sprintf("Failed to read Cursor account credentials: %v", err)
 	}
 	return manager
 }
@@ -160,6 +165,20 @@ func (manager *Manager) CurrentAccountID() string {
 		return ""
 	}
 	return manager.store.CurrentAccountID()
+}
+
+// CurrentAccountUsesAPIKey reports whether the active account is a Cursor user
+// API key. Such an account is installed into Cursor on purpose, so switching to
+// official upstream must not wipe it (RestoreCursorUserInfo would).
+func (manager *Manager) CurrentAccountUsesAPIKey() bool {
+	if manager == nil || manager.store == nil {
+		return false
+	}
+	creds, _, err := manager.store.LoadCurrentCredentials()
+	if err != nil {
+		return false
+	}
+	return IsCursorAPIKey(creds.RefreshToken)
 }
 
 func (manager *Manager) ListAccounts() ([]CursorAccountSummary, error) {
@@ -211,8 +230,16 @@ func (manager *Manager) ImportToken(ctx context.Context, raw string) (CursorAcco
 	if len(raw) > maxImportTokenBytes {
 		return CursorAccountSummary{}, accountError("account_import_too_large", "import token exceeds 8 kib")
 	}
+	// crsr_ 用户 API Key 需要先换成 IDE 面 JWT，原始 key 作为续期凭据保留。
 	creds := credentials{AccessToken: raw}
-	if profile, err := manager.fetchProfile(ctx, bearer(raw)); err == nil {
+	if IsCursorAPIKey(raw) {
+		exchanged, err := manager.ExchangeCursorAPIKey(ctx, raw)
+		if err != nil {
+			return CursorAccountSummary{}, err
+		}
+		creds = exchanged
+	}
+	if profile, err := manager.fetchProfile(ctx, bearer(creds.AccessToken)); err == nil {
 		creds.Email = strings.TrimSpace(profile.GetEmail())
 		creds.AuthID = strings.TrimSpace(profile.GetAuthId())
 	}
@@ -227,6 +254,26 @@ func (manager *Manager) ImportToken(ctx context.Context, raw string) (CursorAcco
 	})
 }
 
+// normalizeImportedAPIKey 把导入记录里的 crsr_ key 换成 IDE 面 JWT。
+// 识别位置有两处：accessToken 直接是 key，或 refreshToken 是 key 而
+// accessToken 是派生的短期 JWT。后者已经是可用形态，只需保持原样。
+func (manager *Manager) normalizeImportedAPIKey(ctx context.Context, account importedAccount) (importedAccount, error) {
+	switch {
+	case IsCursorAPIKey(account.AccessToken):
+		exchanged, err := manager.ExchangeCursorAPIKey(ctx, account.AccessToken)
+		if err != nil {
+			return importedAccount{}, err
+		}
+		account.AccessToken = exchanged.AccessToken
+		account.RefreshToken = exchanged.RefreshToken
+	case IsCursorAPIKey(account.RefreshToken):
+		// 已是派生 JWT + 原始 key 的正确形态。
+	default:
+		return account, nil
+	}
+	return account, nil
+}
+
 func (manager *Manager) ImportJSON(content string) ([]CursorAccountSummary, error) {
 	if manager == nil || manager.store == nil {
 		return []CursorAccountSummary{}, fmt.Errorf("cursor account store is not initialized")
@@ -235,9 +282,16 @@ func (manager *Manager) ImportJSON(content string) ([]CursorAccountSummary, erro
 	if err != nil {
 		return nil, err
 	}
+	ctx := context.Background()
 	summaries := make([]CursorAccountSummary, 0, len(accounts))
 	for _, account := range accounts {
-		summary, err := manager.adoptImported(account)
+		// 恢复包里若直接带 crsr_ key，先换成 IDE 面 JWT，避免把原始 key
+		// 当 Bearer 发出去。
+		normalized, err := manager.normalizeImportedAPIKey(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		summary, err := manager.adoptImported(normalized)
 		if err != nil {
 			return nil, err
 		}
@@ -353,11 +407,11 @@ func (manager *Manager) SignedIn() bool {
 // StartLogin 启动官方浏览器 PKCE 登录，并在后台等待登录结果。
 func (manager *Manager) StartLogin() (Status, error) {
 	if manager == nil {
-		return Status{State: StateError}, fmt.Errorf("Cursor 账号服务未初始化")
+		return Status{State: StateError}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	verifierBytes := make([]byte, 32)
 	if _, err := rand.Read(verifierBytes); err != nil {
-		return manager.Status(), fmt.Errorf("生成 Cursor 登录校验码失败: %w", err)
+		return manager.Status(), fmt.Errorf("Failed to generate Cursor login verifier: %w", err)
 	}
 	verifier := base64.RawURLEncoding.EncodeToString(verifierBytes)
 	challengeBytes := sha256.Sum256([]byte(verifier))
@@ -386,7 +440,7 @@ func (manager *Manager) StartLogin() (Status, error) {
 
 	if err := manager.openLoginPage(loginURL); err != nil {
 		cancel()
-		manager.finishWithError(generation, fmt.Sprintf("打开 Cursor 登录页面失败: %v", err))
+		manager.finishWithError(generation, fmt.Sprintf("Failed to open the Cursor sign-in page: %v", err))
 		return manager.Status(), err
 	}
 
@@ -414,7 +468,7 @@ func (manager *Manager) Disconnect() (Status, error) {
 		if err := manager.store.clearCurrent(); err != nil && !errors.Is(err, os.ErrNotExist) {
 			manager.mu.Lock()
 			manager.state = StateError
-			manager.lastError = fmt.Sprintf("清除 Cursor 账号凭据失败: %v", err)
+			manager.lastError = fmt.Sprintf("Failed to clear Cursor account credentials: %v", err)
 			manager.mu.Unlock()
 			return manager.Status(), err
 		}
@@ -437,6 +491,47 @@ func (manager *Manager) Shutdown() {
 		manager.loginCancel = nil
 	}
 	manager.mu.Unlock()
+}
+
+// AuthorizationFor 返回指定账户的 Bearer 身份，不改变当前选中账户。
+// 空 id 等价于当前账户。这样 cursor_account2 的模型不会误用 cursor_account1 的登录态。
+func (manager *Manager) AuthorizationFor(ctx context.Context, accountID string) (string, error) {
+	if manager == nil || manager.store == nil {
+		return "", ErrNotSignedIn
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || accountID == manager.store.CurrentAccountID() {
+		return manager.Authorization(ctx)
+	}
+	manager.refreshMu.Lock()
+	defer manager.refreshMu.Unlock()
+	record, err := manager.store.loadRecord(accountID)
+	if err != nil {
+		return "", err
+	}
+	current := credentials{
+		AccessToken:  strings.TrimSpace(record.AccessToken),
+		RefreshToken: strings.TrimSpace(record.RefreshToken),
+		AuthID:       strings.TrimSpace(record.AuthID),
+		Email:        strings.TrimSpace(record.Email),
+	}
+	if current.AccessToken == "" {
+		return "", ErrNotSignedIn
+	}
+	if !tokenNeedsRefresh(current.AccessToken, time.Now()) {
+		return bearer(current.AccessToken), nil
+	}
+	updated, shouldLogout, err := manager.refresh(ctx, current)
+	if err != nil {
+		return "", err
+	}
+	if shouldLogout {
+		return "", ErrNotSignedIn
+	}
+	if err := manager.store.UpdateCredentials(accountID, updated); err != nil {
+		return "", err
+	}
+	return bearer(updated.AccessToken), nil
 }
 
 // Authorization 返回官方控制面请求使用的真实 Cursor Bearer 身份。
@@ -472,8 +567,8 @@ func (manager *Manager) authorizationLocked(ctx context.Context) (string, error)
 			if manager.store.CurrentAccountID() != accountID {
 				continue
 			}
-			manager.setAuthorizationError(generation, "Cursor 登录已过期，请重新登录")
-			return "", fmt.Errorf("Cursor 登录已过期且没有刷新令牌")
+			manager.setAuthorizationError(generation, "Cursor session expired. Sign in again.")
+			return "", fmt.Errorf("Cursor session expired and no refresh token is available")
 		}
 
 		updated, shouldLogout, err := manager.refresh(ctx, creds)
@@ -481,14 +576,14 @@ func (manager *Manager) authorizationLocked(ctx context.Context) (string, error)
 			if manager.store.CurrentAccountID() != accountID {
 				continue
 			}
-			manager.setAuthorizationError(generation, fmt.Sprintf("刷新 Cursor 登录失败: %v", err))
+			manager.setAuthorizationError(generation, fmt.Sprintf("刷新 Cursor sign-in failed: %v", err))
 			return "", err
 		}
 		if manager.store.CurrentAccountID() != accountID {
 			continue
 		}
 		if shouldLogout {
-			manager.invalidateAuthorization(generation, "Cursor 登录已失效，请重新登录")
+			manager.invalidateAuthorization(generation, "Cursor session is no longer valid. Sign in again.")
 			return "", ErrNotSignedIn
 		}
 		if err := manager.store.UpdateCredentials(accountID, updated); err != nil {
@@ -498,6 +593,49 @@ func (manager *Manager) authorizationLocked(ctx context.Context) (string, error)
 		return bearer(updated.AccessToken), nil
 	}
 	return "", fmt.Errorf("current account changed during refresh")
+}
+
+// CurrentRefreshToken 返回当前账号的长期续期凭据。
+// API Key 账号是原始 crsr_ key，OAuth 账号是 refresh token。它不是短期 access JWT。
+func (manager *Manager) CurrentRefreshToken() string {
+	if manager == nil || manager.store == nil {
+		return ""
+	}
+	creds, _, err := manager.store.LoadCurrentCredentials()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(creds.RefreshToken)
+}
+
+// RefreshPresentedToken 在 Cursor 客户端拿过期会话调用 /oauth/token 时换一枚新的 access token。
+// 长期续期凭据留在账号库里，并作为 refresh token 交还给客户端，避免下一小时再次失效。
+func (manager *Manager) RefreshPresentedToken(ctx context.Context, presented string) (string, string, bool) {
+	if manager == nil || manager.store == nil {
+		return "", "", false
+	}
+	presented = strings.TrimSpace(presented)
+	if presented == "" || IsCursorAPIKey(presented) {
+		return "", "", false
+	}
+	matches, err := manager.store.accountsForPresentedToken(presented, subjectFromJWT(presented))
+	if err != nil || len(matches) != 1 {
+		return "", "", false
+	}
+	manager.refreshMu.Lock()
+	defer manager.refreshMu.Unlock()
+	updated, shouldLogout, err := manager.refresh(ctx, matches[0].Creds)
+	if err != nil || shouldLogout || strings.TrimSpace(updated.AccessToken) == "" {
+		return "", "", false
+	}
+	if err := manager.store.UpdateCredentials(matches[0].ID, updated); err != nil {
+		return "", "", false
+	}
+	if manager.store.CurrentAccountID() == matches[0].ID {
+		_, generation := manager.snapshotCredentials()
+		manager.syncMemoryCredentials(updated, generation)
+	}
+	return strings.TrimSpace(updated.AccessToken), strings.TrimSpace(updated.RefreshToken), true
 }
 
 func (manager *Manager) pollLogin(ctx context.Context, generation uint64, loginID string, verifier string) {
@@ -518,7 +656,7 @@ func (manager *Manager) pollLogin(ctx context.Context, generation uint64, loginI
 				AuthID:       strings.TrimSpace(result.AuthID),
 			}
 			if creds.AccessToken == "" {
-				manager.finishWithError(generation, "Cursor 登录响应缺少 access token")
+				manager.finishWithError(generation, "Cursor sign-in response is missing an access token")
 				return
 			}
 			if profile, profileErr := manager.fetchProfile(ctx, bearer(creds.AccessToken)); profileErr == nil {
@@ -528,14 +666,14 @@ func (manager *Manager) pollLogin(ctx context.Context, generation uint64, loginI
 			return
 		}
 		if err != nil && !isRetryablePollError(err) {
-			manager.finishWithError(generation, fmt.Sprintf("Cursor 登录失败: %v", err))
+			manager.finishWithError(generation, fmt.Sprintf("Cursor sign-in failed: %v", err))
 			return
 		}
 
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				manager.finishWithError(generation, "Cursor 登录等待超时，请重试")
+				manager.finishWithError(generation, "Timed out waiting for Cursor sign-in. Try again.")
 			}
 			return
 		case <-time.After(pollInterval):
@@ -567,7 +705,7 @@ func (manager *Manager) fetchProfile(ctx context.Context, authorization string) 
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GetMe 返回 HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("GetMe returned HTTP %d", resp.StatusCode)
 	}
 	profile := &aiserverv1.GetMeResponse{}
 	if err := proto.Unmarshal(responseBody, profile); err != nil {
@@ -603,16 +741,33 @@ func (manager *Manager) pollOnce(ctx context.Context, loginID string, verifier s
 		return pollResponse{}, false, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return pollResponse{}, false, fmt.Errorf("登录服务返回 HTTP %d", resp.StatusCode)
+		return pollResponse{}, false, fmt.Errorf("Sign-in service returned HTTP %d", resp.StatusCode)
 	}
 	result := pollResponse{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return pollResponse{}, false, fmt.Errorf("解析登录响应失败: %w", err)
+		return pollResponse{}, false, fmt.Errorf("Failed to parse sign-in response: %w", err)
 	}
 	return result, false, nil
 }
 
+// refresh 按凭据种类分派续期：
+//   - crsr_ 用户 API Key：用原始 key 重新 exchange，永不调用 /oauth/token
+//   - WorkOS OAuth：走 /oauth/token 的 refresh_token 授权
+//
+// 两者语义不同：API Key 没有 shouldLogout 概念（key 被撤销时 exchange 直接 401），
+// 而 OAuth 需要区分「token 过期」与「账号已失效」。
 func (manager *Manager) refresh(ctx context.Context, current credentials) (credentials, bool, error) {
+	if IsCursorAPIKey(current.RefreshToken) {
+		renewed, err := manager.renewCursorAPIKey(ctx, current)
+		if err != nil {
+			return credentials{}, false, err
+		}
+		return renewed, false, nil
+	}
+	return manager.refreshOAuth(ctx, current)
+}
+
+func (manager *Manager) refreshOAuth(ctx context.Context, current credentials) (credentials, bool, error) {
 	payload, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
 		"client_id":     authClientID,
@@ -636,17 +791,17 @@ func (manager *Manager) refresh(ctx context.Context, current credentials) (crede
 		return credentials{}, false, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return credentials{}, false, fmt.Errorf("刷新服务返回 HTTP %d", resp.StatusCode)
+		return credentials{}, false, fmt.Errorf("Refresh service returned HTTP %d", resp.StatusCode)
 	}
 	result := refreshResponse{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return credentials{}, false, fmt.Errorf("解析刷新响应失败: %w", err)
+		return credentials{}, false, fmt.Errorf("Failed to parse refresh response: %w", err)
 	}
 	if result.ShouldLogout {
 		return credentials{}, true, nil
 	}
 	if strings.TrimSpace(result.AccessToken) == "" {
-		return credentials{}, false, fmt.Errorf("刷新响应缺少 access token")
+		return credentials{}, false, fmt.Errorf("Refresh response is missing an access token")
 	}
 	current.AccessToken = strings.TrimSpace(result.AccessToken)
 	if strings.TrimSpace(result.RefreshToken) != "" {
@@ -721,7 +876,7 @@ func (manager *Manager) ImportFromCursorBackup(backupPath string) (bool, error) 
 	}
 	var backup map[string]any
 	if err := json.Unmarshal(data, &backup); err != nil {
-		return false, fmt.Errorf("解析官方账号备份失败: %w", err)
+		return false, fmt.Errorf("Failed to parse the official account backup: %w", err)
 	}
 	accessToken, refreshToken, email := cursor.ReadCursorAuthBackupValues(backup)
 	if strings.TrimSpace(accessToken) == "" {
@@ -873,13 +1028,13 @@ func (manager *Manager) commitOAuthCredentials(generation uint64, value credenti
 	summary, err := manager.store.Upsert(value)
 	if err != nil {
 		manager.state = StateError
-		manager.lastError = fmt.Sprintf("保存 Cursor 登录凭据失败: %v", err)
+		manager.lastError = fmt.Sprintf("Failed to save Cursor login credentials: %v", err)
 		return err
 	}
 	if strings.TrimSpace(manager.store.CurrentAccountID()) == "" {
 		if _, err := manager.store.SetCurrent(summary.ID); err != nil {
 			manager.state = StateError
-			manager.lastError = fmt.Sprintf("保存 Cursor 登录凭据失败: %v", err)
+			manager.lastError = fmt.Sprintf("Failed to save Cursor login credentials: %v", err)
 			return err
 		}
 		manager.credentials = value
@@ -961,6 +1116,27 @@ func bearer(token string) string {
 		return value
 	}
 	return "Bearer " + value
+}
+
+func subjectFromJWT(token string) string {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return ""
+		}
+	}
+	claims := struct {
+		Subject string `json:"sub"`
+	}{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.Subject)
 }
 
 func tokenNeedsRefresh(token string, now time.Time) bool {

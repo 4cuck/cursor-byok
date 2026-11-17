@@ -1,22 +1,22 @@
 import { extractStatusCode as extractStructuredStatusCode, normalizeClientError } from "./errorContract.js";
 
-// errorHumanizer.js 把 provider/适配器返回的原始错误翻译成人类可读的中文提示。
+// Turns raw provider/adapter errors into one readable English sentence.
 //
-// 适配器错误常形如：`anthropic adapter status=404 body={...}`，
-// 直接展示对用户不友好。这里按 HTTP 状态码 + 关键词归纳成一句话，
-// 同时保留原始错误供排查（在 UI 上折叠到 Tooltip / 原始返回）。
+// Adapter errors look like `anthropic adapter status=404 body={...}`, which is
+// useless in a dialog. This module groups them by HTTP status and keywords,
+// while the raw text stays available for diagnostics.
 
 const STATUS_MESSAGES = {
-  400: "请求被拒绝（可能是该模型不支持当前参数）",
-  401: "密钥无效或无权限访问该模型",
-  403: "密钥无效或无权限访问该模型",
-  404: "该模型在此供应商不存在或未开通",
-  408: "请求超时，供应商无响应",
-  429: "触发限流，请稍后重试",
-  500: "供应商服务异常，请稍后重试",
-  502: "供应商网关异常，请稍后重试",
-  503: "供应商暂时不可用，请稍后重试",
-  504: "供应商网关超时，请稍后重试",
+  400: "Request rejected (this model may not support the given parameters)",
+  401: "Invalid key or no permission for this model",
+  403: "Invalid key or no permission for this model",
+  404: "This model does not exist or is not enabled for this supplier",
+  408: "Request timed out; the supplier did not respond",
+  429: "Rate limited. Try again shortly.",
+  500: "Supplier service error. Try again shortly.",
+  502: "Supplier gateway error. Try again shortly.",
+  503: "Supplier temporarily unavailable. Try again shortly.",
+  504: "Supplier gateway timed out. Try again shortly.",
 };
 
 function rawText(error) {
@@ -28,56 +28,58 @@ function rawText(error) {
   return String(error).trim();
 }
 
-/** 从原始错误信息中提取上游 HTTP 状态码，无法解析时返回 0。 */
+/** Extracts the upstream HTTP status code from a raw error, or 0. */
 export function extractStatusCode(error) {
   return extractStructuredStatusCode(error);
 }
 
 /**
- * 把原始错误翻译成友好中文。无法归类时回退到原始信息（截断）。
- * @param {unknown} error 原始错误（字符串 / Error / {message,error}）
+ * Translates a raw error into readable English, falling back to the raw text.
+ * @param {unknown} error raw error (string / Error / {message,error})
  * @returns {string}
  */
 export function humanizeProviderError(error) {
   const text = rawText(error);
-  if (!text) return "请求失败";
+  if (!text) return "Request failed";
 
   const lower = text.toLowerCase();
   if (lower.includes("timeout") || lower.includes("deadline") || lower.includes("超时")) {
-    return "请求超时，供应商无响应";
+    return "Request timed out; the supplier did not respond";
   }
   if (lower.includes("context canceled") || lower.includes("已取消")) {
-    return "请求已取消";
+    return "Request cancelled";
   }
   if (lower.includes("api key") || lower.includes("apikey") || lower.includes("unauthorized")) {
-    return "密钥无效或无权限访问该模型";
+    return "Invalid key or no permission for this model";
   }
   if (lower.includes("no such host") || lower.includes("connection refused") || lower.includes("dial tcp")) {
-    return "无法连接到接口地址，请检查网络或地址是否正确";
+    return "Cannot connect to the endpoint. Check the network or the URL.";
   }
 
   const status = extractStatusCode(text);
   if (status && STATUS_MESSAGES[status]) {
     return STATUS_MESSAGES[status];
   }
-  if (status >= 500) return "供应商服务异常，请稍后重试";
-  if (status >= 400) return "请求被拒绝，请检查模型与参数配置";
+  if (status >= 500) return "Supplier service error. Try again shortly.";
+  if (status >= 400) return "Request rejected. Check the model and parameter configuration.";
 
-  // 无法归类：回退原始信息，避免丢失排查线索（限制长度）。
+  // Unclassifiable: keep the raw text so the cause is not lost (truncated).
   return text.length > 160 ? `${text.slice(0, 160)}…` : text;
 }
 
-// toUserError 统一使用结构化错误 presenter；字符串解析仅保留在 errorContract 的兼容入口。
+// toUserError delegates to the structured presenter; string parsing stays in
+// the errorContract compatibility entry point.
 export function toUserError(error) {
   return normalizeClientError(error).userMessage;
 }
 
 /**
- * toUserErrorWithCause 在友好中文后追加脱敏的技术原因（截断到 160 字符），
- * 供「拉取模型」这类一次性操作页使用：笼统文案（如「暂时无法连接服务」）
- * 不足以定位故障时，附带底层原因（如 dial tcp 127.0.0.1:7890: connection refused）
- * 能让用户直接看出是本地代理不通。
- * @param {unknown} error 原始错误
+ * toUserErrorWithCause appends a redacted technical reason (truncated to 160
+ * chars). Generic copy such as "cannot reach the service" is not enough to
+ * locate a fault; the underlying cause (for example
+ * `dial tcp 127.0.0.1:7890: connection refused`) tells the user immediately
+ * that the local proxy is unreachable.
+ * @param {unknown} error raw error
  * @returns {string}
  */
 export function toUserErrorWithCause(error) {
@@ -86,5 +88,5 @@ export function toUserErrorWithCause(error) {
   const technical = String(normalized.technicalMessage || "").trim();
   if (!technical || technical === user) return user;
   const detail = technical.length > 160 ? `${technical.slice(0, 160)}…` : technical;
-  return `${user}（${detail}）`;
+  return `${user} (${detail})`;
 }

@@ -72,7 +72,13 @@ func resolveCursorLauncherScript(script string) string {
 // 使用 ShellExecuteW 并采用默认操作：Windows 会自动应用 exe 的兼容性标志
 // （如 RUNASADMIN），需要时弹出 UAC 提升，从而让普通权限的助手也能拉起管理员 Cursor。
 func launchCursorProcess(path, workspaceDir string) error {
-	pathPtr, err := syscall.UTF16PtrFromString(path)
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		// ShellExecuteW 的 file 参数为空时不会失败，而是用 lpDirectory 打开资源管理器
+		// （这里是程序安装目录），表现为「点了切换却弹出文件夹、Cursor 没被拉起」。
+		return fmt.Errorf("cursor executable path is empty")
+	}
+	pathPtr, err := syscall.UTF16PtrFromString(trimmed)
 	if err != nil {
 		return fmt.Errorf("invalid cursor path: %w", err)
 	}

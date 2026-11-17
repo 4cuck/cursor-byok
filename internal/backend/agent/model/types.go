@@ -113,6 +113,10 @@ type StreamRequest struct {
 	ResolvedChannelID string
 	// ResolvedChannelName 表示本次请求实际命中的 adapter 展示名。
 	ResolvedChannelName string
+	// GroupName 是渠道分组标签。Cursor 账户模型用 cursor_accountN 区分账户主人。
+	GroupName string
+	// CursorAccountID 是本次请求应使用的 Cursor 账户。
+	CursorAccountID string
 	// ResolvedContextWindowTokens 表示本次请求实际命中的 adapter 上下文窗口。
 	ResolvedContextWindowTokens int
 	// ReasoningEffort 表示 OpenAI 兼容 provider 的推理强度。

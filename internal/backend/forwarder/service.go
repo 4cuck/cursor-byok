@@ -1111,9 +1111,7 @@ func isExecTool(name string) bool {
 	}
 }
 
-// isPollingAwaitTool 判断工具是否为轮询型 await 工具。这类工具按设计会以相同参数
-// 反复调用（轮询一个仍在运行的子代理 / shell），不应参与 doom-loop 计数，否则会
-// 误杀正在等待长任务的正常轮询。
+// isPollingAwaitTool 判断工具是否为轮询型 await 工具。
 func isPollingAwaitTool(name string) bool {
 	switch strings.TrimSpace(name) {
 	case "SubagentAwait", "AwaitShell":
@@ -1121,6 +1119,28 @@ func isPollingAwaitTool(name string) bool {
 	default:
 		return false
 	}
+}
+
+// pollWillActuallyBlock reports whether this polling tool call is a genuine
+// bounded wait and should therefore be exempted from the doom-loop counter.
+// A polling tool that returns immediately (block_until_ms == 0 or absent)
+// must still count toward the guard, because repeated identical calls that
+// return instantly are the spin-loop we want to detect.
+func pollWillActuallyBlock(name string, argsJSON []byte) bool {
+	if !isPollingAwaitTool(name) {
+		return false // not a polling tool: always counts toward doom-loop
+	}
+	argsMap, err := runtimecore.DecodeArgsMap(argsJSON)
+	if err != nil {
+		return false
+	}
+	value, found, err := runtimecore.ReadInt64Arg(argsMap, "block_until_ms")
+	if err != nil || !found {
+		// block_until_ms absent defaults to 30 000 ms in awaitShellSnapshot,
+		// so the call will genuinely block — exempt it.
+		return true
+	}
+	return value > 0
 }
 
 func inferEditToolName(args *agentv1.EditArgs) string {

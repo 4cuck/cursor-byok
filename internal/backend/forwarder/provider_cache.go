@@ -60,6 +60,16 @@ func newCachingProviderGateway(inner ProviderGateway, settings func() (bool, tim
 	}
 }
 
+// EnableCursorAccountModels forwards account-model setup to the inner gateway.
+func (gateway *cachingProviderGateway) EnableCursorAccountModels(auth modeladapter.CursorAccountAuthorizer) {
+	if gateway == nil {
+		return
+	}
+	if enabler, ok := gateway.inner.(*DefaultProviderGateway); ok {
+		enabler.EnableCursorAccountModels(auth)
+	}
+}
+
 // FlushResponseCacheToDisk 供服务关闭时冲刷缓存落盘：节流定时器最长延迟 2s，
 // 不冲刷的话每次退出固定丢最近 ≤2s 的缓存变更。
 func (gateway *cachingProviderGateway) FlushResponseCacheToDisk() {

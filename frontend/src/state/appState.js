@@ -317,9 +317,11 @@ async function persistConfigPayloadNow(config, { modelAdaptersOnly = false } = {
   const mergedConfig = {
     ...latestConfig,
     ...requestedConfig,
+    // Settings saves, including the upstream/local switch, must not replace
+    // stored model API keys with whatever happens to be in memory.
     modelAdapters: modelAdaptersOnly
       ? requestedConfig.modelAdapters
-      : normalizeModelAdapters(appState.modelAdapters),
+      : latestConfig.modelAdapters,
     delegation: modelAdaptersOnly
       ? latestConfig.delegation
       : normalizeDelegation(appState.delegation),
@@ -1222,6 +1224,20 @@ export async function saveModelAdapterAt(index, adapter) {
     index: targetIndex,
     adapter: appState.modelAdapters[targetIndex] ?? null,
   };
+}
+
+export async function removeModelAdaptersWhere(predicate) {
+  const currentConfig = await loadPersistedUserConfig();
+  const existingAdapters = normalizeModelAdapters(currentConfig.modelAdapters);
+  const nextAdapters = existingAdapters.filter((adapter) => !predicate(adapter));
+  if (nextAdapters.length === existingAdapters.length) {
+    return { ok: true, removed: 0 };
+  }
+  const result = await persistConfigPayload(
+    { ...currentConfig, modelAdapters: nextAdapters },
+    { modelAdaptersOnly: true },
+  );
+  return result.ok ? { ...result, removed: existingAdapters.length - nextAdapters.length } : result;
 }
 
 export async function saveModelAdaptersBatch(adapters) {

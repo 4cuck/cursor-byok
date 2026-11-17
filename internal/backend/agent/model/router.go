@@ -653,6 +653,8 @@ func (router *Router) streamChannel(ctx context.Context, req StreamRequest, chan
 		if resolved.BaseURL != "" || resolved.APIKey != "" || channel.CustomHeadersEnabled || strings.TrimSpace(channel.CustomHeadersJSON) != "" {
 			return fmt.Errorf("Cursor 账户模型不能携带第三方接口地址、API Key 或自定义请求头")
 		}
+		resolved.GroupName = strings.TrimSpace(channel.GroupName)
+		resolved.CursorAccountID = strings.TrimSpace(channel.CursorAccountID)
 		return router.accountGateway.Stream(ctx, resolved, sink)
 	}
 	if resolved.ModelSource != legacyruntime.ModelSourceThirdParty || resolved.CredentialScope != legacyruntime.CredentialScopeAdapterAPIKey {

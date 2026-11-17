@@ -16,6 +16,21 @@ import (
 
 const awaitShellOutputLimit = 16 * 1024
 
+// awaitPollInterval 是 AwaitShell 异步等待时的最小轮询间隔。
+// 保证 actor 每次都有机会处理 cancel / exec_result 等其他命令。
+const awaitPollInterval = 500 * time.Millisecond
+
+// pendingAwaitShell 记录一个挂起中的 AwaitShell 工具调用的完整上下文，
+// 由 streamTimerAwaitShell 定期唤醒，直到 shell 完成或截止时间到期。
+type pendingAwaitShell struct {
+	Invocation runtimecore.ToolInvocation
+	Args       awaitShellArgs
+}
+
+func awaitShellTimerKey(shellID string) string {
+	return "await_shell:" + strings.TrimSpace(shellID)
+}
+
 const (
 	backgroundShellStatusBackgrounded     = "backgrounded"
 	backgroundShellStatusRunning          = "running"
@@ -64,11 +79,149 @@ func (service *Service) handleAwaitShellToolInvocation(stream *ActiveStream, inv
 		return service.completeImmediateToolResult(stream, invocation, string(payload), buildAwaitShellToolCall(buildAwaitArgsFromAwaitShellArgs(args), buildAwaitShellProtoResult(result)))
 	}
 	result := service.awaitShellSnapshot(stream, args)
+
+	// If the shell is still running and the caller wants to block, defer completion
+	// via a timer instead of returning immediately — this is what makes AwaitShell
+	// actually wait rather than spin. The actor mailbox stays unblocked throughout.
+	if shouldDeferAwaitShell(result, args) {
+		return service.deferAwaitShellCompletion(stream, invocation, args)
+	}
+
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
 	return service.completeImmediateToolResult(stream, invocation, string(payload), buildAwaitShellToolCall(buildAwaitArgsFromAwaitShellArgs(args), buildAwaitShellProtoResult(result)))
+}
+
+// shouldDeferAwaitShell reports whether this AwaitShell call should be held open
+// until the shell finishes or the deadline passes, rather than returning a
+// "still running" snapshot immediately.
+func shouldDeferAwaitShell(r awaitShellResult, args awaitShellArgs) bool {
+	if strings.TrimSpace(args.ShellID) == "" {
+		return false // no shell to wait on
+	}
+	if isBackgroundShellTerminalStatus(r.Status) || r.Matched {
+		return false // already done
+	}
+	if r.Status == backgroundShellStatusUnknown {
+		return false // can't wait on an unknown shell
+	}
+	blockMS := int64(30000)
+	if args.BlockUntilMS != nil {
+		blockMS = *args.BlockUntilMS
+	}
+	return blockMS > 0 && r.Status == backgroundShellStatusRunning
+}
+
+// deferAwaitShellCompletion registers a pending await and schedules the first
+// poll timer. It does NOT block; the actor continues processing other commands.
+func (service *Service) deferAwaitShellCompletion(stream *ActiveStream, inv runtimecore.ToolInvocation, args awaitShellArgs) error {
+	key := awaitShellTimerKey(args.ShellID)
+	blockMS := int64(30000)
+	if args.BlockUntilMS != nil {
+		blockMS = *args.BlockUntilMS
+	}
+	deadline := time.Now().Add(time.Duration(blockMS) * time.Millisecond)
+
+	stream.mu.Lock()
+	if stream.PendingAwaits == nil {
+		stream.PendingAwaits = make(map[string]pendingAwaitShell)
+	}
+	if stream.AwaitDeadlines == nil {
+		stream.AwaitDeadlines = make(map[string]time.Time)
+	}
+	// Only set the deadline on the first defer; subsequent polls reuse it.
+	if _, seen := stream.AwaitDeadlines[key]; !seen {
+		stream.AwaitDeadlines[key] = deadline
+	} else {
+		deadline = stream.AwaitDeadlines[key]
+	}
+	stream.PendingAwaits[key] = pendingAwaitShell{Invocation: inv, Args: args}
+	stream.mu.Unlock()
+
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return service.completeAwaitShellNow(stream, key, true)
+	}
+	next := remaining
+	if awaitPollInterval < next {
+		next = awaitPollInterval
+	}
+	service.scheduleStreamTimer(stream, key, next, streamTimerAwaitShell, "", 0, "await_shell_poll")
+	return nil
+}
+
+// handleAwaitShellTimer is called by the actor when a streamTimerAwaitShell fires.
+// It re-snapshots the shell state and either completes the pending call or reschedules.
+func (service *Service) handleAwaitShellTimer(stream *ActiveStream, payload *streamTimerEvent) error {
+	if payload == nil {
+		return nil
+	}
+	key := payload.Key
+
+	stream.mu.Lock()
+	pending, ok := stream.PendingAwaits[key]
+	deadline, _ := stream.AwaitDeadlines[key]
+	stream.mu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	// Check terminal stream status before doing anything else.
+	stream.mu.Lock()
+	status := stream.Status
+	stream.mu.Unlock()
+	if isTerminalStreamStatus(status) {
+		service.cleanupPendingAwait(stream, key)
+		return nil
+	}
+
+	result := service.awaitShellSnapshot(stream, pending.Args)
+	finished := isBackgroundShellTerminalStatus(result.Status) || result.Matched
+	expired := !time.Now().Before(deadline)
+
+	if finished || expired {
+		return service.completeAwaitShellNow(stream, key, expired && !finished)
+	}
+
+	remaining := time.Until(deadline)
+	next := remaining
+	if awaitPollInterval < next {
+		next = awaitPollInterval
+	}
+	service.scheduleStreamTimer(stream, key, next, streamTimerAwaitShell, "", 0, "await_shell_poll")
+	return nil
+}
+
+// completeAwaitShellNow finishes the deferred AwaitShell call with a final snapshot.
+func (service *Service) completeAwaitShellNow(stream *ActiveStream, key string, forceTimedOut bool) error {
+	stream.mu.Lock()
+	pending, ok := stream.PendingAwaits[key]
+	stream.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	service.cleanupPendingAwait(stream, key)
+
+	result := service.awaitShellSnapshot(stream, pending.Args)
+	if forceTimedOut && !isBackgroundShellTerminalStatus(result.Status) && !result.Matched {
+		result.TimedOut = true
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	return service.completeImmediateToolResult(stream, pending.Invocation, string(payload),
+		buildAwaitShellToolCall(buildAwaitArgsFromAwaitShellArgs(pending.Args), buildAwaitShellProtoResult(result)))
+}
+
+func (service *Service) cleanupPendingAwait(stream *ActiveStream, key string) {
+	clearStreamTimer(stream, key)
+	stream.mu.Lock()
+	delete(stream.PendingAwaits, key)
+	delete(stream.AwaitDeadlines, key)
+	stream.mu.Unlock()
 }
 
 func decodeAwaitShellArgs(raw []byte) (awaitShellArgs, error) {

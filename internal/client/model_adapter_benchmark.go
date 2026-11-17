@@ -144,9 +144,17 @@ func (s *ProxyService) TestModelAdapter(adapter serverconfig.ModelAdapterConfig)
 		return result, err
 	}
 	if isCursorAccountModelAdapter(normalized) {
-		result := buildErroredModelAdapterTestResult(normalized.ID, requestHash, errCursorAccountModelOperationUnavailable)
+		running := ModelAdapterTestResult{
+			AdapterID:   normalized.ID,
+			RequestHash: requestHash,
+			Status:      string(ModelAdapterTestStatusRunning),
+			SummaryText: "测试中...",
+			TestedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		s.storeAndEmitModelAdapterTestResult(running)
+		result, _ := s.runCursorAccountModelTest(normalized, requestHash)
 		s.storeAndEmitModelAdapterTestResult(result)
-		return result, errCursorAccountModelOperationUnavailable
+		return result, nil
 	}
 
 	running := ModelAdapterTestResult{

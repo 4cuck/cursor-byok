@@ -186,6 +186,51 @@ func TestHandleSendFinalSummaryToolInvocation(t *testing.T) {
 	}
 }
 
+func TestSendFinalSummaryStopsAfterVisibleReply(t *testing.T) {
+	broker := NewStreamBroker()
+	service := &Service{
+		broker:    broker,
+		projector: NewHistoryProjector(),
+		debug:     newDebugRecorder("", broker, nil),
+	}
+	stream, err := broker.OpenStream(
+		"request-final-summary-visible",
+		"conversation-final-summary-visible",
+		1,
+		"model",
+		"model",
+		agentv1.AgentMode_AGENT_MODE_AGENT,
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	stream.CheckpointConversation = &ConversationFile{
+		ConversationID: "conversation-final-summary-visible",
+		Mode:           "agent",
+		NextTurnSeq:    2,
+		NextEntrySeq:   1,
+	}
+	stream.ProviderActive = true
+	stream.Status = StreamStatusStreaming
+	stream.ProviderPassFlushedAssistantText = true
+
+	invocation := runtimecore.ToolInvocation{
+		CallID:   "call-final-visible",
+		ToolName: "send_final_summary",
+		ArgsJSON: []byte(`{"final_summary":"already shown"}`),
+	}
+	if err := service.handleSendFinalSummaryToolInvocation(stream, invocation); err != nil {
+		t.Fatalf("handleSendFinalSummaryToolInvocation() error = %v", err)
+	}
+	stream.mu.Lock()
+	terminal := stream.ProviderTerminalToolInvocation
+	stream.mu.Unlock()
+	if !terminal {
+		t.Fatal("send_final_summary after a visible reply must end the turn")
+	}
+}
+
 func TestSendFinalSummaryContinuesToVisibleFinalReply(t *testing.T) {
 	store := NewConversationFileStore(t.TempDir())
 	conversation := testConversation([]HistoryEntry{

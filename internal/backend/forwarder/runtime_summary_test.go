@@ -82,35 +82,29 @@ func TestEmitTurnSummary(t *testing.T) {
 	if err := service.emitTurnSummary(stream, reqID, "call-1"); err != nil {
 		t.Fatal(err)
 	}
-	if len(stream.Backlog) != 3 {
-		t.Fatalf("expected 3 summary events, got %d", len(stream.Backlog))
+	if len(stream.Backlog) != 1 {
+		t.Fatalf("expected 1 summary event, got %d", len(stream.Backlog))
 	}
-	types := make([]string, 0, 3)
+	types := make([]string, 0, 1)
 	for _, event := range stream.Backlog {
 		update := event.Message.GetInteractionUpdate()
 		if update == nil {
 			t.Fatalf("expected interaction update event")
 		}
-		switch update.Message.(type) {
-		case *agentv1.InteractionUpdate_SummaryStarted:
-			types = append(types, "started")
+		switch message := update.Message.(type) {
+		case *agentv1.InteractionUpdate_SummaryStarted, *agentv1.InteractionUpdate_SummaryCompleted:
+			t.Fatalf("ordinary turn summary must not render a compaction bubble: %T", message)
 		case *agentv1.InteractionUpdate_Summary:
 			summary := update.GetSummary()
 			if summary == nil || !strings.Contains(summary.GetSummary(), "实现登录功能") {
 				t.Fatalf("summary content mismatch: %+v", summary)
 			}
 			types = append(types, "summary")
-		case *agentv1.InteractionUpdate_SummaryCompleted:
-			completed := update.GetSummaryCompleted()
-			if completed == nil || completed.GetHookMessage() != reqID {
-				t.Fatalf("summary completed hook_message mismatch: %+v", completed)
-			}
-			types = append(types, "completed")
 		default:
 			t.Fatalf("unexpected event type: %T", update.Message)
 		}
 	}
-	if strings.Join(types, ",") != "started,summary,completed" {
+	if strings.Join(types, ",") != "summary" {
 		t.Fatalf("event order mismatch: %v", types)
 	}
 
@@ -118,7 +112,7 @@ func TestEmitTurnSummary(t *testing.T) {
 	if err := service.emitTurnSummary(stream, reqID, "call-1"); err != nil {
 		t.Fatal(err)
 	}
-	if len(stream.Backlog) != 3 {
+	if len(stream.Backlog) != 1 {
 		t.Fatalf("expected dedupe within same turn, got %d events", len(stream.Backlog))
 	}
 
@@ -129,8 +123,8 @@ func TestEmitTurnSummary(t *testing.T) {
 	if err := service.emitTurnSummary(stream, reqID, "call-2"); err != nil {
 		t.Fatal(err)
 	}
-	if len(stream.Backlog) != 6 {
-		t.Fatalf("expected 3 new events for next turn, got %d total", len(stream.Backlog))
+	if len(stream.Backlog) != 2 {
+		t.Fatalf("expected 1 new event for next turn, got %d total", len(stream.Backlog))
 	}
 }
 

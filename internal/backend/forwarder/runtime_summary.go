@@ -183,12 +183,12 @@ func (service *Service) syncSummarySnapshot(stream *ActiveStream, conversation *
 	return service.syncConversationRecord(conversation.ConversationID, conversation)
 }
 
-// emitTurnSummary 在单个 turn 完成时向 RunSSE 流注入会话摘要事件
-// （SummaryStarted → Summary → SummaryCompleted），与官方控制面行为对齐：
-// Cursor 客户端左侧会话列表的标题摘要（latestConversationSummary.summary.summary）
-// 正是消费 RunSSE 流里的 SummaryUpdate 事件得到的。此前本项目只在触发上下文压缩
-// （compaction）时才发送摘要事件，普通 turn 完成后客户端拿不到摘要，左侧显示
-// "No summary available"。同一 turn 多次 provider pass 只发一次（SummaryEmittedTurn 去重）。
+// emitTurnSummary 在 turn 真正结束时发送一条 SummaryUpdate，供仍读取该事件的
+// 会话列表使用。不能发送 SummaryStarted / SummaryCompleted：当前 Cursor 客户端
+// 会因此插入一条 SUMMARIZATION 气泡，并把 hook 请求显示成
+// "Chat context summarized"。那是上下文压缩的状态，不是每轮侧边栏标题。
+// 真正的压缩仍由 compaction.go 的 publishSummaryCompleted 发送。
+// 同一 turn 多次 provider pass 只发一次（SummaryEmittedTurn 去重）。
 func (service *Service) emitTurnSummary(stream *ActiveStream, requestID string, modelCallID string) error {
 	if service == nil || stream == nil || strings.TrimSpace(requestID) == "" || strings.TrimSpace(modelCallID) == "" {
 		return nil
@@ -215,17 +215,9 @@ func (service *Service) emitTurnSummary(stream *ActiveStream, requestID string, 
 	if strings.TrimSpace(summaryText) == "" {
 		return nil
 	}
-	// 三个事件全部成功发布后再标记已发送；中途失败不置位，
-	// 允许重试时重新走一遍（Publish 为 append 语义，重复无副作用）。
-	if err := service.broker.Publish(stream.RequestID, StreamEvent{Message: buildSummaryStartedMessage()}); err != nil {
-		logger.Errorf("forwarder emit summary publish failed request_id=%s err=%v", strings.TrimSpace(requestID), err)
-		return nil
-	}
+	// 只发摘要正文。SummaryStarted/SummaryCompleted 会在聊天里渲染成
+	// “Chat context summarized”，普通回合不能发。
 	if err := service.broker.Publish(stream.RequestID, StreamEvent{Message: buildSummaryMessage(summaryText)}); err != nil {
-		logger.Errorf("forwarder emit summary publish failed request_id=%s err=%v", strings.TrimSpace(requestID), err)
-		return nil
-	}
-	if err := service.broker.Publish(stream.RequestID, StreamEvent{Message: buildSummaryCompletedMessage(requestID)}); err != nil {
 		logger.Errorf("forwarder emit summary publish failed request_id=%s err=%v", strings.TrimSpace(requestID), err)
 		return nil
 	}

@@ -7,6 +7,7 @@ import (
 	"cursor/internal/appdata"
 	serverconfig "cursor/internal/backend/server/config"
 	"cursor/internal/cursor"
+	"cursor/internal/logger"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -65,8 +66,21 @@ func (s *ProxyService) SaveUserConfig(cfg UserConfig) error {
 	// 旧配置读取失败（oldErr != nil）时 oldConfig 为零值，Mode 非 upstream，
 	// 同样走恢复兜底：状态未知时恢复官方态是更安全的选择。
 	if normalized.Routing.Mode == "upstream" && oldConfig.Routing.Mode != "upstream" {
-		if err := cursor.RestoreCursorUserInfo(); err != nil {
+		// A Cursor API-key account was deliberately installed into the client so
+		// the local proxy can serve its requests. Restoring the official login
+		// state would delete that credential, and Cursor would fall back to the
+		// sign-in page. Keep it in place.
+		if s.cursorAccount != nil && s.cursorAccount.CurrentAccountUsesAPIKey() {
+			logger.Infof("official upstream: keeping the installed Cursor API key account")
+		} else if err := cursor.RestoreCursorUserInfo(); err != nil {
 			return fmt.Errorf("restore cursor user info: %w", err)
+		}
+	} else if normalized.Routing.Mode != "upstream" && oldConfig.Routing.Mode == "upstream" {
+		// Coming back to cursor-byok must put the selected account back into
+		// Cursor. Otherwise the official token restored for upstream stays in
+		// place and replaces the API key the user had installed.
+		if err := s.reinjectActiveCursorAccount(); err != nil {
+			return fmt.Errorf("restore cursor-byok account: %w", err)
 		}
 	}
 	s.emitUserConfigChanged(normalized)

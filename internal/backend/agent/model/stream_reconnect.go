@@ -11,6 +11,11 @@ import (
 // 严重时同一工具调用会被二次执行（shell/写文件等副作用重复）。
 var ErrMidStreamInterrupted = errors.New("mid-stream interruption after partial content has been forwarded")
 
+// ErrIncompleteToolCallArgs 标记上游 SSE 在工具调用 JSON 参数传输完成前断流。
+// 工具从未被 dispatch（JSON 不完整，无法解析），因此重放请求是安全的——
+// 即使部分 delta 事件已转发给客户端，也不存在副作用重复风险。
+var ErrIncompleteToolCallArgs = errors.New("incomplete tool call arguments")
+
 // midStreamInterruptedError 包装「已产出后中断」错误并附加 ErrMidStreamInterrupted 标记，
 // 供 router 层用 errors.Is 识别并跳过整体重试。
 func midStreamInterruptedError(err error) error {
@@ -42,8 +47,12 @@ func streamWithReconnect(ctx context.Context, sink func(ModelEvent) error, safet
 		if emitted {
 			// 已向客户端产出可见事件后发生任何错误：本轮输出不可重放，
 			// 一律标记 mid-stream，禁止 router 层整体重试造成重复输出。
-			// ctx 取消（用户主动终止）保持原始错误，交由分类层按取消处理。
+			// 例外：工具调用参数截断（ErrIncompleteToolCallArgs）时，工具从未被
+			// dispatch，重放不会产生副作用重复，直接返回原始错误供 router 重试。
 			if ctx.Err() != nil {
+				return err
+			}
+			if errors.Is(err, ErrIncompleteToolCallArgs) {
 				return err
 			}
 			return midStreamInterruptedError(err)

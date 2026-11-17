@@ -47,8 +47,13 @@ cursor-tab-server/config.yaml
 .reasonix/
 reasonix.toml
 scripts/_tmp_*
+scripts/tmp-*
+scripts/probe-*
 scripts/_make_promo_media.ps1
 docs/assets/vite-preview*.log
+
+# 本地抓取的 Cursor 会话 Cookie（真实凭据，禁止进入版本库）
+cookies/
 
 # 一次性本地构建脚本（含本机绝对路径，已从版本库剔除）
 /_build_*.ps1

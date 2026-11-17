@@ -2,12 +2,13 @@ package upstream
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,7 +59,12 @@ func ForwardToUpstream(reqCtx *RequestContext, options ForwardOptions) (*Forward
 	copyResponseHeadersToClient(reqCtx.ResponseWriter.Header(), upstreamResponse.Header)
 	reqCtx.ResponseWriter.WriteHeader(upstreamResponse.StatusCode)
 
-	written, copyErr := copyResponse(reqCtx.ResponseWriter, upstreamResponse.Body)
+	var onDeviceLimit func()
+	if reqCtx.Deps != nil && reqCtx.Deps.DeviceLimitReporter != nil {
+		reporter := reqCtx.Deps.DeviceLimitReporter
+		onDeviceLimit = func() { reporter.ReportDeviceLimit("device_limit") }
+	}
+	written, copyErr := copyResponseWithSniffer(reqCtx.ResponseWriter, upstreamResponse.Body, onDeviceLimit)
 	meta := &ForwardMeta{
 		StatusCode:   upstreamResponse.StatusCode,
 		Status:       upstreamResponse.Status,
@@ -106,7 +112,75 @@ func buildUpstreamRequest(reqCtx *RequestContext, body []byte, options ForwardOp
 	return upstreamRequest, upstreamClient, nil
 }
 
+// deviceLimitSniffer watches the leading bytes of an upstream response for the
+// device-cap refusal. Cursor reports it inside normal 200 responses as error
+// frames, so it cannot be detected from the status code.
+//
+// It fires at most once and only scans a bounded prefix, so streaming responses
+// pay almost nothing.
+type deviceLimitSniffer struct {
+	prefix   []byte
+	scanned  bool
+	onDetect func()
+}
+
+const deviceLimitSniffBytes = 64 * 1024
+
+func (s *deviceLimitSniffer) inspect(chunk []byte) {
+	if s == nil || s.scanned || s.onDetect == nil {
+		return
+	}
+	if len(s.prefix) < deviceLimitSniffBytes {
+		remaining := deviceLimitSniffBytes - len(s.prefix)
+		if remaining > len(chunk) {
+			remaining = len(chunk)
+		}
+		s.prefix = append(s.prefix, chunk[:remaining]...)
+	}
+	// Markers are short; matching on the accumulated prefix catches them as soon
+	// as the relevant frame arrives.
+	if IsDeviceLimitError(string(s.prefix)) {
+		s.scanned = true
+		s.prefix = nil
+		s.onDetect()
+		return
+	}
+	if len(s.prefix) >= deviceLimitSniffBytes {
+		// Enough evidence gathered; stop retaining memory.
+		s.scanned = true
+		s.prefix = nil
+	}
+}
+
+// IsDeviceLimitError reports whether an upstream error payload means the account
+// is temporarily locked because too many devices used it.
+func IsDeviceLimitError(text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range deviceLimitMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+var deviceLimitMarkers = []string{
+	"too many computers",
+	"too many devices",
+	"device_limit",
+	"device limit",
+	"used within the last 24 hours",
+}
+
 func copyResponse(writer io.Writer, reader io.Reader) (int64, error) {
+	return copyResponseWithSniffer(writer, reader, nil)
+}
+
+// copyResponseWithSniffer streams the upstream body to the client while
+// inspecting the leading bytes for a device-limit refusal. Streaming is
+// preserved: the sniffer only retains a small prefix, never the whole body.
+func copyResponseWithSniffer(writer io.Writer, reader io.Reader, onDeviceLimit func()) (int64, error) {
+	sniffer := &deviceLimitSniffer{onDetect: onDeviceLimit}
 	buffer := make([]byte, 32*1024)
 	var total int64
 
@@ -114,6 +188,7 @@ func copyResponse(writer io.Writer, reader io.Reader) (int64, error) {
 		readCount, readErr := reader.Read(buffer)
 		if readCount > 0 {
 			chunk := buffer[:readCount]
+			sniffer.inspect(chunk)
 			written, writeErr := writer.Write(chunk)
 			total += int64(written)
 			if writeErr != nil {
@@ -167,17 +242,18 @@ func shouldRewriteHost(host string) bool {
 	return normalized == "cursor.sh" || strings.HasSuffix(normalized, ".cursor.sh")
 }
 
-func BuildCursorChecksum(authorization string) string {
+// cursorChecksumTimestamp reproduces Cursor's dj0(): xor-chain the 6-byte
+// big-endian timestamp and base64 it. This part of the checksum was correct.
+func cursorChecksumTimestamp() string {
 	const (
 		checksumTimestampDivisor = 1_000_000
 		checksumInitialSeed      = 165
 	)
 	timestamp := time.Now().UnixMilli() / checksumTimestampDivisor
 	timestampBytes := make([]byte, 6)
-	timestampBigInt := big.NewInt(timestamp)
 	for index := 0; index < len(timestampBytes); index++ {
 		shift := uint((len(timestampBytes) - 1 - index) * 8)
-		timestampBytes[index] = byte(new(big.Int).Rsh(timestampBigInt, shift).Uint64() & 0xff)
+		timestampBytes[index] = byte((timestamp >> shift) & 0xff)
 	}
 	seed := checksumInitialSeed
 	for index := 0; index < len(timestampBytes); index++ {
@@ -186,10 +262,39 @@ func BuildCursorChecksum(authorization string) string {
 		timestampBytes[index] = byte(current)
 		seed = current
 	}
-	prefix := strings.TrimRight(base64.StdEncoding.EncodeToString(timestampBytes), "=")
-	hashBytes := sha256.Sum256([]byte(strings.TrimSpace(authorization)))
-	hash := fmt.Sprintf("%x", hashBytes)
-	return prefix + hash[:32]
+	return strings.TrimRight(base64.StdEncoding.EncodeToString(timestampBytes), "=")
+}
+
+// BuildCursorChecksum reproduces Cursor's x-cursor-checksum header.
+//
+// The real format, read from workbench.desktop.main.js (hj0):
+//
+//	`${base64(timestampBytes)}${machineId}` plus `/${macMachineId}` when set
+//
+// It is NOT a hash of the Authorization header. The previous implementation
+// appended sha256(authorization), which the server tolerated for control-plane
+// calls but rejected for model traffic.
+func BuildCursorChecksum(authorization string) string {
+	_ = authorization
+	return BuildCursorChecksumWithMachineID(CursorMachineID())
+}
+
+// BuildCursorChecksumWithMachineID builds the header for an explicit machine id.
+func BuildCursorChecksumWithMachineID(machineID string) string {
+	prefix := cursorChecksumTimestamp()
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return prefix
+	}
+	return prefix + machineID
+}
+
+// legacyBuildCursorChecksum is the previous sha256-based formula. Retained so
+// tests can document the difference; production code must not use it.
+func legacyBuildCursorChecksum(authorization string) string {
+	prefix := cursorChecksumTimestamp()
+	sum := sha256.Sum256([]byte(strings.TrimSpace(authorization)))
+	return prefix + hex.EncodeToString(sum[:])[:32]
 }
 
 func formatBearerAuthorization(raw string) string {
@@ -256,11 +361,39 @@ func handleMockOAuth(reqCtx *RequestContext, route *Route) error {
 		RefreshToken string `json:"refresh_token"`
 	}{}
 	_ = json.Unmarshal(reqCtx.RequestBody, &payload)
-	responseBody, err := marshalJSONBody(map[string]any{
-		"access_token": payload.RefreshToken,
-		"id_token":     payload.RefreshToken,
+
+	// crsr_ 用户 API Key 不能直接当 access token 使用，必须先换成 IDE 面 JWT。
+	// 客户端把 refreshToken 原样发过来，这里就地完成换取，返回真实 JWT。
+	// refresh_token 必须仍是原始 key：exchange 出来的 JWT 大约一小时过期，
+	// 如果客户端把它存成 refresh token，下一次刷新会拿着过期 JWT 空转。
+	accessToken := payload.RefreshToken
+	idToken := payload.RefreshToken
+	refreshToken := ""
+	if exchanged, err := exchangeCursorAPIKey(reqCtx, payload.RefreshToken); err == nil && exchanged != "" {
+		accessToken = exchanged
+		idToken = exchanged
+		refreshToken = strings.TrimSpace(payload.RefreshToken)
+	} else if reqCtx != nil && reqCtx.Deps != nil && reqCtx.Deps.SessionRefresher != nil {
+		ctx := context.Background()
+		if reqCtx.Request != nil {
+			ctx = reqCtx.Request.Context()
+		}
+		if renewedAccess, renewedRefresh, ok := reqCtx.Deps.SessionRefresher.RefreshPresentedToken(ctx, payload.RefreshToken); ok && strings.TrimSpace(renewedAccess) != "" {
+			accessToken = strings.TrimSpace(renewedAccess)
+			idToken = accessToken
+			refreshToken = strings.TrimSpace(renewedRefresh)
+		}
+	}
+
+	response := map[string]any{
+		"access_token": accessToken,
+		"id_token":     idToken,
 		"shouldLogout": false,
-	})
+	}
+	if refreshToken != "" {
+		response["refresh_token"] = refreshToken
+	}
+	responseBody, err := marshalJSONBody(response)
 	if err != nil {
 		return err
 	}

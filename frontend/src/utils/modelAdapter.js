@@ -126,6 +126,7 @@ export function buildModelAdapterIdentityKey(adapter) {
     String(Boolean(adapter.customHeadersEnabled)),
     adapter.customHeadersEnabled ? asString(adapter.customHeadersJSON) : "",
     asString(adapter.groupName).trim(),
+    asString(adapter.cursorAccountID).trim(),
   ].join("\n");
 }
 
@@ -305,15 +306,23 @@ export function normalizeModelAdapter(source) {
     ? normalizeCustomThinkingEfforts(raw.customThinkingEfforts ?? raw.custom_thinking_efforts)
     : [];
   if (isCursorAccount) {
+    const ownerLabel = /^cursor_account\d+$/.test(asString(raw.supplierID ?? raw.supplierId).trim())
+      ? asString(raw.supplierID ?? raw.supplierId).trim()
+      : (/^cursor_account\d+$/.test(asString(raw.groupName || raw.group_name).trim())
+        ? asString(raw.groupName || raw.group_name).trim()
+        : "cursor_account");
+    const groupName = asString(raw.groupName || raw.group_name).trim() || ownerLabel;
     return {
       ...createEmptyModelAdapter(),
       id: asString(raw.id),
       source: MODEL_SOURCE_CURSOR_ACCOUNT,
       credentialScope: CREDENTIAL_SCOPE_CURSOR_ACCOUNT,
       displayName: asString(raw.displayName || raw.name),
-      groupName: asString(raw.groupName || raw.group_name),
+      groupName,
       type: MODEL_SOURCE_CURSOR_ACCOUNT,
-      supplierID: "cursor_account",
+      supplierID: ownerLabel,
+      cursorAccountID: asString(raw.cursorAccountID || raw.cursor_account_id),
+      disabled: asBoolean(raw.disabled),
       tooltipData: asString(raw.tooltipData) || "Cursor 账户模型",
       modelID: asString(raw.modelID),
       customHeadersEnabled: false,

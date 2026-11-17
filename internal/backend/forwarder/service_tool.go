@@ -58,10 +58,11 @@ func (service *Service) handleToolInvocation(stream *ActiveStream, invocation ru
 	stream.UpdatedAt = time.Now().UTC()
 	// B1 doom loop 检测：以（工具名+规范化参数）签名对连续相同调用计数。
 	// 签名变化即重置；达到硬阈值时中断本轮，达到警告阈值时注入提示。
-	// 轮询型工具（SubagentAwait/AwaitShell）按设计就会以相同参数反复调用，
-	// 不参与计数，否则会误杀正在等待长任务子代理的正常轮询。
+	// 轮询型工具仅在 block_until_ms > 0 时豁免：此时调用会真正挂起等待，
+	// 相同参数反复出现是正常轮询行为。block_until_ms == 0 或缺失时不豁免，
+	// 因为此时调用立即返回，重复调用必然是死循环。
 	doomLoopCount := 0
-	countsDoomLoop := !isPollingAwaitTool(trimmedToolName)
+	countsDoomLoop := !pollWillActuallyBlock(trimmedToolName, invocation.ArgsJSON)
 	if countsDoomLoop {
 		if stream.lastDoomLoopSignature != signature {
 			stream.doomLoopCounts = map[string]int{}

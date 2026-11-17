@@ -1208,6 +1208,53 @@ export const UpdateCursorAccountTags = (accountID, tags) => {
   account.tags = Array.isArray(tags) ? tags.map((tag) => String(tag)) : [];
   return Promise.resolve({ ...account });
 };
+export const CheckCursorAccountHealth = (accountID) => {
+  recordPreviewCall("CheckCursorAccountHealth", [accountID]);
+  return Promise.resolve({
+    state: "ok",
+    message: "Account is working. Model calls are accepted.",
+    email: "preview@cursor.test",
+    model: "composer-2.5",
+    modelCallOk: true,
+    checkedAtUnixMs: Date.now(),
+    accountId: accountID || "",
+    plan: {
+      planName: "Pro",
+      membershipType: "pro",
+      subscriptionStatus: "active",
+      price: "$20/mo",
+      includedCents: 2000,
+      remainingCents: 1500,
+      limitCents: 2000,
+      usedCents: 500,
+      percentUsed: 25,
+      usageKnown: true,
+    },
+  });
+};
+export const GetCursorAccountPlan = (accountID) => {
+  recordPreviewCall("GetCursorAccountPlan", [accountID]);
+  return Promise.resolve({
+    planName: "Pro",
+    membershipType: "pro",
+    subscriptionStatus: "active",
+    price: "$20/mo",
+    includedCents: 2000,
+    remainingCents: 1500,
+    limitCents: 2000,
+    usedCents: 500,
+    percentUsed: 25,
+    usageKnown: true,
+  });
+};
+export const ClearCursorAccountLock = (accountID) => {
+  recordPreviewCall("ClearCursorAccountLock", [accountID]);
+  return Promise.resolve({ id: accountID, lockedUntilUnixMs: 0, lockReason: "" });
+};
+export const FetchCursorAccountModels = () => {
+  recordPreviewCall("FetchCursorAccountModels");
+  return Promise.resolve({ models: [] });
+};
 export const DeleteCursorAccounts = (request) => {
   recordPreviewCall("DeleteCursorAccounts", [{ count: request?.accountIds?.length ?? 0, clearCurrent: Boolean(request?.clearCurrent) }]);
   const ids = new Set((request?.accountIds || []).map((id) => String(id)));

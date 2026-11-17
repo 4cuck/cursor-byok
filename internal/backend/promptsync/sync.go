@@ -118,12 +118,13 @@ func Fetch(ctx context.Context, mode string) (*FetchResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("获取官方账号认证失败: %w", err)
 	}
+	version := upstream.CursorClientVersion()
+	commit := upstream.CursorClientCommit()
 	header := map[string]string{
 		"Authorization":               authorization,
 		"x-cursor-checksum":           upstream.BuildCursorChecksum(authorization),
-		"User-Agent":                  "Cursor/3.14.7",
-		"x-cursor-client-version":     "3.14.7",
-		"x-cursor-client-commit":      "a758f2241ca99fecf380180b6cbdbbce0f1f42c0",
+		"User-Agent":                  "Cursor/" + version,
+		"x-cursor-client-version":     version,
 		"x-cursor-client-type":        "ide",
 		"x-cursor-client-os":          "win32",
 		"x-cursor-client-arch":        "x64",
@@ -133,6 +134,9 @@ func Fetch(ctx context.Context, mode string) (*FetchResult, error) {
 		"x-new-onboarding-completed":  "true",
 		"x-ghost-mode":                "false",
 		"origin":                      "https://cursor.com",
+	}
+	if commit != "" {
+		header["x-cursor-client-commit"] = commit
 	}
 	client := aiserverv1connect.NewAiServiceClient(
 		&httpClient{headers: header},

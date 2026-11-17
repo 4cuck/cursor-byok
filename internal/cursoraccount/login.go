@@ -38,19 +38,19 @@ func (manager *Manager) BeginLogin() (CursorAccountLoginSession, error) {
 
 func (manager *Manager) LoginStatus(sessionID string) (CursorAccountLoginStatus, error) {
 	if manager == nil {
-		return CursorAccountLoginStatus{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return CursorAccountLoginStatus{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return CursorAccountLoginStatus{}, fmt.Errorf("登录会话无效")
+		return CursorAccountLoginStatus{}, fmt.Errorf("Invalid login session")
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 	if manager.loginSessionID != sessionID {
-		return CursorAccountLoginStatus{}, fmt.Errorf("登录会话无效")
+		return CursorAccountLoginStatus{}, fmt.Errorf("Invalid login session")
 	}
 	if manager.loginExpiresAt > 0 && time.Now().UnixMilli() > manager.loginExpiresAt && manager.state == StateWaiting {
-		return CursorAccountLoginStatus{SessionID: sessionID, State: StateError, Error: "登录已超时"}, nil
+		return CursorAccountLoginStatus{SessionID: sessionID, State: StateError, Error: "Sign-in timed out"}, nil
 	}
 	return CursorAccountLoginStatus{
 		SessionID: sessionID,
@@ -61,16 +61,16 @@ func (manager *Manager) LoginStatus(sessionID string) (CursorAccountLoginStatus,
 
 func (manager *Manager) CancelLogin(sessionID string) (controlcenter.OperationResult, error) {
 	if manager == nil {
-		return controlcenter.OperationResult{}, fmt.Errorf("Cursor 账号服务未初始化")
+		return controlcenter.OperationResult{}, fmt.Errorf("Cursor account service is not initialized")
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return controlcenter.OperationResult{}, fmt.Errorf("登录会话无效")
+		return controlcenter.OperationResult{}, fmt.Errorf("Invalid login session")
 	}
 	manager.mu.Lock()
 	if manager.loginSessionID != sessionID {
 		manager.mu.Unlock()
-		return controlcenter.OperationResult{}, fmt.Errorf("登录会话无效")
+		return controlcenter.OperationResult{}, fmt.Errorf("Invalid login session")
 	}
 	cancel := manager.loginCancel
 	manager.loginCancel = nil
