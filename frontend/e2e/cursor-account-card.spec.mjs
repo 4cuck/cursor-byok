@@ -11,11 +11,14 @@ test("账户面板可选择账户并在确认后请求切换", async ({ page }) 
   // 账号管理已拆到控制中心，首页不再渲染账号卡
   await page.goto("/control-center?tab=accounts");
   await expect(page.getByText("a@example.test")).toBeVisible();
-  await page.getByRole("button", { name: "切换到 Cursor" }).nth(1).click();
-  const dialog = page.getByRole("dialog", { name: "切换 Cursor 账号" });
+  await page.getByRole("button", { name: "Switch to Cursor" }).nth(1).click();
+  const backup = page.getByRole("dialog", { name: "Back up Cursor state?" });
+  await expect(backup).toBeVisible();
+  await backup.getByRole("button", { name: "Back up and switch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Switch Cursor account" });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "关闭并切换" }).click();
-  await expect(page.getByText("已切换并重新启动 Cursor")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close and switch" }).click();
+  await expect(page.getByText("Switched and restarted Cursor")).toBeVisible();
 });
 
 test("控制中心非法标签回落到账号页", async ({ page }) => {

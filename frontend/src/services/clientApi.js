@@ -322,18 +322,8 @@ export function prepareCursorClientAccountSwitch(accountID) {
 
 export function prepareCursorClientAccountSwitchWithOptions(accountID, options = {}) {
   if (isBrowserPreview) {
-    return Promise.resolve({
-      operationId: "preview-switch",
-      confirmationToken: "preview-switch-token",
-      expiresAtUnixMs: Date.now() + 60_000,
-      impactCodes: ["cursor_restart_required", "cursor_state_auth_overwrite"],
-      rollbackAvailable: !options?.skipBackup,
-      account: { id: accountID },
-      cursorRunning: false,
-      requiresRestart: true,
-      backupFileCount: options?.skipBackup ? 0 : 3,
-      backupSkipped: Boolean(options?.skipBackup),
-    });
+    // The preview execute mock rejects a token that prepare did not record.
+    return PrepareCursorClientAccountSwitchWithOptions(accountID, options);
   }
   return withApiLogging(
     "PrepareCursorClientAccountSwitchWithOptions",

@@ -42,7 +42,7 @@ test("委派保存失败时展示错误并提供重试恢复", async ({ page }) 
   await input.fill("8");
   await input.blur();
 
-  await expect(page.getByText("服务发生异常，请重试或导出诊断信息")).toBeVisible();
+  await expect(page.getByText("The service encountered an error. Retry or export diagnostic information.")).toBeVisible();
   await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
 
   // 解除失败注入后重试成功，值持久化
