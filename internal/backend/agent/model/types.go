@@ -117,6 +117,10 @@ type StreamRequest struct {
 	GroupName string
 	// CursorAccountID 是本次请求应使用的 Cursor 账户。
 	CursorAccountID string
+	// SilentTimeout 在这段时间内没有正文、报错或回合结束时结束流。
+	// 模型测试用它把「账号没有该模型权限、上游一直不回应」从超时改成明确失败。
+	// 为零表示不启用，正式对话不受影响。
+	SilentTimeout time.Duration
 	// ResolvedContextWindowTokens 表示本次请求实际命中的 adapter 上下文窗口。
 	ResolvedContextWindowTokens int
 	// ReasoningEffort 表示 OpenAI 兼容 provider 的推理强度。

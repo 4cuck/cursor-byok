@@ -1,160 +1,161 @@
-# Cursor助手
+# Cursor Assistant
 
 <p align="center">
-  <img src="frontend/src/assets/logo.png" width="96" alt="Cursor助手 logo" />
+  <img src="frontend/src/assets/logo.png" width="96" alt="Cursor Assistant logo" />
 </p>
 
-<h1 align="center">Cursor助手</h1>
+<h1 align="center">Cursor Assistant</h1>
 
-<p align="center">面向 Cursor 的本地模型适配、代理网关、用量统计与 Agent 工作台。</p>
+<p align="center">A local model adapter, proxy gateway, usage dashboard, and agent workspace for Cursor.</p>
 
 <p align="center">
-  <a href="https://github.com/Sakana-yuyu/cursor-byok/releases"><img src="https://img.shields.io/github/v/release/Sakana-yuyu/cursor-byok?display_name=tag&logo=github&label=Release" alt="Latest release" /></a>
-  <a href="https://github.com/Sakana-yuyu/cursor-byok/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/Sakana-yuyu/cursor-byok/build.yml?logo=githubactions&label=Build" alt="Build status" /></a>
-  <a href="https://github.com/Sakana-yuyu/cursor-byok/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Sakana-yuyu/cursor-byok?logo=opensourceinitiative&label=License" alt="License" /></a>
+  <a href="https://github.com/4cuck/cursor-byok/releases"><img src="https://img.shields.io/github/v/release/4cuck/cursor-byok?display_name=tag&logo=github&label=Release" alt="Latest release" /></a>
+  <a href="https://github.com/4cuck/cursor-byok/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/4cuck/cursor-byok/build.yml?logo=githubactions&label=Build" alt="Build status" /></a>
+  <a href="https://github.com/4cuck/cursor-byok/blob/main/LICENSE"><img src="https://img.shields.io/github/license/4cuck/cursor-byok?logo=opensourceinitiative&label=License" alt="License" /></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white" alt="Go 1.25" /></a>
-  <a href="https://linux.do/"><img src="https://img.shields.io/badge/Community-Linux.do-111827?logo=discourse&logoColor=white" alt="Linux.do community" /></a>
 </p>
 
 <p align="center">
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#功能概览">功能概览</a> ·
-  <a href="#模型配置与可用性管理">模型配置与可用性管理</a> ·
-  <a href="#视频与动态图">视频与动态图</a> ·
-  <a href="#社区与反馈">社区与反馈</a>
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#model-setup">Model setup</a> ·
+  <a href="#preview">Preview</a> ·
+  <a href="#community">Community</a>
 </p>
 
 <p align="center">
-  <img src="docs/assets/home-preview.png" width="960" alt="Cursor助手 首页预览" />
+  <img src="docs/assets/home-preview.png" width="960" alt="Cursor Assistant home screen" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/model-config-preview.png" width="960" alt="Cursor助手 模型配置页预览" />
+  <img src="docs/assets/model-config-preview.png" width="960" alt="Cursor Assistant model configuration" />
 </p>
 
-> 把自己的模型 API 接入 Cursor，在本地完成供应商管理、协议适配、模型路由、用量统计、自动委派和问题排查。
+> Connect your own model APIs to Cursor. Provider setup, protocol adaptation, routing, usage stats, delegation, and diagnostics all stay on your machine.
 
-## 为什么使用 Cursor助手
+This repository is a fork of [Sakana-yuyu/cursor-byok](https://github.com/Sakana-yuyu/cursor-byok). Releases for this fork are published from [4cuck/cursor-byok](https://github.com/4cuck/cursor-byok/releases).
 
-Cursor 本身负责优秀的编辑器与 Agent 体验，Cursor助手负责把模型连接与本地运行链路整理好：你可以继续使用 Cursor 的工具调用和任务工作流，同时自由选择官方 API、兼容网关或自建服务。
+## Why use it
 
-## 功能概览
+Cursor stays the editor and agent. Cursor Assistant sits in front of the model connection: you keep Cursor's tools and task flow, and you choose whether a request goes to an official API, a compatible gateway, or a service you run yourself.
 
-| 图标 | 能力 | 说明 |
+## What it does
+
+| | Capability | What you get |
 | :---: | --- | --- |
-| <img src="frontend/public/supplier-icons/openai.svg" width="22" height="22" alt="OpenAI" /> | 多供应商接入 | OpenAI 兼容接口、Anthropic 原生协议、Gemini 原生协议与常见第三方网关。 |
-| <img src="https://cdn.simpleicons.org/serverless/10AD5D" width="22" alt="Gateway" /> | 本地代理网关 | 在本机完成 Cursor 与模型供应商之间的请求转发和流式事件转换。 |
-| <img src="https://cdn.simpleicons.org/googleanalytics/4285F4" width="22" alt="Metrics" /> | 用量与费用统计 | 查看请求数、输入/输出 token、缓存命中率、站点消耗和估算费用。 |
-| <img src="https://cdn.simpleicons.org/robotframework/10AD5D" width="22" alt="Agent" /> | Agent 与 Multitask | 支持 Explorer 子代理、视觉委派、监督状态和 Cursor Task 状态同步。 |
-| <img src="https://cdn.simpleicons.org/icloud/4F46E5" width="22" alt="Catalog" /> | 模型目录与自动匹配 | 拉取供应商模型目录，自动匹配上下文窗口，并支持模型可用性探测。 |
-| <img src="https://cdn.simpleicons.org/bugcrowd/F59E0B" width="22" alt="Debug" /> | Debug 与诊断 | 保存脱敏后的请求链路、provider pass、工具调用和终态信息，方便定位问题。 |
-| <img src="frontend/public/supplier-icons/privacy-shield.svg" width="22" height="22" alt="Privacy" /> | 本地凭据管理 | API Key 与余额查询凭据由本地配置管理；发布到云端的源码不包含用户凭据。 |
-| <img src="https://cdn.simpleicons.org/rotate/10AD5D" width="22" alt="Rotation" /> | 多密钥轮换 | 同一模型可配置多把备用密钥，自动轮换并按密钥独立处理冷却与失败。 |
-| <img src="https://cdn.simpleicons.org/shieldcheck/10AD5D" width="22" alt="Availability" /> | 可用性保护 | 可选择开启“测试失败自动停用”，失败模型会从 Cursor 列表和请求路由中排除，成功后自动恢复。 |
+| <img src="frontend/public/supplier-icons/openai.svg" width="22" height="22" alt="OpenAI" /> | Several providers | OpenAI-compatible APIs, native Anthropic, native Gemini, and common third-party gateways. |
+| <img src="https://cdn.simpleicons.org/serverless/10AD5D" width="22" alt="Gateway" /> | Local proxy | Request forwarding and streaming translation between Cursor and the provider, on this computer. |
+| <img src="https://cdn.simpleicons.org/googleanalytics/4285F4" width="22" alt="Metrics" /> | Usage and cost | Request counts, input and output tokens, cache hit rate, per-site spend, and an estimated cost. |
+| <img src="https://cdn.simpleicons.org/robotframework/10AD5D" width="22" alt="Agent" /> | Agent and multitask | Explorer subagents, vision delegation, supervision state, and Cursor task status. |
+| <img src="https://cdn.simpleicons.org/icloud/4F46E5" width="22" alt="Catalog" /> | Model catalog | Pull a provider's model list, match context windows, and probe whether a model responds. |
+| <img src="https://cdn.simpleicons.org/bugcrowd/F59E0B" width="22" alt="Debug" /> | Diagnostics | Redacted request traces, provider passes, tool calls, and final status. |
+| <img src="frontend/public/supplier-icons/privacy-shield.svg" width="22" height="22" alt="Privacy" /> | Local credentials | API keys stay in the local config. Published source does not contain your keys. |
+| <img src="https://cdn.simpleicons.org/rotate/10AD5D" width="22" alt="Rotation" /> | Key rotation | Extra keys for one model rotate independently, with their own cooldown after a failure. |
+| <img src="https://cdn.simpleicons.org/shieldcheck/10AD5D" width="22" alt="Availability" /> | Availability guard | Optional "disable after a failed test" keeps a broken model out of Cursor until a later test succeeds. |
 
-### 模型配置与可用性管理
+### Model setup
 
-模型配置页采用左侧供应商/模型列表、右侧详情面板的主从布局，常用操作集中在同一页：
+The model page is a list on the left and a detail panel on the right.
 
-- **供应商分组**：可按名称或连接地址分组，支持搜索、拉取模型目录和一键诊断优化。
-- **模型测试**：对单个模型或整组模型执行测试，查看可用状态、首响应、首字和输出速度。
-- **多密钥池**：在模型编辑器的“备用密钥”中每行填写一把密钥，系统会把主密钥与备用密钥作为独立候选进行轮换。
-- **测试失败自动停用**：在页面顶部手动开启后，失败模型自动标记为“已停用”，不会出现在 Cursor 模型列表，也不会参与路由；测试成功或点击“启用”后恢复。
-- **诊断与统计**：通过侧边栏进入“诊断”查看协议问题和运行证据，进入“会话分析”查看请求、token、缓存和耗时明细。
+- **Groups.** Group by name or by connection. Search, pull a catalog, and run a diagnosis from the same page.
+- **Tests.** Test one model or a whole group. The card shows whether it answered, and how long the first response and first token took.
+- **Extra keys.** In the model editor, put one backup key per line. The primary key and the backups are separate candidates.
+- **Disable after failure.** Turn this on at the top of the page. A failed model is marked disabled, left out of Cursor's list, and left out of routing. A later successful test, or Enable, brings it back.
+- **Diagnostics and stats.** The sidebar opens protocol and channel health, and a per-request view of tokens, cache, and timing.
 
-### 支持的平台
+### Platforms
 
-- Windows x64、Windows ARM64、Windows x32
-- Linux x64
-- macOS Intel、macOS Apple Silicon
+- Windows 64-bit, Windows ARM64, and Windows 32-bit
+- Linux 64-bit
+- macOS Intel and macOS Apple Silicon
 
-发布包会由 GitHub Actions 自动构建，前往 [Releases](https://github.com/Sakana-yuyu/cursor-byok/releases) 下载对应平台版本。
+GitHub Actions builds the packages. Download the file for your system from [Releases](https://github.com/4cuck/cursor-byok/releases).
 
-## 视频与动态图
+## Preview
 
-### 60 秒快速演示
+### One-minute demo
 
 <video controls muted loop playsinline poster="docs/assets/home-preview.png" width="960">
   <source src="docs/assets/cursor-assistant-demo.mp4" type="video/mp4" />
-  当前环境不支持内嵌视频，请直接打开 <a href="docs/assets/cursor-assistant-demo.mp4">演示视频</a>。
+  This browser cannot play the embedded video. Open the <a href="docs/assets/cursor-assistant-demo.mp4">demo video</a> directly.
 </video>
 
-### GIF 预览
+### GIF
 
-![Cursor助手 配置与统计动态图](docs/assets/cursor-assistant-demo.gif)
+![Cursor Assistant configuration and stats](docs/assets/cursor-assistant-demo.gif)
 
-视频和 GIF 展示浏览器预览模式中的真实界面状态，演示数据为本地 mock 数据，不会发送真实 API 请求，也不包含真实密钥。
+The video and GIF are the browser preview. The data is local mock data. It does not call a real API and it does not contain real keys.
 
-## 快速开始
+## Quick start
 
-### 1. 下载并安装
+### 1. Install
 
-1. 打开 [GitHub Releases](https://github.com/Sakana-yuyu/cursor-byok/releases)。
-2. 下载对应平台的安装包或压缩包。
-3. Windows 如果出现 SmartScreen 提示，确认文件来源后选择“更多信息”并继续运行。
-4. 启动 Cursor助手，首次启动会在用户数据目录生成本地 MITM CA；私钥不会写入源码仓库。
+1. Open [GitHub Releases](https://github.com/4cuck/cursor-byok/releases).
+2. Download the installer or archive for your system.
+3. If Windows SmartScreen interrupts the installer, choose More info, then Run anyway, after you confirm the file came from this release.
+4. Start Cursor Assistant. The first launch creates a local MITM certificate in your user data directory. The private key is not part of the source tree.
 
-### 2. 添加并验证模型
+### 2. Add a model and test it
 
-1. 通过左侧导航进入“模型配置”。
-2. 点击左栏顶部的 `+`，或进入已有供应商后添加模型。
-3. 填写 API 地址、API Key 和模型 ID；需要容灾时，在“备用密钥”中每行填写一把密钥。
-4. 优先点击“拉取模型”，从供应商目录选择模型。
-5. 点击“测试”确认请求能够正常返回。
-6. 如果希望自动隔离不可用模型，在页面顶部开启“测试失败自动停用”。
-7. 保存配置；停用的模型可在模型卡片上点击“启用”恢复。
+1. Open Model configuration from the left navigation.
+2. Use `+` at the top of the list, or add a model inside an existing provider.
+3. Fill in the API address, API key, and model id. For failover, put one backup key per line.
+4. Prefer Pull models, then pick from the provider catalog.
+5. Press Test and confirm the model answers.
+6. If you want broken models kept out of Cursor, turn on Disable after a failed test.
+7. Save. A disabled model can be turned back on from its card.
 
-> 地址要填写供应商实际使用的协议入口。不同供应商可能分别要求 /v1、Anthropic 原生入口、Gemini /v1beta 或网关自定义路径；如果模型列表为空，先检查地址、鉴权方式和模型目录接口是否匹配。
+> The address has to be the protocol endpoint that provider actually uses. Some want `/v1`, some want Anthropic's native path, Gemini wants `/v1beta`, and a gateway may use its own path. If the model list is empty, check the address, the auth header, and the catalog URL first.
 
-### 3. 让 Cursor 使用本地代理
+### 3. Point Cursor at the local proxy
 
-1. 在首页启动本地服务。
-2. 点击“修复 Cursor 配置”，让应用写入本地代理地址。
-3. 完全退出并重新打开 Cursor，使代理设置生效。
-4. 在 Cursor 中发送一条普通请求，确认模型回复和工具调用均正常。
+1. Start the local service from the home page.
+2. Press Repair Cursor configuration so the app writes the local proxy address.
+3. Quit Cursor completely and open it again.
+4. Send a normal request in Cursor and confirm the reply and tool calls both work.
 
-### 4. 使用 Multitask 与视觉委派
+### 4. Multitask and vision delegation
 
-1. 在设置中打开 Multitask。
-2. 为 Explorer 或视觉委派选择可用模型。
-3. 在 Cursor 中使用普通探索型任务，Cursor助手会按配置创建委派任务。
-4. 在“会话分析”或“实时统计”中查看运行状态、token 与缓存情况。
+1. Turn on Multitask in settings.
+2. Pick a working model for Explorer or vision delegation.
+3. Run a normal exploration task in Cursor. Cursor Assistant creates the delegation from that configuration.
+4. Watch status, tokens, and cache in session analysis or the live stats overlay.
 
-### 5. 查询余额与用量
+### 5. Balance and usage
 
-- 供应商详情：查看模型目录、测试结果、可用性状态和供应商余额。
-- 首页统计：查看总请求量、token、缓存命中率、站点消耗和估算费用。
-- 会话分析：按请求查看模型、provider、耗时、终态、缓存和异常信息。
-- 诊断：检查协议配置、渠道健康度、冷却状态和可追踪的运行证据。
-- 导出日志：导出前请先检查是否包含你自己的请求文本或供应商返回内容。
+- Provider detail shows the catalog, test results, availability, and provider balance.
+- The home page shows request volume, tokens, cache hit rate, per-site spend, and estimated cost.
+- Session analysis shows the model, provider, duration, final status, cache, and errors for each request.
+- Diagnostics shows protocol configuration, channel health, cooldown, and the trace you can follow.
+- Check exported logs before you share them. They can contain your own prompt text or a provider response.
 
-## 常见问题
+## Common problems
 
-### Cursor 显示 stopped，但应用里看不到结果
+### Cursor says stopped, and the app shows no result
 
-请保留请求时间、Cursor 版本、模型 ID、任务文本和应用目录下的 runtime/debug 日志。重点检查 request_id、conversation_id、model_call_id、tool_call_id 和 exec_id 是否能够串起完整执行链路。
+Keep the request time, Cursor version, model id, task text, and the runtime or debug log under the app data directory. The useful ids are `request_id`, `conversation_id`, `model_call_id`, `tool_call_id`, and `exec_id`. Those should connect one execution from start to finish.
 
-### 模型列表为空或返回 401/404
+### The model list is empty, or the provider returns 401 or 404
 
-依次检查：
+Check these in order:
 
-1. API 地址是否包含正确的版本路径。
-2. 当前供应商的鉴权头是否正确。
-3. 该供应商是否提供 /models 或其他模型目录接口。
-4. 模型 ID 是否属于当前账号或当前网关。
-5. 是否把 Gemini、Anthropic 原生接口误配成 OpenAI 兼容接口。
+1. The API address includes the version path that provider expects.
+2. The auth header matches that provider.
+3. The provider actually exposes `/models` or another catalog endpoint.
+4. The model id belongs to this account or this gateway.
+5. A Gemini or Anthropic native endpoint was not filled in as an OpenAI-compatible URL.
 
-### Windows 或 macOS 证书提示
+### Windows or macOS certificate prompt
 
-Cursor助手会在用户数据目录生成 CA 证书，并在需要时引导宿主信任该证书。不要把用户目录中的 ca.key、API Key 或完整请求日志上传到 issue、网盘或 Git 仓库。
+Cursor Assistant creates a CA in the user data directory and can ask the system to trust it. Do not upload `ca.key`, an API key, or a full request log to an issue, a file host, or git.
 
-### 如何清空本地敏感数据
+### How to delete local secrets
 
-先退出 Cursor 和 Cursor助手，再删除应用用户数据目录中的配置、日志、历史与 data/ca.key。删除 CA 后下次启动会重新生成一对新的本地 CA 材料。
+Quit Cursor and Cursor Assistant first. Then delete the config, logs, history, and `data/ca.key` in the app data directory. The next launch creates a new local CA.
 
-## 开发与验证
+## Develop and verify
 
-后端使用 Go，桌面前端位于 frontend，协议定义位于 proto。
+The backend is Go. The desktop UI is in `frontend`. Protocol definitions are in `proto`.
 
     go test ./...
     go vet ./...
@@ -165,73 +166,66 @@ Cursor助手会在用户数据目录生成 CA 证书，并在需要时引导宿�
     yarn lint
     node ./scripts/run-vite-build.mjs --scan --mode production
 
-浏览器预览模式：
+Browser preview:
 
     Set-Location frontend
     yarn dev:browser
 
-发布前请额外检查：
+Before a release, also check that secrets and build output are not tracked:
 
     git status --short
     git ls-files | Select-String -Pattern '(^|/)(\.env|.*\.key|.*\.pem|logs?|dist|bin|node_modules)(/|$)'
-    $sk = ((115,107,45 | ForEach-Object { [char]$_ }) -join '')
-    $google = ((65,73,122,97 | ForEach-Object { [char]$_ }) -join '')
-    $github = ((103,104,112,95 | ForEach-Object { [char]$_ }) -join '')
-    $privateKey = ('-----' + 'BEGIN .*PRIVATE KEY' + '-----')
-    $pattern = ($sk + '[A-Za-z0-9]{12,}|' + $google + '[A-Za-z0-9_-]{20,}|' + $github + '[A-Za-z0-9]{20,}|' + $privateKey)
-    rg -n --hidden --glob '!frontend/node_modules/**' --glob '!frontend/dist/**' $pattern .
 
-## 安全与隐私
+## Security and privacy
 
-- 不要提交 API Key、访问令牌、Cookie、私钥、用户数据库、完整请求日志或本地历史。
-- internal/certs/ca.key 只允许存在于用户数据目录，不属于源码分发内容。
-- Debug 日志可能包含请求文本、模型名称和 provider 元数据；分享前请脱敏。
-- 供应商的计费、余额和数据保留策略由供应商决定，请自行确认其服务条款。
-- 本项目只提供本地适配与转发能力，不托管你的 API Key，也不保证第三方供应商服务持续可用。
+- Do not commit API keys, access tokens, cookies, private keys, user databases, full request logs, or local history.
+- `internal/certs/ca.key` belongs in the user data directory only. It is not part of the source distribution.
+- Debug logs can contain prompt text, model names, and provider metadata. Redact them before you share a log.
+- Billing, balance, and data retention are the provider's policy. Read their terms yourself.
+- This project only adapts and forwards requests on your machine. It does not host your API keys, and it cannot promise that a third-party provider stays up.
 
-## 社区与反馈
+## Community
 
-- <img src="https://cdn.simpleicons.org/github/111827" width="16" alt="GitHub" /> [GitHub 仓库](https://github.com/Sakana-yuyu/cursor-byok)
-- <img src="https://cdn.simpleicons.org/github/111827" width="16" alt="GitHub" /> [GitHub Releases](https://github.com/Sakana-yuyu/cursor-byok/releases)
-- <img src="https://cdn.simpleicons.org/discourse/111827" width="16" alt="Linux.do" /> [Linux.do 社区](https://linux.do/)
-- <img src="https://cdn.simpleicons.org/bilibili/00A1D6" width="16" alt="Bilibili" /> [原作者地址（作者主页）](https://space.bilibili.com/311706663/upload/video)
+- [This fork](https://github.com/4cuck/cursor-byok)
+- [Releases](https://github.com/4cuck/cursor-byok/releases)
+- [Upstream repository](https://github.com/Sakana-yuyu/cursor-byok)
+- [Linux.do](https://linux.do/)
+- [Original author's Bilibili page](https://space.bilibili.com/311706663/upload/video)
 
-> 原作者地址说明：上方 Bilibili 链接是项目原作者公开的作者主页，保留该地址用于作者署名、更新动态和视频内容；项目代码、发行版和社区反馈入口由本仓库维护。
+The Bilibili link is the original author's public page, kept for attribution. Code, releases, and issues for this fork are handled in this repository.
 
-Linux.do 发布文案位于 docs/promotion/linuxdo-post.md，欢迎反馈安装体验、供应商适配和 Cursor 本地模式问题。
+## Contributing
 
-## 贡献
+When you open an issue or a pull request, include:
 
-提交 Issue 或 Pull Request 时，请提供：
+1. Steps to reproduce.
+2. Operating system, Cursor version, and Cursor Assistant version.
+3. Provider type and model id. Do not include an API key.
+4. The error text and the smallest log excerpt that still shows the failure, with secrets removed.
 
-1. 可复现步骤。
-2. 操作系统、Cursor 版本和 Cursor助手版本。
-3. 使用的 provider 类型与模型 ID；不要提供 API Key。
-4. 脱敏后的错误信息和必要日志片段。
+Read `CONTRIBUTING.md` and `CONTRIBUTING_EN.md` first.
 
-请先阅读 CONTRIBUTING.md 和 CONTRIBUTING_EN.md。
+## License
 
-## 许可证
-
-本项目基于 [MIT License](LICENSE) 发布。
+Released under the [MIT License](LICENSE).
 
 <!-- contributors-start -->
 <table><tr>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://avatars.githubusercontent.com/u/20703959?v=4&s=80" width="48" height="48" alt="Sakana-yuyu" title="Sakana-yuyu (531 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/e91e20e8d5f83234900a3878086e1fe7?d=identicon&s=80" width="48" height="48" alt="呆呆可达鸭鸭" title="呆呆可达鸭鸭 (236 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://avatars.githubusercontent.com/u/41898282?v=4&s=80" width="48" height="48" alt="github-actions[bot]" title="github-actions[bot] (71 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://avatars.githubusercontent.com/u/131544788?v=4&s=80" width="48" height="48" alt="leookun" title="leookun (18 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/e32a23a62c503dd189268d84dbd12c2d?d=identicon&s=80" width="48" height="48" alt="hudawang" title="hudawang (7 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/4fa4116634f7a272554140a170e7e300?d=identicon&s=80" width="48" height="48" alt="DedSecer" title="DedSecer (5 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/92ab25d105c69286f299bdc514bef2ca?d=identicon&s=80" width="48" height="48" alt="philau2512" title="philau2512 (3 次提交)"/></a></td>
-<td><a href="https://github.com/kael-odin"><img src="https://avatars.githubusercontent.com/kael-odin?v=4&s=80" width="48" height="48" alt="kael-odin" title="kael-odin (3 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/3f43639246884941cd37c80aaf1c8293?d=identicon&s=80" width="48" height="48" alt="上玄" title="上玄 (2 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/2d94f41c79230c6c7afb2023d8250167?d=identicon&s=80" width="48" height="48" alt="杨超" title="杨超 (1 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://avatars.githubusercontent.com/u/266937838?v=4&s=80" width="48" height="48" alt="octo-patch" title="octo-patch (1 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/a86b8f4b14ce67e4e6a4f3b25612e99c?d=identicon&s=80" width="48" height="48" alt="lixingcheng" title="lixingcheng (1 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/edd1b95493e930ffec5730df1d8ae4d7?d=identicon&s=80" width="48" height="48" alt="lixiangwuxian" title="lixiangwuxian (1 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/eaa039f995d17d9c5bc80586f4523276?d=identicon&s=80" width="48" height="48" alt="aike1202" title="aike1202 (1 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/3972eaf41431b5a058211d1262fbd2a3?d=identicon&s=80" width="48" height="48" alt="TigerWang" title="TigerWang (1 次提交)"/></a></td>
-<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/38f67cb0e7464d31dc810917801e61ae?d=identicon&s=80" width="48" height="48" alt="GGHansome" title="GGHansome (1 次提交)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://avatars.githubusercontent.com/u/20703959?v=4&s=80" width="48" height="48" alt="Sakana-yuyu" title="Sakana-yuyu (531 commits)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/e91e20e8d5f83234900a3878086e1fe7?d=identicon&s=80" width="48" height="48" alt="contributor" title="contributor (236 commits)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://avatars.githubusercontent.com/u/41898282?v=4&s=80" width="48" height="48" alt="github-actions[bot]" title="github-actions[bot] (71 commits)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://avatars.githubusercontent.com/u/131544788?v=4&s=80" width="48" height="48" alt="leookun" title="leookun (18 commits)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/e32a23a62c503dd189268d84dbd12c2d?d=identicon&s=80" width="48" height="48" alt="hudawang" title="hudawang (7 commits)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/4fa4116634f7a272554140a170e7e300?d=identicon&s=80" width="48" height="48" alt="DedSecer" title="DedSecer (5 commits)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/92ab25d105c69286f299bdc514bef2ca?d=identicon&s=80" width="48" height="48" alt="philau2512" title="philau2512 (3 commits)"/></a></td>
+<td><a href="https://github.com/kael-odin"><img src="https://avatars.githubusercontent.com/kael-odin?v=4&s=80" width="48" height="48" alt="kael-odin" title="kael-odin (3 commits)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/3f43639246884941cd37c80aaf1c8293?d=identicon&s=80" width="48" height="48" alt="contributor" title="contributor (2 commits)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/2d94f41c79230c6c7afb2023d8250167?d=identicon&s=80" width="48" height="48" alt="contributor" title="contributor (1 commit)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://avatars.githubusercontent.com/u/266937838?v=4&s=80" width="48" height="48" alt="octo-patch" title="octo-patch (1 commit)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/a86b8f4b14ce67e4e6a4f3b25612e99c?d=identicon&s=80" width="48" height="48" alt="lixingcheng" title="lixingcheng (1 commit)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/edd1b95493e930ffec5730df1d8ae4d7?d=identicon&s=80" width="48" height="48" alt="lixiangwuxian" title="lixiangwuxian (1 commit)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/eaa039f995d17d9c5bc80586f4523276?d=identicon&s=80" width="48" height="48" alt="aike1202" title="aike1202 (1 commit)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/3972eaf41431b5a058211d1262fbd2a3?d=identicon&s=80" width="48" height="48" alt="TigerWang" title="TigerWang (1 commit)"/></a></td>
+<td><a href="https://github.com/Sakana-yuyu/cursor-byok"><img src="https://secure.gravatar.com/avatar/38f67cb0e7464d31dc810917801e61ae?d=identicon&s=80" width="48" height="48" alt="GGHansome" title="GGHansome (1 commit)"/></a></td>
 </tr></table>
 <!-- contributors-end -->

@@ -1266,6 +1266,30 @@ export const DeleteCursorAccounts = (request) => {
   }
   return Promise.resolve();
 };
+export const PrepareCursorClientAccountSwitchWithOptions = (accountID, options = {}) => {
+  recordPreviewCall("PrepareCursorClientAccountSwitchWithOptions", [accountID, options]);
+  const account = previewCursorAccounts.find((item) => item.id === accountID);
+  if (!account) return Promise.reject(new Error("Account not found"));
+  const skipBackup = Boolean(options?.skipBackup);
+  previewPendingSwitch = {
+    operationId: "preview-switch",
+    confirmationToken: "preview-switch-token",
+    expiresAtUnixMs: Date.now() + 60_000,
+    account,
+  };
+  return Promise.resolve({
+    operationId: previewPendingSwitch.operationId,
+    confirmationToken: previewPendingSwitch.confirmationToken,
+    expiresAtUnixMs: previewPendingSwitch.expiresAtUnixMs,
+    impactCodes: ["cursor_restart_required", "cursor_state_auth_overwrite"],
+    rollbackAvailable: !skipBackup,
+    account: { ...account },
+    cursorRunning: true,
+    requiresRestart: true,
+    backupFileCount: skipBackup ? 0 : 1,
+    backupSkipped: skipBackup,
+  });
+};
 export const PrepareCursorClientAccountSwitch = (accountID) => {
   recordPreviewCall("PrepareCursorClientAccountSwitch", [accountID]);
   const account = previewCursorAccounts.find((item) => item.id === accountID);

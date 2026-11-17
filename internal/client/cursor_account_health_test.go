@@ -71,6 +71,15 @@ func TestRetiredChatErrorIsAVersionGate(t *testing.T) {
 	}
 }
 
+func TestAPIKeySessionRejectedDoesNotTreatDeviceLimitAsLogout(t *testing.T) {
+	if apiKeySessionRejected(cursorModelProbeResult{DeviceLimit: true, Code: "device_limit", Detail: "Too many computers"}, nil) {
+		t.Fatal("device limit must not refresh the api key")
+	}
+	if !apiKeySessionRejected(cursorModelProbeResult{Code: "ERROR_NOT_LOGGED_IN"}, nil) {
+		t.Fatal("not-logged-in should refresh an api key session")
+	}
+}
+
 func TestUsagePricingIsAPlanRestriction(t *testing.T) {
 	result := cursorModelProbeResult{
 		Code:   "ERROR_USAGE_PRICING_REQUIRED",

@@ -15,6 +15,7 @@ import (
 	"cursor/gen/aiserverv1"
 	runtimecore "cursor/internal/backend/agent/core"
 	"cursor/internal/backend/server/upstream"
+	"cursor/internal/logger"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -64,9 +65,40 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 	if modelID == "" {
 		return fmt.Errorf("cursor account model id is empty")
 	}
-	authorization, err := gateway.authorize(ctx, req.CursorAccountID)
+	accountID := usableCursorAccountID(gateway.auth, req.CursorAccountID)
+	authorization, err := gateway.authorize(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("cursor account is not signed in: %w", err)
+	}
+	err = gateway.streamAuthorized(ctx, req, authorization, sink)
+	if err == nil {
+		return nil
+	}
+	if cursorAccountAuthRejected(err) && cursorAccountUsesAPIKey(gateway.auth, accountID) {
+		if renewed, refreshErr := cursorAccountForceRefresh(ctx, gateway.auth, accountID); refreshErr == nil {
+			if retryErr := gateway.streamAuthorized(ctx, req, renewed, sink); retryErr == nil {
+				return nil
+			} else {
+				err = retryErr
+			}
+		}
+	}
+	if cursorAccountDeviceLimited(err) {
+		cursorAccountMarkLocked(gateway.auth, accountID)
+		if alt := unlockedCurrentCursorAccount(gateway.auth, accountID); alt != "" {
+			logger.Infof("cursor account model skipped device-locked account=%s using current=%s", accountID, alt)
+			if altAuth, altErr := gateway.authorize(ctx, alt); altErr == nil {
+				return gateway.streamAuthorized(ctx, req, altAuth, sink)
+			}
+		}
+	}
+	return err
+}
+
+func (gateway *cursorAccountGateway) streamAuthorized(ctx context.Context, req StreamRequest, authorization string, sink func(ModelEvent) error) error {
+	modelID := strings.TrimSpace(req.ProviderModelID)
+	if modelID == "" {
+		modelID = strings.TrimSpace(req.ModelID)
 	}
 	host := cursorAccountAgentHost(ctx, authorization)
 	requestID := uuid.NewString()
@@ -87,12 +119,13 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 		return fmt.Errorf("cursor agent stream returned HTTP %d: %s", resp.StatusCode, cursorAccountErrorText(raw))
 	}
 
+	appendErr := make(chan error, 1)
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		_ = appendCursorAccount(ctx, authorization, requestID, 0, mustCursorProto(run))
+		appendErr <- appendCursorAccount(ctx, authorization, requestID, 0, mustCursorProto(run))
 	}()
 
-	return readCursorAccountStream(ctx, authorization, requestID, modelID, cursorAccountEventLabel(req), resp.Body, sink)
+	return readCursorAccountStream(ctx, authorization, requestID, modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, sink)
 }
 
 func (gateway *cursorAccountGateway) authorize(ctx context.Context, accountID string) (string, error) {
@@ -105,6 +138,98 @@ func (gateway *cursorAccountGateway) authorize(ctx context.Context, accountID st
 		}
 	}
 	return gateway.auth.Authorization(ctx)
+}
+
+// cursorAccountDirectory is the optional lock and API-key renewal surface.
+// The live account manager implements it. Tests that only stub Authorization do not.
+type cursorAccountDirectory interface {
+	AccountIsLocked(accountID string) bool
+	CurrentAccountID() string
+	UsesAPIKey(accountID string) bool
+	ForceRefresh(ctx context.Context, accountID string) (string, error)
+	MarkDeviceLocked(accountID string) error
+}
+
+// usableCursorAccountID avoids a device-locked account when the current account
+// can still serve the call. Synced models stay pinned to the account that
+// created them, so selecting a different current account would otherwise keep
+// sending traffic to the locked one.
+func usableCursorAccountID(auth CursorAccountAuthorizer, requested string) string {
+	requested = strings.TrimSpace(requested)
+	directory, ok := auth.(cursorAccountDirectory)
+	if !ok {
+		return requested
+	}
+	if requested != "" && !directory.AccountIsLocked(requested) {
+		return requested
+	}
+	current := strings.TrimSpace(directory.CurrentAccountID())
+	if current != "" && current != requested && !directory.AccountIsLocked(current) {
+		if requested != "" {
+			logger.Infof("cursor account model using current account=%s instead of locked account=%s", current, requested)
+		}
+		return current
+	}
+	if requested == "" {
+		return current
+	}
+	return requested
+}
+
+func unlockedCurrentCursorAccount(auth CursorAccountAuthorizer, used string) string {
+	directory, ok := auth.(cursorAccountDirectory)
+	if !ok {
+		return ""
+	}
+	current := strings.TrimSpace(directory.CurrentAccountID())
+	if current == "" || current == strings.TrimSpace(used) || directory.AccountIsLocked(current) {
+		return ""
+	}
+	return current
+}
+
+func cursorAccountUsesAPIKey(auth CursorAccountAuthorizer, accountID string) bool {
+	directory, ok := auth.(cursorAccountDirectory)
+	return ok && directory.UsesAPIKey(accountID)
+}
+
+func cursorAccountForceRefresh(ctx context.Context, auth CursorAccountAuthorizer, accountID string) (string, error) {
+	directory, ok := auth.(cursorAccountDirectory)
+	if !ok {
+		return "", fmt.Errorf("cursor account cannot refresh")
+	}
+	return directory.ForceRefresh(ctx, accountID)
+}
+
+func cursorAccountMarkLocked(auth CursorAccountAuthorizer, accountID string) {
+	directory, ok := auth.(cursorAccountDirectory)
+	if !ok || strings.TrimSpace(accountID) == "" {
+		return
+	}
+	if err := directory.MarkDeviceLocked(accountID); err != nil {
+		logger.Warnf("mark cursor account device locked failed account=%s err=%v", accountID, err)
+	}
+}
+
+func cursorAccountAuthRejected(err error) bool {
+	text := strings.ToLower(errString(err))
+	return strings.Contains(text, "not logged in") ||
+		strings.Contains(text, "not_logged_in") ||
+		strings.Contains(text, "unauthenticated") ||
+		strings.Contains(text, "unauthorized") ||
+		strings.Contains(text, "session expired") ||
+		strings.Contains(text, "session is no longer valid")
+}
+
+func cursorAccountDeviceLimited(err error) bool {
+	return upstream.IsDeviceLimitError(errString(err))
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func cursorAccountEventLabel(req StreamRequest) string {
@@ -128,7 +253,7 @@ func cursorAccountSlotSuffix(label string) bool {
 	return true
 }
 
-func readCursorAccountStream(ctx context.Context, authorization, requestID, modelID, providerLabel string, body io.Reader, sink func(ModelEvent) error) error {
+func readCursorAccountStream(ctx context.Context, authorization, requestID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, sink func(ModelEvent) error) error {
 	var pending []byte
 	tmp := make([]byte, 8192)
 	seq := int64(1)
@@ -177,11 +302,75 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 		})
 	}
 
+	readCh := make(chan readResult, 1)
+	reading := false
+	silent := time.NewTimer(time.Hour)
+	if !silent.Stop() {
+		select {
+		case <-silent.C:
+		default:
+		}
+	}
+	if silentTimeout > 0 {
+		silent.Reset(silentTimeout)
+	}
+	defer silent.Stop()
+	sawUseful := false
+	armSilent := func() {
+		if silentTimeout <= 0 || sawUseful {
+			return
+		}
+		if !silent.Stop() {
+			select {
+			case <-silent.C:
+			default:
+			}
+		}
+		silent.Reset(silentTimeout)
+	}
+	noteUseful := func() {
+		sawUseful = true
+		if !silent.Stop() {
+			select {
+			case <-silent.C:
+			default:
+			}
+		}
+	}
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		n, readErr := body.Read(tmp)
+		if !reading {
+			reading = true
+			go func() {
+				n, err := body.Read(tmp)
+				readCh <- readResult{n: n, err: err}
+			}()
+		}
+		var n int
+		var readErr error
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-appendErr:
+			appendErr = nil
+			if err != nil {
+				return fmt.Errorf("cursor refused the model call: %s", err.Error())
+			}
+			armSilent()
+			continue
+		case <-silent.C:
+			if silentTimeout > 0 && !sawUseful {
+				return fmt.Errorf("this account does not have access to %s", modelID)
+			}
+			continue
+		case result := <-readCh:
+			reading = false
+			n = result.n
+			readErr = result.err
+		}
 		if n > 0 {
 			pending = append(pending, tmp[:n]...)
 		}
@@ -196,6 +385,9 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 			flags := pending[0]
 			payload := append([]byte(nil), pending[5:5+size]...)
 			pending = pending[5+size:]
+			if denial := cursorAccountAccessDenial(payload); denial != "" {
+				return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
+			}
 			if flags&0x02 != 0 {
 				if text := cursorAccountErrorText(payload); text != "" {
 					return fmt.Errorf("cursor refused the model call: %s", text)
@@ -259,6 +451,7 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 				continue
 			}
 			if text := update.GetTextDelta(); text != nil && text.GetText() != "" {
+				noteUseful()
 				if err := sink(ModelEvent{
 					Kind:       ModelEventKindTextDelta,
 					OccurredAt: time.Now().UTC(),
@@ -271,6 +464,7 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, mode
 				}
 			}
 			if thinking := update.GetThinkingDelta(); thinking != nil && thinking.GetText() != "" {
+				noteUseful()
 				if !thinkingActive {
 					thinkingActive = true
 					thinkingStarted = time.Now()
@@ -579,6 +773,37 @@ func mustCursorProto(msg proto.Message) []byte {
 		panic(err)
 	}
 	return raw
+}
+
+type readResult struct {
+	n   int
+	err error
+}
+
+func cursorAccountAccessDenial(raw []byte) string {
+	text := strings.ToLower(string(raw))
+	markers := []string{
+		"does not have access",
+		"do not have access",
+		"don't have access",
+		"model is not available",
+		"model isn't available",
+		"model not available",
+		"not included in your plan",
+		"not available on your plan",
+		"upgrade your plan",
+		"requires a paid",
+		"usage pricing required",
+	}
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			if detail := cursorAccountErrorText(raw); detail != "" {
+				return detail
+			}
+			return marker
+		}
+	}
+	return ""
 }
 
 func cursorAccountErrorText(raw []byte) string {

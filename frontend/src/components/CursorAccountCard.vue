@@ -355,10 +355,17 @@ async function syncCursorAccountModels() {
     if (!result?.ok) {
       return { count: 0, error: result?.error || "Saving the model list failed", label: ownerLabel };
     }
-    const count = (result.added ?? 0) + (result.updated ?? 0);
-    return { count, error: count > 0 ? "" : "These models were already present", label: ownerLabel };
+    const added = result.added ?? 0;
+    const updated = result.updated ?? 0;
+    return {
+      count: added + updated,
+      added,
+      unchanged: added === 0 && updated === 0,
+      error: "",
+      label: ownerLabel,
+    };
   } catch (error) {
-    return { count: 0, error: toUserError(error), label: "" };
+    return { count: 0, added: 0, unchanged: false, error: error?.message || toUserError(error), label: "" };
   }
 }
 
@@ -371,12 +378,28 @@ async function handleSyncModels() {
   busy.value = true;
   try {
     const result = await syncCursorAccountModels();
-    if (result.count > 0) {
-      await afterAccountChanged();
-      message.success(`Added ${result.count} model(s) to ${result.label || "this Cursor account"}`);
+    if (result.error) {
+      await showModal({
+        title: "Could not sync models",
+        content: result.error,
+        showCancel: false,
+        confirmText: "OK",
+      });
       return;
     }
-    await showActionError("No models were added", result.error || "Cursor returned no models");
+    if (result.added > 0) {
+      await afterAccountChanged();
+      message.success(`Added ${result.added} new model(s) to ${result.label || "this Cursor account"}`);
+      return;
+    }
+    if (result.count > 0) {
+      await afterAccountChanged();
+      message.success(`Updated ${result.label || "this Cursor account"}`);
+      return;
+    }
+    message.success(result.unchanged
+      ? `${result.label || "This account"} is already up to date. Sync again when Cursor adds models.`
+      : "No models were returned for this account");
   } finally {
     busy.value = false;
   }

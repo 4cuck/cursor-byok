@@ -79,9 +79,12 @@ func collectCursorAccountTest(ctx context.Context, gateway modeladapter.AccountM
 		ProviderModelID: strings.TrimSpace(adapter.ModelID),
 		GroupName:       strings.TrimSpace(adapter.GroupName),
 		CursorAccountID: strings.TrimSpace(adapter.CursorAccountID),
-		ModelSource:     serverconfigSource(adapter),
-		Messages:        []modeladapter.Message{{Role: "user", Content: cursorAccountTestPrompt}},
-		Stream:          true,
+		// 账号没有该模型权限时，上游可能一直不回包。测试不等满整个超时，
+		// 没有正文或明确报错就按「没有权限」结束。
+		SilentTimeout: 12 * time.Second,
+		ModelSource:   serverconfigSource(adapter),
+		Messages:      []modeladapter.Message{{Role: "user", Content: cursorAccountTestPrompt}},
+		Stream:        true,
 	}, func(event modeladapter.ModelEvent) error {
 		now := time.Now().UTC()
 		switch event.Kind {
@@ -141,6 +144,9 @@ func readableCursorAccountError(err error) string {
 		return "Cursor account model test timed out"
 	}
 	message := strings.TrimSpace(err.Error())
+	if strings.Contains(strings.ToLower(message), "does not have access to") {
+		return message
+	}
 	if message == "" {
 		return "Cursor account model test failed"
 	}

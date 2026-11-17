@@ -28,6 +28,61 @@ func (auth staticCursorAuthorizer) Authorization(context.Context) (string, error
 	return auth.token, nil
 }
 
+type lockDirectory struct {
+	staticCursorAuthorizer
+	locked  map[string]bool
+	current string
+	apiKey  map[string]bool
+}
+
+func (dir lockDirectory) AccountIsLocked(accountID string) bool { return dir.locked[accountID] }
+func (dir lockDirectory) CurrentAccountID() string              { return dir.current }
+func (dir lockDirectory) UsesAPIKey(accountID string) bool      { return dir.apiKey[accountID] }
+func (dir lockDirectory) ForceRefresh(context.Context, string) (string, error) {
+	return "", context.Canceled
+}
+func (dir lockDirectory) MarkDeviceLocked(string) error { return nil }
+
+func TestReadCursorAccountStreamReportsMissingAccessWhenSilent(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := readCursorAccountStream(ctx, "Bearer test", "req", "claude-fable-5", "cursor_account1", 40*time.Millisecond, reader, nil, func(ModelEvent) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not have access to claude-fable-5") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCursorAccountAccessDenialReadsDetail(t *testing.T) {
+	raw := []byte(`{"error":{"details":{"title":"Upgrade required","detail":"claude-fable is not included in your plan"}}}`)
+	if got := cursorAccountAccessDenial(raw); !strings.Contains(got, "not included in your plan") {
+		t.Fatalf("denial = %q", got)
+	}
+	if got := cursorAccountAccessDenial([]byte(`{"text":"hello"}`)); got != "" {
+		t.Fatalf("ordinary text flagged as denial: %q", got)
+	}
+}
+
+func TestUsableCursorAccountIDSkipsLockedAccount(t *testing.T) {
+	auth := lockDirectory{
+		locked:  map[string]bool{"locked-account": true},
+		current: "working-account",
+	}
+	if got := usableCursorAccountID(auth, "locked-account"); got != "working-account" {
+		t.Fatalf("got %q, want the current unlocked account", got)
+	}
+	if got := usableCursorAccountID(auth, "working-account"); got != "working-account" {
+		t.Fatalf("unlocked selection changed: %q", got)
+	}
+	auth.current = "locked-account"
+	if got := usableCursorAccountID(auth, "locked-account"); got != "locked-account" {
+		t.Fatalf("no unlocked fallback should keep the requested account, got %q", got)
+	}
+}
+
 func TestCursorAccountGatewayStreamsText(t *testing.T) {
 	events := runCursorAccountFixture(t, func(w http.ResponseWriter, flusher http.Flusher, appended <-chan int64) {
 		if !waitCursorAppend(appended, 0) {

@@ -100,6 +100,15 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 	model := "default"
 	health.Model = model
 	result, err := probeCursorModelCall(ctx, authorization, model)
+	if apiKeySessionRejected(result, err) && s.cursorAccount.UsesAPIKey(health.AccountID) {
+		if renewed, refreshErr := s.cursorAccount.ForceRefresh(ctx, health.AccountID); refreshErr == nil {
+			authorization = renewed
+			if plan, planErr := fetchCursorAccountPlan(ctx, authorization); planErr == nil {
+				health.Plan = &plan
+			}
+			result, err = probeCursorModelCall(ctx, authorization, model)
+		}
+	}
 	switch {
 	case err != nil:
 		health.State = HealthStateError
@@ -256,6 +265,18 @@ func isClientVersionGate(result cursorModelProbeResult) bool {
 	return strings.Contains(text, "no longer supported") ||
 		strings.Contains(text, "outdated version") ||
 		strings.Contains(text, "update to the latest version")
+}
+
+func apiKeySessionRejected(result cursorModelProbeResult, err error) bool {
+	if err != nil || result.OK || result.DeviceLimit {
+		return false
+	}
+	code := strings.ToUpper(strings.TrimSpace(result.Code))
+	if code == "ERROR_NOT_LOGGED_IN" || code == "ERROR_USER_NOT_LOGGED_IN" {
+		return true
+	}
+	text := strings.ToLower(result.Title + " " + result.Detail + " " + result.Code)
+	return strings.Contains(text, "not logged in") || strings.Contains(text, "unauthenticated")
 }
 
 func isPlanRestriction(result cursorModelProbeResult) bool {

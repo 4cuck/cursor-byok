@@ -534,6 +534,119 @@ func (manager *Manager) AuthorizationFor(ctx context.Context, accountID string) 
 	return bearer(updated.AccessToken), nil
 }
 
+// AccountIsLocked reports whether the account is inside a device-limit cooldown.
+// An empty id checks the current account.
+func (manager *Manager) AccountIsLocked(accountID string) bool {
+	if manager == nil || manager.store == nil {
+		return false
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		accountID = manager.store.CurrentAccountID()
+	}
+	if accountID == "" {
+		return false
+	}
+	record, err := manager.store.loadRecord(accountID)
+	if err != nil {
+		return false
+	}
+	return recordToSummary(record, record.ID == manager.store.CurrentAccountID()).IsLocked(time.Now())
+}
+
+// UsesAPIKey reports whether the account's durable credential is a crsr_ key.
+func (manager *Manager) UsesAPIKey(accountID string) bool {
+	if manager == nil || manager.store == nil {
+		return false
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || accountID == manager.store.CurrentAccountID() {
+		return manager.CurrentAccountUsesAPIKey()
+	}
+	record, err := manager.store.loadRecord(accountID)
+	if err != nil {
+		return false
+	}
+	return IsCursorAPIKey(record.RefreshToken)
+}
+
+// ForceRefresh exchanges a new access token even when the stored JWT has not
+// reached its exp claim. Cursor can reject an api_key_token before it expires;
+// the raw crsr_ key is still able to mint a replacement.
+func (manager *Manager) ForceRefresh(ctx context.Context, accountID string) (string, error) {
+	if manager == nil || manager.store == nil {
+		return "", ErrNotSignedIn
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || accountID == manager.store.CurrentAccountID() {
+		return manager.forceRefreshCurrent(ctx)
+	}
+	manager.refreshMu.Lock()
+	defer manager.refreshMu.Unlock()
+	record, err := manager.store.loadRecord(accountID)
+	if err != nil {
+		return "", err
+	}
+	current := credentials{
+		AccessToken:  strings.TrimSpace(record.AccessToken),
+		RefreshToken: strings.TrimSpace(record.RefreshToken),
+		AuthID:       strings.TrimSpace(record.AuthID),
+		Email:        strings.TrimSpace(record.Email),
+	}
+	if current.RefreshToken == "" {
+		return "", fmt.Errorf("Cursor session expired and no refresh token is available")
+	}
+	updated, shouldLogout, err := manager.refresh(ctx, current)
+	if err != nil {
+		return "", err
+	}
+	if shouldLogout {
+		return "", ErrNotSignedIn
+	}
+	if err := manager.store.UpdateCredentials(accountID, updated); err != nil {
+		return "", err
+	}
+	return bearer(updated.AccessToken), nil
+}
+
+func (manager *Manager) forceRefreshCurrent(ctx context.Context) (string, error) {
+	manager.refreshMu.Lock()
+	defer manager.refreshMu.Unlock()
+	creds, accountID, err := manager.store.LoadCurrentCredentials()
+	if err != nil {
+		return "", err
+	}
+	if accountID == "" || strings.TrimSpace(creds.RefreshToken) == "" {
+		return "", ErrNotSignedIn
+	}
+	_, generation := manager.snapshotCredentials()
+	updated, shouldLogout, err := manager.refresh(ctx, creds)
+	if err != nil {
+		return "", err
+	}
+	if manager.store.CurrentAccountID() != accountID {
+		return "", fmt.Errorf("current account changed during refresh")
+	}
+	if shouldLogout {
+		manager.invalidateAuthorization(generation, "Cursor session is no longer valid. Sign in again.")
+		return "", ErrNotSignedIn
+	}
+	if err := manager.store.UpdateCredentials(accountID, updated); err != nil {
+		return "", err
+	}
+	manager.syncMemoryCredentials(updated, generation)
+	return bearer(updated.AccessToken), nil
+}
+
+// MarkDeviceLocked starts the device-limit cooldown for one account.
+func (manager *Manager) MarkDeviceLocked(accountID string) error {
+	if manager == nil {
+		return errors.New("cursor account store is not initialized")
+	}
+	_, err := manager.MarkAccountLockedByID(strings.TrimSpace(accountID), time.Now().Add(AccountDeviceCooldown))
+	return err
+}
+
 // Authorization 返回官方控制面请求使用的真实 Cursor Bearer 身份。
 func (manager *Manager) Authorization(ctx context.Context) (string, error) {
 	if manager == nil {

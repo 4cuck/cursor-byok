@@ -234,6 +234,39 @@ func TestUpdateCredentialsKeepsCursorAPIKey(t *testing.T) {
 	}
 }
 
+func TestForceRefreshReplacesUnexpiredAPIKeyJWT(t *testing.T) {
+	fake := &fakeCursorAPIKeyTransport{apiKey: "crsr_" + strings.Repeat("f", 64)}
+	manager := newAPIKeyTestManager(t, fake)
+	if _, err := manager.ImportToken(context.Background(), fake.apiKey); err != nil {
+		t.Fatalf("ImportToken: %v", err)
+	}
+	before := fake.exchangeHit
+	authorization, err := manager.Authorization(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.exchangeHit != before {
+		t.Fatal("unexpired jwt must not be exchanged by Authorization")
+	}
+	renewed, err := manager.ForceRefresh(context.Background(), manager.CurrentAccountID())
+	if err != nil {
+		t.Fatalf("ForceRefresh: %v", err)
+	}
+	if renewed == authorization {
+		t.Fatal("force refresh should mint a new access token")
+	}
+	if fake.exchangeHit != before+1 {
+		t.Fatalf("exchange calls = %d, want %d", fake.exchangeHit, before+1)
+	}
+	stored, _, err := manager.store.LoadCurrentCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.RefreshToken != fake.apiKey {
+		t.Fatalf("refresh token = %q, want the raw api key", stored.RefreshToken)
+	}
+}
+
 func TestImportTokenRejectsRejectedAPIKey(t *testing.T) {
 	fake := &fakeCursorAPIKeyTransport{apiKey: "crsr_" + strings.Repeat("c", 64)}
 	manager := newAPIKeyTestManager(t, fake)
