@@ -2,8 +2,6 @@ name: Build desktop artifacts
 
 on:
   push:
-    branches:
-      - '**'
     tags:
       - 'v*'
   pull_request:
@@ -24,10 +22,43 @@ jobs:
       matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
       - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            MATRIX='{"include":[{"name":"Windows x64 (64位)","runner":"windows-latest","target":"windows","artifact":"windows-x64","protoc_asset":"protoc-29.3-win64.zip"},{"name":"Windows ARM64","runner":"windows-latest","target":"windows-arm64","artifact":"windows-arm64","protoc_asset":"protoc-29.3-win64.zip"},{"name":"Windows x32 (32位)","runner":"windows-latest","target":"windows-386","artifact":"windows-x32","protoc_asset":"protoc-29.3-win64.zip"},{"name":"Linux x64","runner":"ubuntu-24.04","target":"linux","artifact":"linux-x64","protoc_asset":"protoc-29.3-linux-x86_64.zip"},{"name":"macOS x64 (Intel)","runner":"macos-15-intel","target":"darwin-amd64","artifact":"macos-x64","protoc_asset":"protoc-29.3-osx-x86_64.zip"},{"name":"macOS ARM64 (Apple Silicon)","runner":"macos-15","target":"darwin-arm64","artifact":"macos-arm64","protoc_asset":"protoc-29.3-osx-aarch_64.zip"}]}'
+          WIN_ENTRIES='{"name":"Windows x64 (64位)","runner":"windows-latest","target":"windows","artifact":"windows-x64","protoc_asset":"protoc-29.3-win64.zip"},{"name":"Windows ARM64","runner":"windows-latest","target":"windows-arm64","artifact":"windows-arm64","protoc_asset":"protoc-29.3-win64.zip"},{"name":"Windows x32 (32位)","runner":"windows-latest","target":"windows-386","artifact":"windows-x32","protoc_asset":"protoc-29.3-win64.zip"}'
+          UNIX_ENTRIES='{"name":"Linux x64","runner":"ubuntu-24.04","target":"linux","artifact":"linux-x64","protoc_asset":"protoc-29.3-linux-x86_64.zip"},{"name":"macOS x64 (Intel)","runner":"macos-15-intel","target":"darwin-amd64","artifact":"macos-x64","protoc_asset":"protoc-29.3-osx-x86_64.zip"},{"name":"macOS ARM64 (Apple Silicon)","runner":"macos-15","target":"darwin-arm64","artifact":"macos-arm64","protoc_asset":"protoc-29.3-osx-aarch_64.zip"}'
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            SKIP_WINDOWS="false"
+            if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              VER="${GITHUB_REF_NAME#v}"
+              EXISTING="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '[.assets[].name] | join("\n")' 2>/dev/null || true)"
+              HAVE_ALL="true"
+              for req in \
+                "cursor-byok-${VER}-windows-x64.zip" \
+                "cursor-byok-${VER}-windows-x64-installer.exe" \
+                "cursor-byok-${VER}-windows-arm64.zip" \
+                "cursor-byok-${VER}-windows-arm64-installer.exe" \
+                "cursor-byok-${VER}-windows-x32.zip" \
+                "cursor-byok-${VER}-windows-x32-installer.exe"; do
+                if ! printf '%s\n' "$EXISTING" | grep -Fxq "$req"; then
+                  HAVE_ALL="false"
+                  break
+                fi
+              done
+              if [ "$HAVE_ALL" = "true" ]; then
+                echo "All 6 Windows assets are already uploaded on ${GITHUB_REF_NAME}; skipping Windows CI runners to save compute."
+                SKIP_WINDOWS="true"
+              fi
+            fi
+            if [ "$SKIP_WINDOWS" = "true" ]; then
+              MATRIX="{\"include\":[${UNIX_ENTRIES}]}"
+            else
+              MATRIX="{\"include\":[${WIN_ENTRIES},${UNIX_ENTRIES}]}"
+            fi
           else
             MATRIX='{"include":[{"name":"Windows x64 (64位)","runner":"windows-latest","target":"windows","artifact":"windows-x64","protoc_asset":"protoc-29.3-win64.zip"}]}'
           fi
@@ -39,7 +70,7 @@ jobs:
 
   build:
     name: ${{ matrix.name }}
-    needs: [resolve-matrix]
+    needs: [resolve-matrix, verify]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -507,7 +538,9 @@ jobs:
 
       - name: Prepare release assets and update manifest
         env:
+          GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
           VERSION: ${{ steps.release-version.outputs.version }}
         shell: bash
         run: |
@@ -518,7 +551,18 @@ jobs:
             local source_name="$1"
             local target_name="$2"
             local matches=()
-            mapfile -t matches < <(find release-assets -type f -name "$source_name" -print)
+            if [ -d release-assets ]; then
+              mapfile -t matches < <(find release-assets -type f -name "$source_name" -print)
+            fi
+            if [ "${#matches[@]}" -eq 0 ]; then
+              echo "Downloading pre-uploaded ${target_name} from release ${TAG}..."
+              gh release download "$TAG" --repo "$REPOSITORY" --pattern "$target_name" --dir publish --clobber
+              if [ ! -s "publish/${target_name}" ]; then
+                echo "::error::asset ${target_name} was neither built in CI nor present on release ${TAG}"
+                exit 1
+              fi
+              return 0
+            fi
             if [ "${#matches[@]}" -ne 1 ]; then
               echo "::error::expected exactly one build asset named ${source_name}, found ${#matches[@]}"
               printf '  %s\n' "${matches[@]}"
