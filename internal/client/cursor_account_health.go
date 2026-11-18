@@ -108,18 +108,39 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 		health.Email = strings.TrimSpace(profile.GetEmail())
 	}
 
-	model := s.cursorAccountProbeModel(health.AccountID)
-	health.Model = model
-	result, err := probeCursorModelCall(ctx, authorization, model)
-	if apiKeySessionRejected(result, err) && s.cursorAccount.UsesAPIKey(health.AccountID) {
-		if renewed, refreshErr := s.cursorAccount.ForceRefresh(ctx, health.AccountID); refreshErr == nil {
-			authorization = renewed
-			if plan, planErr := fetchCursorAccountPlan(ctx, authorization); planErr == nil {
-				health.Plan = &plan
+	probeCandidates := s.cursorAccountProbeCandidates(health.AccountID)
+	var (
+		model  string
+		result cursorModelProbeResult
+	)
+	for idx, candidate := range probeCandidates {
+		model = candidate
+		result, err = probeCursorModelCall(ctx, authorization, model)
+		if apiKeySessionRejected(result, err) && s.cursorAccount.UsesAPIKey(health.AccountID) {
+			if renewed, refreshErr := s.cursorAccount.ForceRefresh(ctx, health.AccountID); refreshErr == nil {
+				authorization = renewed
+				if plan, planErr := fetchCursorAccountPlan(ctx, authorization); planErr == nil {
+					health.Plan = &plan
+				}
+				result, err = probeCursorModelCall(ctx, authorization, model)
 			}
-			result, err = probeCursorModelCall(ctx, authorization, model)
 		}
+		if err != nil || result.OK || result.DeviceLimit || isClientVersionGate(result) {
+			break
+		}
+		if result.Code == "ERROR_NOT_LOGGED_IN" || result.Code == "ERROR_USER_NOT_LOGGED_IN" {
+			break
+		}
+		// If a specific model name is unavailable or model-rate-limited, try the
+		// next lightweight Auto/Grok/Composer probe before declaring the whole
+		// account unusable.
+		if idx+1 < len(probeCandidates) && shouldFallbackProbeCandidate(result) {
+			continue
+		}
+		break
 	}
+	health.Model = model
+
 	switch {
 	case err != nil:
 		health.State = HealthStateError
@@ -132,22 +153,21 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 	case result.OK:
 		health.State = HealthStateOK
 		health.ModelCallOK = true
-		health.Message = "Account is working. Model calls are accepted."
+		if health.Plan != nil && health.Plan.NamedBucketKnown && health.Plan.NamedPercentUsed >= 100 {
+			health.Message = "Account is working on Auto / Grok / Composer (Named models quota is 100% used)."
+		} else {
+			health.Message = "Account is working. Model calls are accepted."
+		}
 	case result.Code == "ERROR_NOT_LOGGED_IN" || result.Code == "ERROR_USER_NOT_LOGGED_IN":
 		health.State = HealthStateExpired
 		health.Message = "The session is no longer valid. Re-import the account."
 	case isClientVersionGate(result):
 		health.State = HealthStateError
 		health.Message = cursorVersionGateMessage(result)
-	case isPlanRestriction(result):
-		health.State = HealthStatePlanRequired
-		health.Message = fmt.Sprintf(
-			"Cursor requires a paid plan for this call (%s). The key and client are valid; "+
-				"the account's plan does not cover model requests.",
-			strings.TrimSpace(result.Code))
-	case isUsageExhausted(result):
-		// Cursor answers an exhausted model with prose or usage-limit codes; record
-		// the per-(account, model) cooldown so live traffic fails over automatically.
+	case isRateOrUsageLimitResult(result):
+		// Evaluate rate/quota limits BEFORE plan restrictions: Cursor attaches
+		// actionRequired="upgrade" to ERROR_RATE_LIMITED_CHANGEABLE even on paid
+		// accounts that merely hit a model rate/usage cap.
 		if health.AccountID != "" && model != "" && model != "default" {
 			modeladapter.MarkCursorAccountModelExhaustedWithReason(
 				health.AccountID,
@@ -157,8 +177,15 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 		}
 		health.State = HealthStateUsageExhausted
 		health.Message = fmt.Sprintf(
-			"No included usage left for %s (%s). Other saved accounts will serve this model automatically, or wait for the usage window to reset.",
-			model, strings.TrimSpace(firstNonEmpty(result.Detail, result.Title, result.Code)))
+			"Rate or usage limit reached on %s (%s). Auto / Grok or other saved accounts will serve requests automatically until usage resets.",
+			probeModelDisplayLabel(model),
+			strings.TrimSpace(firstNonEmpty(result.Detail, result.Title, result.Code)))
+	case isPlanRestriction(result):
+		health.State = HealthStatePlanRequired
+		health.Message = fmt.Sprintf(
+			"Cursor requires a paid plan for this call (%s). The key and client are valid; "+
+				"the account's plan does not cover model requests.",
+			strings.TrimSpace(result.Code))
 	default:
 		health.State = HealthStateError
 		health.Message = fmt.Sprintf("Cursor refused the model call (%s). %s",
@@ -184,42 +211,71 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 	return health, nil
 }
 
-// cursorAccountProbeModel picks a model this account actually serves, so the
-// health check reflects real usage instead of the meta alias "default". Probing
-// "default" reported an account as working while every synced Cursor model on it
-// was rejected for exhausting its included usage.
-func (s *ProxyService) cursorAccountProbeModel(accountID string) string {
+// cursorAccountProbeCandidates returns lightweight models to probe account
+// health in priority order: Auto ("default"), Grok, and Composer first so a
+// rate-limited Anthropic/Claude named model does not falsely paint a working
+// paid account as having no plan.
+func (s *ProxyService) cursorAccountProbeCandidates(accountID string) []string {
+	candidates := []string{"default", "grok-4.7-fast", "composer-2.5-fast"}
+	seen := map[string]struct{}{
+		"default":           {},
+		"grok-4.7-fast":     {},
+		"composer-2.5-fast": {},
+	}
 	if s == nil {
-		return "default"
+		return candidates
 	}
 	cfg, err := s.LoadUserConfig()
 	if err != nil {
-		return "default"
+		return candidates
 	}
 	accountID = strings.TrimSpace(accountID)
-	fallback := ""
 	for _, adapter := range cfg.ModelAdapters {
-		if adapter.Disabled {
+		if adapter.Disabled || !strings.EqualFold(strings.TrimSpace(adapter.Source), "cursor_account") {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(adapter.Source), "cursor_account") {
+		if accountID != "" && strings.TrimSpace(adapter.CursorAccountID) != "" && strings.TrimSpace(adapter.CursorAccountID) != accountID {
 			continue
 		}
 		model := strings.TrimSpace(adapter.ModelID)
+		lower := strings.ToLower(model)
 		if model == "" {
 			continue
 		}
-		if accountID != "" && strings.TrimSpace(adapter.CursorAccountID) == accountID {
-			return model
+		if _, exists := seen[lower]; exists {
+			continue
 		}
-		if fallback == "" {
-			fallback = model
+		// Prefer Grok / Composer adapters over heavy Claude/Opus models for health probes.
+		if strings.Contains(lower, "grok") || strings.Contains(lower, "composer") {
+			seen[lower] = struct{}{}
+			candidates = append(candidates, model)
+			break
 		}
 	}
-	if fallback != "" {
-		return fallback
+	return candidates
+}
+
+func probeModelDisplayLabel(model string) string {
+	if strings.EqualFold(strings.TrimSpace(model), "default") {
+		return "Auto (default)"
 	}
-	return "default"
+	return strings.TrimSpace(model)
+}
+
+func shouldFallbackProbeCandidate(result cursorModelProbeResult) bool {
+	code := strings.ToUpper(strings.TrimSpace(result.Code))
+	switch code {
+	case "ERROR_BAD_MODEL_NAME",
+		"ERROR_NOT_FOUND",
+		"ERROR_MODEL_BLOCKED",
+		"ERROR_MODEL_NO_LONGER_SUPPORTED",
+		"ERROR_RATE_LIMITED_CHANGEABLE":
+		return true
+	}
+	lower := strings.ToLower(result.Title + " " + result.Detail)
+	return strings.Contains(lower, "does not have access") ||
+		strings.Contains(lower, "model not available") ||
+		strings.Contains(lower, "invalid model")
 }
 
 type cursorModelProbeResult struct {
@@ -352,6 +408,36 @@ func isPlanRestriction(result cursorModelProbeResult) bool {
 // isUsageExhausted reports Cursor's "no included usage left" answer, which comes
 // back as prose rather than a status code: "Switched to Auto after reaching Other
 // Models usage limit". The account and plan are fine; only this model is spent.
+// isRateOrUsageLimitResult matches Cursor's rate-limit and exhausted-quota
+// answers (such as ERROR_RATE_LIMITED_CHANGEABLE, which carries action="upgrade"
+// on paid accounts when a model family hits its cap) while leaving true
+// unpaid-plan gates (ERROR_PRO_USER_ONLY, ERROR_USAGE_PRICING_REQUIRED, etc.)
+// to isPlanRestriction.
+func isRateOrUsageLimitResult(result cursorModelProbeResult) bool {
+	if isClientVersionGate(result) {
+		return false
+	}
+	code := strings.ToUpper(strings.TrimSpace(result.Code))
+	switch code {
+	case "ERROR_PRO_REQUIRED",
+		"ERROR_UPGRADE_REQUIRED",
+		"ERROR_PRO_USER_ONLY",
+		"ERROR_USAGE_PRICING_REQUIRED",
+		"ERROR_USAGE_PRICING_REQUIRED_CHANGEABLE":
+		return false
+	case "ERROR_RATE_LIMITED",
+		"ERROR_RATE_LIMITED_CHANGEABLE",
+		"ERROR_API_KEY_RATE_LIMIT",
+		"ERROR_PRO_USER_USAGE_LIMIT",
+		"ERROR_PRO_USER_RATE_LIMIT_EXCEEDED",
+		"ERROR_OPENAI_RATE_LIMIT_EXCEEDED",
+		"ERROR_GENERIC_RATE_LIMIT_EXCEEDED",
+		"ERROR_RESOURCE_EXHAUSTED":
+		return true
+	}
+	return isUsageExhausted(result)
+}
+
 func isUsageExhausted(result cursorModelProbeResult) bool {
 	if isClientVersionGate(result) {
 		return false

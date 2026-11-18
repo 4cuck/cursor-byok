@@ -95,6 +95,18 @@ func TestUsagePricingIsAPlanRestriction(t *testing.T) {
 	}
 }
 
+func TestRateLimitedChangeableIsUsageExhaustedNotMissingPlan(t *testing.T) {
+	result := cursorModelProbeResult{
+		Code:   "ERROR_RATE_LIMITED_CHANGEABLE",
+		Action: "upgrade",
+		Title:  "You've hit your rate limit on your current plan",
+		Detail: "Switch to Auto or wait for your limit to reset.",
+	}
+	if !isRateOrUsageLimitResult(result) {
+		t.Fatal("ERROR_RATE_LIMITED_CHANGEABLE must be treated as rate/usage exhaustion, not missing paid plan")
+	}
+}
+
 // extractJSONField must survive the length-prefixed frame layout, where the body
 // is not valid standalone JSON.
 func TestExtractJSONFieldFromFrames(t *testing.T) {

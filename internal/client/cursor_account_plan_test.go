@@ -94,8 +94,8 @@ func TestBuildCursorAccountPlanExtractsNamedAndAutoBuckets(t *testing.T) {
 		},
 		cursorStripeProfile{MembershipType: "pro", SubscriptionStatus: "active"},
 	)
-	if !plan.HasBucketBreakdown {
-		t.Fatalf("expected HasBucketBreakdown = true, got %+v", plan)
+	if !plan.HasBucketBreakdown || !plan.NamedBucketKnown || !plan.AutoBucketKnown {
+		t.Fatalf("expected HasBucketBreakdown + known flags = true, got %+v", plan)
 	}
 	if plan.NamedUsedCents != 2000 || plan.NamedLimitCents != 2000 || plan.NamedPercentUsed != 100 {
 		t.Fatalf("named bucket = %+v", plan)
@@ -105,5 +105,34 @@ func TestBuildCursorAccountPlanExtractsNamedAndAutoBuckets(t *testing.T) {
 	}
 	if plan.BonusCents != 500 || plan.BonusTooltip != "Promo bonus" || plan.NamedDisplayMessage != namedMsg {
 		t.Fatalf("bonus/messages = %+v", plan)
+	}
+}
+
+func TestBuildCursorAccountPlanKeepsPooledPercentWithoutMistakingOnDemandLimitForIncluded(t *testing.T) {
+	autoPct := 100.0
+	totalPct := 100.0
+	onDemandLimit := int32(200000)
+	plan := buildCursorAccountPlan(
+		nil,
+		&aiserverv1.GetCurrentPeriodUsageResponse{
+			PlanUsage: &aiserverv1.GetCurrentPeriodUsageResponse_PlanUsage{
+				AutoPercentUsed:  &autoPct,
+				TotalPercentUsed: &totalPct,
+			},
+			SpendLimitUsage: &aiserverv1.GetCurrentPeriodUsageResponse_SpendLimitUsage{
+				IndividualLimit:     &onDemandLimit,
+				IndividualRemaining: 200000,
+			},
+		},
+		cursorStripeProfile{MembershipType: "pro", SubscriptionStatus: "active"},
+	)
+	if !plan.UsageKnown || !plan.TotalPercentKnown || plan.PercentUsed != 100 {
+		t.Fatalf("pooled percent plan = %+v, want 100%% used", plan)
+	}
+	if plan.LimitCents != 0 {
+		t.Fatalf("on-demand spend cap leaked into included LimitCents: %+v", plan)
+	}
+	if plan.OnDemandLimitCents != 200000 || plan.OnDemandUsedCents != 0 {
+		t.Fatalf("on-demand spend limit = %+v", plan)
 	}
 }

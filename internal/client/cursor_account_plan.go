@@ -18,26 +18,33 @@ import (
 
 // CursorAccountPlan is the non-secret plan and included-usage snapshot for one
 // Cursor account. Amounts are cents, matching Cursor's dashboard fields, plus
-// the separate Auto vs Named-Model ("API") usage buckets introduced in Cursor 3.x.
+// Cursor 3.30's Named Models (apiPercentUsed) vs Auto/Grok/Composer
+// (autoPercentUsed) and TotalIncluded (totalPercentUsed) percentages.
 type CursorAccountPlan struct {
 	PlanName            string   `json:"planName,omitempty"`
 	MembershipType      string   `json:"membershipType,omitempty"`
 	SubscriptionStatus  string   `json:"subscriptionStatus,omitempty"`
 	Price               string   `json:"price,omitempty"`
 	IncludedCents       int32    `json:"includedCents,omitempty"`
+	TotalSpendCents     int32    `json:"totalSpendCents,omitempty"`
 	BonusCents          int32    `json:"bonusCents,omitempty"`
 	BonusTooltip        string   `json:"bonusTooltip,omitempty"`
 	RemainingCents      int32    `json:"remainingCents,omitempty"`
 	LimitCents          int32    `json:"limitCents,omitempty"`
 	UsedCents           int32    `json:"usedCents,omitempty"`
-	PercentUsed         float64  `json:"percentUsed,omitempty"`
+	PercentUsed         float64  `json:"percentUsed"`
+	TotalPercentKnown   bool     `json:"totalPercentKnown,omitempty"`
+	AutoBucketKnown     bool     `json:"autoBucketKnown,omitempty"`
 	AutoUsedCents       int32    `json:"autoUsedCents,omitempty"`
 	AutoLimitCents      int32    `json:"autoLimitCents,omitempty"`
-	AutoPercentUsed     float64  `json:"autoPercentUsed,omitempty"`
+	AutoPercentUsed     float64  `json:"autoPercentUsed"`
+	NamedBucketKnown    bool     `json:"namedBucketKnown,omitempty"`
 	NamedUsedCents      int32    `json:"namedUsedCents,omitempty"`
 	NamedLimitCents     int32    `json:"namedLimitCents,omitempty"`
-	NamedPercentUsed    float64  `json:"namedPercentUsed,omitempty"`
+	NamedPercentUsed    float64  `json:"namedPercentUsed"`
 	HasBucketBreakdown  bool     `json:"hasBucketBreakdown,omitempty"`
+	OnDemandUsedCents   int32    `json:"onDemandUsedCents,omitempty"`
+	OnDemandLimitCents  int32    `json:"onDemandLimitCents,omitempty"`
 	BillingCycleEnd     int64    `json:"billingCycleEnd,omitempty"`
 	DisplayMessage      string   `json:"displayMessage,omitempty"`
 	NamedDisplayMessage string   `json:"namedDisplayMessage,omitempty"`
@@ -231,31 +238,61 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 		plan.NamedDisplayMessage = strings.TrimSpace(usage.GetNamedModelSelectedDisplayMessage())
 		plan.AutoDisplayMessage = strings.TrimSpace(usage.GetAutoModelSelectedDisplayMessage())
 
+		if spend := usage.GetSpendLimitUsage(); spend != nil {
+			if spend.GetIndividualLimit() > 0 {
+				plan.OnDemandLimitCents = spend.GetIndividualLimit()
+				used := spend.GetIndividualLimit() - spend.GetIndividualRemaining()
+				if spend.GetIndividualUsed() > 0 {
+					used = spend.GetIndividualUsed()
+				}
+				if used < 0 {
+					used = 0
+				}
+				plan.OnDemandUsedCents = used
+			} else if spend.GetOverallLimit() > 0 {
+				plan.OnDemandLimitCents = spend.GetOverallLimit()
+				used := spend.GetOverallLimit() - spend.GetOverallRemaining()
+				if used < 0 {
+					used = 0
+				}
+				plan.OnDemandUsedCents = used
+			}
+		}
+
 		if pu := usage.GetPlanUsage(); pu != nil {
+			plan.TotalSpendCents = pu.GetTotalSpend()
 			plan.BonusCents = pu.GetBonusSpend()
 			plan.BonusTooltip = strings.TrimSpace(pu.GetBonusTooltip())
+
 			if pu.AutoSpend != nil || pu.AutoLimit != nil || pu.AutoPercentUsed != nil {
+				plan.AutoBucketKnown = true
 				plan.AutoUsedCents = pu.GetAutoSpend()
 				plan.AutoLimitCents = pu.GetAutoLimit()
 				plan.AutoPercentUsed = clampPercent(pu.GetAutoPercentUsed())
-				if plan.AutoPercentUsed == 0 && plan.AutoLimitCents > 0 && plan.AutoUsedCents > 0 {
+				if pu.AutoPercentUsed == nil && plan.AutoLimitCents > 0 && plan.AutoUsedCents > 0 {
 					plan.AutoPercentUsed = clampPercent(float64(plan.AutoUsedCents) / float64(plan.AutoLimitCents) * 100)
 				}
 			}
 			if pu.ApiSpend != nil || pu.ApiLimit != nil || pu.ApiPercentUsed != nil {
+				plan.NamedBucketKnown = true
 				plan.NamedUsedCents = pu.GetApiSpend()
 				plan.NamedLimitCents = pu.GetApiLimit()
 				plan.NamedPercentUsed = clampPercent(pu.GetApiPercentUsed())
-				if plan.NamedPercentUsed == 0 && plan.NamedLimitCents > 0 && plan.NamedUsedCents > 0 {
+				if pu.ApiPercentUsed == nil && plan.NamedLimitCents > 0 && plan.NamedUsedCents > 0 {
 					plan.NamedPercentUsed = clampPercent(float64(plan.NamedUsedCents) / float64(plan.NamedLimitCents) * 100)
 				}
 			}
-			if plan.NamedLimitCents > 0 || plan.AutoLimitCents > 0 || plan.NamedPercentUsed > 0 || plan.AutoPercentUsed > 0 {
+			if plan.NamedBucketKnown || plan.AutoBucketKnown {
 				plan.HasBucketBreakdown = true
+			}
+			if pu.TotalPercentUsed != nil {
+				plan.TotalPercentKnown = true
+				plan.UsageKnown = true
+				plan.PercentUsed = clampPercent(pu.GetTotalPercentUsed())
 			}
 		}
 
-		remaining, limit, known := includedUsage(usage)
+		remaining, limit, known := includedUsage(usage, plan.TotalPercentKnown)
 		if known {
 			plan.UsageKnown = true
 			plan.RemainingCents = remaining
@@ -268,7 +305,7 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 				used = 0
 			}
 			plan.UsedCents = used
-			if limit > 0 {
+			if !plan.TotalPercentKnown && limit > 0 {
 				plan.PercentUsed = float64(used) / float64(limit) * 100
 				if plan.PercentUsed < 0 {
 					plan.PercentUsed = 0
@@ -295,12 +332,18 @@ func clampPercent(v float64) float64 {
 	return v
 }
 
-func includedUsage(usage *aiserverv1.GetCurrentPeriodUsageResponse) (remaining int32, limit int32, known bool) {
+// includedUsage resolves cents remaining/limit. When Cursor 3.30 already
+// reported totalPercentUsed on planUsage (pooled quota without a cents limit),
+// spendLimitUsage is an on-demand spend cap rather than included plan balance.
+func includedUsage(usage *aiserverv1.GetCurrentPeriodUsageResponse, hasPooledPercent bool) (remaining int32, limit int32, known bool) {
 	if usage == nil {
 		return 0, 0, false
 	}
 	if plan := usage.GetPlanUsage(); plan != nil && plan.GetLimit() > 0 {
 		return plan.GetRemaining(), plan.GetLimit(), true
+	}
+	if hasPooledPercent {
+		return 0, 0, false
 	}
 	if spend := usage.GetSpendLimitUsage(); spend != nil {
 		if spend.GetIndividualLimit() > 0 {

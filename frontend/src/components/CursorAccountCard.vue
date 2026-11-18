@@ -27,17 +27,18 @@ import {
 import { notifyAccountSync } from "@/utils/accountSync";
 import {
   autoBucketCaption,
-  autoBucketRemainingPercent,
+  autoBucketUsedPercent,
   bonusUsageCaption,
-  bucketBarClass,
   credentialTypeLabel,
   namedBucketCaption,
-  namedBucketRemainingPercent,
-  remainingUsagePercent,
+  namedBucketUsedPercent,
+  onDemandUsageCaption,
   renewalLabel,
   subscriptionStatusLabel,
   usageBarClass,
   usageRemainingCaption,
+  usedBarClass,
+  usedUsagePercent,
 } from "@/utils/cursorAccountPlan";
 import { appState, reloadUserConfig, toUserError, toUserErrorWithCause } from "@/state/appState";
 import { Browser } from "@wailsio/runtime";
@@ -926,28 +927,38 @@ onBeforeUnmount(() => {
                   <template v-if="planFor(account).usageKnown">
                     <div class="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-[#d4d4d4]">
                       <span>{{ usageRemainingCaption(planFor(account)) }}</span>
-                      <span class="shrink-0 text-[#8a8a8a]">{{ remainingUsagePercent(planFor(account)) }}% left</span>
+                      <span class="shrink-0 text-[#8a8a8a]">{{ usedUsagePercent(planFor(account)) }}% used</span>
                     </div>
-                    <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-[#343434]" role="meter" :aria-valuenow="remainingUsagePercent(planFor(account))" aria-valuemin="0" aria-valuemax="100" :aria-label="usageRemainingCaption(planFor(account))">
-                      <div class="h-full rounded-full" :class="usageBarClass(planFor(account))" :style="{ width: `${remainingUsagePercent(planFor(account))}%` }" />
+                    <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-[#343434]" role="meter" :aria-valuenow="usedUsagePercent(planFor(account))" aria-valuemin="0" aria-valuemax="100" :aria-label="usageRemainingCaption(planFor(account))">
+                      <div class="h-full rounded-full transition-all" :class="usageBarClass(planFor(account))" :style="{ width: `${usedUsagePercent(planFor(account))}%` }" />
                     </div>
                     <div v-if="planFor(account).hasBucketBreakdown" class="mt-1.5 grid grid-cols-1 gap-1 sm:grid-cols-2">
-                      <div v-if="namedBucketRemainingPercent(planFor(account)) != null" class="rounded bg-black/25 px-2 py-1 text-[10px] text-[#b8b8b8]">
+                      <div
+                        v-if="namedBucketUsedPercent(planFor(account)) != null"
+                        class="rounded bg-black/25 px-2 py-1 text-[10px] text-[#d4d4d4]"
+                        title="Consumed by explicitly selected named models (Claude, Gemini, GPT, etc.)"
+                      >
                         <div class="truncate">{{ namedBucketCaption(planFor(account)) }}</div>
                         <div class="mt-1 h-1 overflow-hidden rounded-full bg-[#343434]">
-                          <div class="h-full rounded-full" :class="bucketBarClass(namedBucketRemainingPercent(planFor(account)))" :style="{ width: `${namedBucketRemainingPercent(planFor(account))}%` }" />
+                          <div class="h-full rounded-full transition-all" :class="usedBarClass(namedBucketUsedPercent(planFor(account)))" :style="{ width: `${namedBucketUsedPercent(planFor(account))}%` }" />
                         </div>
                       </div>
-                      <div v-if="autoBucketRemainingPercent(planFor(account)) != null" class="rounded bg-black/25 px-2 py-1 text-[10px] text-[#b8b8b8]">
+                      <div
+                        v-if="autoBucketUsedPercent(planFor(account)) != null"
+                        class="rounded bg-black/25 px-2 py-1 text-[10px] text-[#d4d4d4]"
+                        title="Includes Auto, Cursor Grok 4.5–4.7, and Composer 2.5"
+                      >
                         <div class="truncate">{{ autoBucketCaption(planFor(account)) }}</div>
                         <div class="mt-1 h-1 overflow-hidden rounded-full bg-[#343434]">
-                          <div class="h-full rounded-full" :class="bucketBarClass(autoBucketRemainingPercent(planFor(account)))" :style="{ width: `${autoBucketRemainingPercent(planFor(account))}%` }" />
+                          <div class="h-full rounded-full transition-all" :class="usedBarClass(autoBucketUsedPercent(planFor(account)))" :style="{ width: `${autoBucketUsedPercent(planFor(account))}%` }" />
                         </div>
                       </div>
                     </div>
-                    <div v-if="renewalLabel(planFor(account)) || planFor(account).namedDisplayMessage || planFor(account).displayMessage" class="mt-1 text-[10px] text-[#8a8a8a]">
+                    <div v-if="renewalLabel(planFor(account)) || onDemandUsageCaption(planFor(account)) || planFor(account).namedDisplayMessage || planFor(account).displayMessage" class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-[#8a8a8a]">
                       <span v-if="renewalLabel(planFor(account))">{{ renewalLabel(planFor(account)) }}</span>
-                      <span v-if="renewalLabel(planFor(account)) && (planFor(account).namedDisplayMessage || planFor(account).displayMessage)"> · </span>
+                      <span v-if="renewalLabel(planFor(account)) && onDemandUsageCaption(planFor(account))">·</span>
+                      <span v-if="onDemandUsageCaption(planFor(account))">{{ onDemandUsageCaption(planFor(account)) }}</span>
+                      <span v-if="(renewalLabel(planFor(account)) || onDemandUsageCaption(planFor(account))) && (planFor(account).namedDisplayMessage || planFor(account).displayMessage)">·</span>
                       <span v-if="planFor(account).namedDisplayMessage || planFor(account).displayMessage">{{ planFor(account).namedDisplayMessage || planFor(account).displayMessage }}</span>
                     </div>
                   </template>
