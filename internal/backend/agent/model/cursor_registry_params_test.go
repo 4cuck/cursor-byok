@@ -390,3 +390,36 @@ const gpt54Spec = `{
     {"parameterValues":[{"id":"context","value":"1m"},{"id":"reasoning","value":"medium"},{"id":"fast","value":"false"}],"isMaxMode":true,"isDefaultMaxConfig":true}
   ]
 }`
+
+const speedTierSpec = `{
+  "parameterDefinitions":[
+    {"id":"effort","parameterType":{"enumParameter":{"values":[{"value":"medium"},{"value":"high"}]}}},
+    {"id":"speed","parameterType":{"enumParameter":{"values":[{"value":"default"},{"value":"fast"}]}}}
+  ],
+  "variants":[
+    {"parameterValues":[{"id":"effort","value":"medium"},{"id":"speed","value":"default"}],"isDefaultNonMaxConfig":true},
+    {"parameterValues":[{"id":"effort","value":"high"},{"id":"speed","value":"fast"}]}
+  ]
+}`
+
+func TestCompleteCursorRegistryParametersTranslatesFastAndSpeedTiers(t *testing.T) {
+	// Model uses "speed" ("default"/"fast"), caller passes fast=true or {id:"fast", value:"true"}.
+	requested := cursorAccountRequestedModel("model-with-speed", "high", true, false, nil, speedTierSpec, 0)
+	if got := strings.Join(parameterPairs(requested), ","); got != "effort=high,speed=fast" {
+		t.Fatalf("fast bool -> speed parameter = %q, want effort=high,speed=fast", got)
+	}
+	requestedExplicit := cursorAccountRequestedModel("model-with-speed", "medium", false, false, []ModelParameter{
+		{ID: "fast", Value: "true"},
+	}, speedTierSpec, 0)
+	if got := strings.Join(parameterPairs(requestedExplicit), ","); got != "effort=medium,speed=fast" {
+		t.Fatalf("explicit fast=true -> speed=fast = %q, want effort=medium,speed=fast", got)
+	}
+
+	// Model uses "fast" ("false"/"true"), caller passes {id:"speed", value:"fast"}.
+	requestedReverse := cursorAccountRequestedModel("composer-2.5", "", false, false, []ModelParameter{
+		{ID: "speed", Value: "fast"},
+	}, composerSpec, 0)
+	if got := strings.Join(parameterPairs(requestedReverse), ","); got != "fast=true" {
+		t.Fatalf("explicit speed=fast -> fast=true = %q, want fast=true", got)
+	}
+}

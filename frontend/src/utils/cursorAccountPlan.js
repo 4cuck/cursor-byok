@@ -44,11 +44,80 @@ export function subscriptionStatusLabel(status) {
   }
 }
 
-export function usageBarClass(plan) {
-  const remaining = remainingUsagePercent(plan);
+export function credentialTypeLabel(credentialType) {
+  switch (String(credentialType || "").trim().toLowerCase()) {
+    case "api_key":
+      return "API Key";
+    case "oauth":
+      return "OAuth";
+    default:
+      return "";
+  }
+}
+
+export function bucketBarClass(remainingPct) {
+  const remaining = Number(remainingPct) || 0;
   if (remaining >= 50) return "bg-[#3dbe7a]";
   if (remaining >= 20) return "bg-[#e2b15a]";
   return "bg-[#e06a6a]";
+}
+
+export function usageBarClass(plan) {
+  return bucketBarClass(remainingUsagePercent(plan));
+}
+
+export function namedBucketRemainingPercent(plan) {
+  if (!plan?.hasBucketBreakdown) return null;
+  const limit = Number(plan.namedLimitCents) || 0;
+  if (limit > 0) {
+    const used = Math.max(0, Number(plan.namedUsedCents) || 0);
+    return Math.max(0, Math.min(100, Math.round(((limit - used) / limit) * 100)));
+  }
+  if (Number.isFinite(Number(plan.namedPercentUsed)) && Number(plan.namedPercentUsed) > 0) {
+    return Math.max(0, Math.min(100, Math.round(100 - Number(plan.namedPercentUsed))));
+  }
+  return null;
+}
+
+export function autoBucketRemainingPercent(plan) {
+  if (!plan?.hasBucketBreakdown) return null;
+  const limit = Number(plan.autoLimitCents) || 0;
+  if (limit > 0) {
+    const used = Math.max(0, Number(plan.autoUsedCents) || 0);
+    return Math.max(0, Math.min(100, Math.round(((limit - used) / limit) * 100)));
+  }
+  if (Number.isFinite(Number(plan.autoPercentUsed)) && Number(plan.autoPercentUsed) > 0) {
+    return Math.max(0, Math.min(100, Math.round(100 - Number(plan.autoPercentUsed))));
+  }
+  return null;
+}
+
+export function namedBucketCaption(plan) {
+  const remainingPct = namedBucketRemainingPercent(plan);
+  if (remainingPct == null) return "";
+  const limit = Number(plan?.namedLimitCents) || 0;
+  if (limit > 0) {
+    const remaining = Math.max(0, limit - (Number(plan?.namedUsedCents) || 0));
+    return `Named models: ${formatPlanCents(remaining)} / ${formatPlanCents(limit)} left (${remainingPct}%)`;
+  }
+  return `Named models: ${remainingPct}% left`;
+}
+
+export function autoBucketCaption(plan) {
+  const remainingPct = autoBucketRemainingPercent(plan);
+  if (remainingPct == null) return "";
+  const limit = Number(plan?.autoLimitCents) || 0;
+  if (limit > 0) {
+    const remaining = Math.max(0, limit - (Number(plan?.autoUsedCents) || 0));
+    return `Auto: ${formatPlanCents(remaining)} / ${formatPlanCents(limit)} left (${remainingPct}%)`;
+  }
+  return `Auto: ${remainingPct}% left`;
+}
+
+export function bonusUsageCaption(plan) {
+  const bonus = Number(plan?.bonusCents) || 0;
+  if (bonus <= 0) return "";
+  return `Bonus used: ${formatPlanCents(bonus)}`;
 }
 
 export function renewalLabel(plan, now = Date.now()) {

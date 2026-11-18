@@ -57,7 +57,11 @@ func (s *ProxyService) SaveUserConfig(cfg UserConfig) error {
 		return nil
 	}
 	if err != nil {
-		return err
+		// Prefix the code so the UI can show why the write failed. A bare Go error
+		// has no mapping and degrades into "The service encountered an error",
+		// which is exactly what made model sync failures undiagnosable.
+		logger.Errorf("config save failed adapters=%d err=%v", len(cfg.ModelAdapters), err)
+		return fmt.Errorf("config_save_failed: %w", err)
 	}
 	s.invalidateModelCatalogCaches()
 	// 直连模式（routingMode=upstream）：Cursor 直连官方，必须恢复官方登录态，
@@ -73,14 +77,16 @@ func (s *ProxyService) SaveUserConfig(cfg UserConfig) error {
 		if s.cursorAccount != nil && s.cursorAccount.CurrentAccountUsesAPIKey() {
 			logger.Infof("official upstream: keeping the installed Cursor API key account")
 		} else if err := cursor.RestoreCursorUserInfo(); err != nil {
-			return fmt.Errorf("restore cursor user info: %w", err)
+			logger.Errorf("config save: restore cursor user info failed err=%v", err)
+			return fmt.Errorf("cursor_restore_failed: %w", err)
 		}
 	} else if normalized.Routing.Mode != "upstream" && oldConfig.Routing.Mode == "upstream" {
 		// Coming back to cursor-byok must put the selected account back into
 		// Cursor. Otherwise the official token restored for upstream stays in
 		// place and replaces the API key the user had installed.
 		if err := s.reinjectActiveCursorAccount(); err != nil {
-			return fmt.Errorf("restore cursor-byok account: %w", err)
+			logger.Errorf("config save: reinject active cursor account failed err=%v", err)
+			return fmt.Errorf("cursor_account_reinject_failed: %w", err)
 		}
 	}
 	s.emitUserConfigChanged(normalized)

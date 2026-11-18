@@ -157,7 +157,12 @@ func (s *ProxyService) DeleteCursorAccounts(req cursoraccount.CursorAccountDelet
 			return fmt.Errorf("account id is empty")
 		}
 	}
-	return s.cursorAccount.Delete(req)
+	if err := s.cursorAccount.Delete(req); err != nil {
+		return err
+	}
+	s.reconcileCursorAccountAdaptersAfterDelete(req.AccountIDs, req.ReplacementID)
+	s.triggerProviderBalanceSyncAfterAccountChange()
+	return nil
 }
 
 func (s *ProxyService) PrepareCursorClientAccountSwitch(accountID string) (cursoraccount.CursorAccountSwitchPreparation, error) {

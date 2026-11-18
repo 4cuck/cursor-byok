@@ -41,6 +41,7 @@ test("normalizes safe provider diagnostics without inventing live recovery", () 
   assert.equal(snapshot.routerAvailable, true);
   assert.equal(snapshot.channels[0].endpoint, "https://provider.example:8443");
   assert.equal(snapshot.channels[0].credentialConfigured, true);
+  assert.equal(snapshot.channels[0].source, "");
   assert.equal(snapshot.channels[0].apiKey, undefined);
   assert.equal(snapshot.channels[0].baseURL, undefined);
   assert.equal(snapshot.channels[1].healthState, "cooldown");
@@ -53,6 +54,26 @@ test("normalizes safe provider diagnostics without inventing live recovery", () 
     oldestStoredAtUnixMs: 0,
     nextExpiryAtUnixMs: 0,
   });
+});
+
+test("normalizes Cursor account channels without a credential warning", () => {
+  const snapshot = normalizeProviderDiagnostics({
+    channels: [
+      {
+        channelId: "cursor_account1:gemini-4-carbon",
+        source: "cursor_account",
+        displayName: "Gemini 4 Carbon",
+        modelId: "gemini-4-carbon",
+        credentialConfigured: true,
+        endpointScheme: "https",
+        endpointHost: "api2.cursor.sh",
+        healthState: "ready",
+      },
+    ],
+  });
+  assert.equal(snapshot.channels[0].source, "cursor_account");
+  assert.equal(snapshot.channels[0].credentialConfigured, true);
+  assert.equal(snapshot.channels[0].endpoint, "https://api2.cursor.sh");
 });
 
 test("rejects unsafe endpoint projections and formats cooldowns", () => {

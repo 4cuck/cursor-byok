@@ -96,6 +96,13 @@ func (manager *Manager) SelectChannelsForModel(_ context.Context, modelID string
 	if len(filteredMatches) == 0 {
 		return nil, legacyruntime.ErrChannelNotAvailable
 	}
+	// Cursor 账户模型：把同一模型在其他账户下的适配器追加为候选渠道。
+	// 一个账户用完某模型的额度后，Cursor 用文字错误拒绝（没有 HTTP 状态码），
+	// router 只拿到一个候选渠道时就只能失败；带上同模型的其他账户后，
+	// 本轮请求可以直接切到还有额度的账户。
+	if selectedSource == legacyruntime.ModelSourceCursorAccount {
+		filteredMatches = appendCursorAccountSiblingMatches(adapters, filteredMatches)
+	}
 	// 展开备用密钥池：带 apiKeys 的 adapter 复制成每把密钥一个独立渠道。
 	// 轮换游标在展开后的完整列表上推进，密钥池天然参与轮换；冷却指纹包含
 	// apiKey，单把密钥被限流只冷却该克隆渠道，不影响同渠道其他密钥。
@@ -105,8 +112,13 @@ func (manager *Manager) SelectChannelsForModel(_ context.Context, modelID string
 		manager.selectionOffsets = make(map[string]int)
 	}
 	key := selectedSource + "\x00" + strings.TrimSpace(modelID)
-	offset := manager.selectionOffsets[key] % len(candidates)
-	manager.selectionOffsets[key] = (offset + 1) % len(candidates)
+	offset := 0
+	// 账户模型的候选顺序必须稳定：首渠道是配置中选定的那个账户，
+	// 其余账户只作为失败后的后备。轮换会让"当前选中账户"每轮漂移。
+	if selectedSource != legacyruntime.ModelSourceCursorAccount {
+		offset = manager.selectionOffsets[key] % len(candidates)
+		manager.selectionOffsets[key] = (offset + 1) % len(candidates)
+	}
 	manager.selectionMu.Unlock()
 	channels := make([]*legacyruntime.ResolvedChannel, 0, len(candidates))
 	for index := 0; index < len(candidates); index++ {
@@ -118,6 +130,61 @@ func (manager *Manager) SelectChannelsForModel(_ context.Context, modelID string
 		channels = append(channels, channel)
 	}
 	return channels, nil
+}
+
+// appendCursorAccountSiblingMatches adds adapters that expose the same model
+// under a different Cursor account, and places non-exhausted accounts ahead of
+// accounts currently in per-model quota cooldown.
+func appendCursorAccountSiblingMatches(adapters []ModelAdapterConfig, matches []int) []int {
+	if len(matches) == 0 {
+		return matches
+	}
+	wanted := make(map[string]struct{}, len(matches))
+	for _, index := range matches {
+		name := strings.ToLower(strings.TrimSpace(adapters[index].ModelID))
+		if name == "" {
+			continue
+		}
+		wanted[name] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		return matches
+	}
+	seen := make(map[int]struct{}, len(matches))
+	for _, index := range matches {
+		seen[index] = struct{}{}
+	}
+	extended := append([]int(nil), matches...)
+	for index := range adapters {
+		if _, ok := seen[index]; ok {
+			continue
+		}
+		adapter := adapters[index]
+		if legacyruntime.NormalizeModelSource(adapter.Source) != legacyruntime.ModelSourceCursorAccount {
+			continue
+		}
+		if adapter.Disabled {
+			continue
+		}
+		if _, ok := wanted[strings.ToLower(strings.TrimSpace(adapter.ModelID))]; !ok {
+			continue
+		}
+		extended = append(extended, index)
+	}
+	if len(extended) <= 1 {
+		return extended
+	}
+	ready := make([]int, 0, len(extended))
+	exhausted := make([]int, 0, len(extended))
+	for _, index := range extended {
+		adapter := adapters[index]
+		if modeladapter.CursorAccountModelExhausted(adapter.CursorAccountID, adapter.ModelID) {
+			exhausted = append(exhausted, index)
+		} else {
+			ready = append(ready, index)
+		}
+	}
+	return append(ready, exhausted...)
 }
 
 // expandAdapterKeyPools 把命中的 adapter 列表按备用密钥池展开成逐密钥的候选渠道。

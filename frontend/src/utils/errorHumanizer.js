@@ -86,7 +86,9 @@ export function toUserErrorWithCause(error) {
   const normalized = normalizeClientError(error);
   const user = normalized.userMessage || "";
   const technical = String(normalized.technicalMessage || "").trim();
-  if (!technical || technical === user) return user;
-  const detail = technical.length > 160 ? `${technical.slice(0, 160)}…` : technical;
+  if (!technical || technical === "unknown error" || technical === user || user.includes(technical)) {
+    return user;
+  }
+  const detail = technical.length > 220 ? `${technical.slice(0, 220)}…` : technical;
   return `${user} (${detail})`;
 }

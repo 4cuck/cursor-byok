@@ -32,6 +32,7 @@ type CursorAccountSummary struct {
 	ID               string   `json:"id"`
 	Email            string   `json:"email,omitempty"`
 	AuthIDHint       string   `json:"authIdHint,omitempty"`
+	CredentialType   string   `json:"credentialType,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
 	IsCurrent        bool     `json:"isCurrent"`
 	LastUsedAtUnixMS int64    `json:"lastUsedAtUnixMs,omitempty"`
@@ -73,6 +74,7 @@ type indexEntry struct {
 	ID               string   `json:"id"`
 	Email            string   `json:"email,omitempty"`
 	AuthIDHint       string   `json:"authIdHint,omitempty"`
+	CredentialType   string   `json:"credentialType,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
 	CreatedAt        int64    `json:"createdAt,omitempty"`
 	LastUsedAtUnixMS int64    `json:"lastUsedAtUnixMs,omitempty"`
@@ -468,6 +470,11 @@ func (s *AccountStore) listLocked() ([]CursorAccountSummary, error) {
 	for _, entry := range entries {
 		if err := validateAccountID(entry.ID); err != nil {
 			continue
+		}
+		if entry.CredentialType == "" {
+			if record, readErr := s.readAccountLocked(entry.ID); readErr == nil {
+				entry.CredentialType = credentialTypeFromRecord(record)
+			}
 		}
 		summaries = append(summaries, summaryFromIndexEntry(entry, entry.ID == currentID))
 	}
@@ -1127,6 +1134,16 @@ func validateAccountID(id string) error {
 	return nil
 }
 
+func credentialTypeFromRecord(record accountRecord) string {
+	if IsCursorAPIKey(record.RefreshToken) || IsCursorAPIKey(record.AccessToken) {
+		return "api_key"
+	}
+	if strings.TrimSpace(record.AccessToken) != "" || strings.TrimSpace(record.RefreshToken) != "" {
+		return "oauth"
+	}
+	return ""
+}
+
 func indexEntryFromRecord(record accountRecord) indexEntry {
 	tags := record.Tags
 	if tags == nil {
@@ -1136,6 +1153,7 @@ func indexEntryFromRecord(record accountRecord) indexEntry {
 		ID:                record.ID,
 		Email:             record.Email,
 		AuthIDHint:        record.AuthID,
+		CredentialType:    credentialTypeFromRecord(record),
 		Tags:              tags,
 		CreatedAt:         record.CreatedAt,
 		LastUsedAtUnixMS:  record.LastUsedAt,
@@ -1153,6 +1171,7 @@ func summaryFromIndexEntry(entry indexEntry, isCurrent bool) CursorAccountSummar
 		ID:                entry.ID,
 		Email:             entry.Email,
 		AuthIDHint:        entry.AuthIDHint,
+		CredentialType:    entry.CredentialType,
 		Tags:              tags,
 		IsCurrent:         isCurrent,
 		LastUsedAtUnixMS:  entry.LastUsedAtUnixMS,

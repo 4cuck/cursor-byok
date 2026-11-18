@@ -1251,9 +1251,26 @@ export const ClearCursorAccountLock = (accountID) => {
   recordPreviewCall("ClearCursorAccountLock", [accountID]);
   return Promise.resolve({ id: accountID, lockedUntilUnixMs: 0, lockReason: "" });
 };
-export const FetchCursorAccountModels = () => {
-  recordPreviewCall("FetchCursorAccountModels");
+export const ClearCursorAccountQuotaCooldown = (accountID) => {
+  recordPreviewCall("ClearCursorAccountQuotaCooldown", [accountID]);
+  return Promise.resolve(0);
+};
+export const FetchCursorAccountModels = (accountID) => {
+  recordPreviewCall("FetchCursorAccountModels", [accountID]);
   return Promise.resolve({ models: [] });
+};
+export const SyncCursorAccountModels = (request) => {
+  recordPreviewCall("SyncCursorAccountModels", [request]);
+  return Promise.resolve({
+    accountId: request?.accountId || "",
+    ownerLabel: "cursor_account1",
+    total: 4,
+    added: 4,
+    updated: 0,
+    removed: 0,
+    accountsSynced: 1,
+    unchanged: false,
+  });
 };
 export const DeleteCursorAccounts = (request) => {
   recordPreviewCall("DeleteCursorAccounts", [{ count: request?.accountIds?.length ?? 0, clearCurrent: Boolean(request?.clearCurrent) }]);

@@ -489,6 +489,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			if groupName == "" || groupName == "Cursor account" {
 				groupName = ownerLabel
 			}
+			compactSpec := modelcontext.CompactCursorModelSpecJSON(item.CursorModelSpec)
 			next := ModelAdapterConfig{
 				Source:              source,
 				CredentialScope:     credentialScope,
@@ -500,11 +501,11 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				TooltipData:         strings.TrimSpace(item.TooltipData),
 				ModelID:             strings.TrimSpace(item.ModelID),
 				ReasoningEffort:     strings.TrimSpace(item.ReasoningEffort),
-				ContextWindowTokens: modelcontext.ResolveCursorAccountTokens(item.ModelID, item.CursorModelSpec, normalizeMaxCompletionTokens(item.ContextWindowTokens)),
+				ContextWindowTokens: modelcontext.ResolveCursorAccountTokens(item.ModelID, compactSpec, normalizeMaxCompletionTokens(item.ContextWindowTokens)),
 				MaxCompletionTokens: normalizeMaxCompletionTokens(item.MaxCompletionTokens),
 				Pricing:             item.Pricing,
 				FastMode:            item.FastMode,
-				CursorModelSpec:     strings.TrimSpace(item.CursorModelSpec),
+				CursorModelSpec:     compactSpec,
 				Disabled:            item.Disabled,
 			}
 			if next.TooltipData == "" {

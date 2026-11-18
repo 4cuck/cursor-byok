@@ -530,6 +530,8 @@ func channelConfigurationFingerprint(channel *legacyruntime.ResolvedChannel) str
 	}
 	fields := []string{
 		strings.TrimSpace(channel.ID),
+		strings.TrimSpace(channel.Source),
+		strings.TrimSpace(channel.CursorAccountID),
 		strings.TrimSpace(channel.Provider),
 		strings.TrimSpace(channel.ProtocolMode),
 		strings.TrimSpace(channel.ProtocolGroup),
@@ -565,6 +567,12 @@ func channelConfigurationFingerprint(channel *legacyruntime.ResolvedChannel) str
 }
 
 func channelFailureCooldown(err error, consecutiveFailures int) time.Duration {
+	// Cursor 账户模型的额度/套餐拒绝没有 HTTP 状态码，按状态码分类会落到 default=0，
+	// 于是渠道永不冷却、每轮都重新选中同一个已耗尽额度账户的渠道。这里给该
+	// (账户, 模型) 组合一个显式冷却，让路由在同一模型的其他账户适配器之间切换。
+	if CursorAccountQuotaRefusalText(err.Error()) {
+		return channelFailureQuotaCooldown
+	}
 	status := parseProviderErrorStatus(err.Error())
 	var statusErr *HTTPStatusError
 	if errors.As(err, &statusErr) && statusErr != nil {

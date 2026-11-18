@@ -227,17 +227,7 @@ func agentTurnProducedText(msg *agentv1.AgentServerMessage) bool {
 }
 
 func applyCursorProbeHeaders(req *http.Request, authorization, contentType string) {
-	req.Header.Set("authorization", authorization)
-	req.Header.Set("x-cursor-checksum", upstream.BuildCursorChecksum(authorization))
-	req.Header.Set("x-cursor-client-type", "ide")
-	req.Header.Set("x-cursor-client-version", upstream.CursorClientVersion())
-	req.Header.Set("x-cursor-client-os", "win32")
-	// Electron reports process.arch as x64. Go's amd64 is a different string.
-	req.Header.Set("x-cursor-client-arch", "x64")
-	req.Header.Set("x-cursor-client-device-type", "desktop")
-	req.Header.Set("x-ghost-mode", "false")
-	req.Header.Set("connect-protocol-version", "1")
-	req.Header.Set("content-type", contentType)
+	upstream.ApplyCursorClientHeaders(req, authorization, contentType)
 }
 
 func probeResultFromErrorText(text string) cursorModelProbeResult {

@@ -27,6 +27,8 @@ type CursorAccountSwitchResult = cursoraccount.CursorAccountSwitchResult
 type CursorAccountSwitchOptions = cursoraccount.CursorAccountSwitchOptions
 type CursorAccountModel = client.CursorAccountModel
 type CursorAccountModelCatalog = client.CursorAccountModelCatalog
+type CursorAccountModelSyncRequest = client.CursorAccountModelSyncRequest
+type CursorAccountModelSyncResult = client.CursorAccountModelSyncResult
 type CursorAccountHealth = client.CursorAccountHealth
 type CursorAccountPlan = client.CursorAccountPlan
 type RequestSourceQuery = requestlab.RequestSourceQuery
@@ -114,10 +116,23 @@ func (s *ProxyService) PrepareCursorClientAccountSwitchWithOptions(accountID str
 	return s.core.PrepareCursorClientAccountSwitchWithOptions(accountID, options)
 }
 
-// FetchCursorAccountModels lists the models the signed-in Cursor account may use,
+// FetchCursorAccountModels lists the models one saved Cursor account may use,
 // so an imported API-key account can be materialized as BYOK model adapters.
-func (s *ProxyService) FetchCursorAccountModels() (CursorAccountModelCatalog, error) {
-	return s.core.FetchCursorAccountModels()
+// An empty accountID queries the current account.
+func (s *ProxyService) FetchCursorAccountModels(accountID string) (CursorAccountModelCatalog, error) {
+	return s.core.FetchCursorAccountModels(accountID)
+}
+
+// SyncCursorAccountModels fetches and persists Cursor account models atomically
+// on the backend without sending large config payloads through WebView2 IPC.
+func (s *ProxyService) SyncCursorAccountModels(req CursorAccountModelSyncRequest) (CursorAccountModelSyncResult, error) {
+	return s.core.SyncCursorAccountModels(req)
+}
+
+// ClearCursorAccountQuotaCooldown clears active per-(account, model) quota
+// cooldowns for an account (or all accounts when accountID is empty).
+func (s *ProxyService) ClearCursorAccountQuotaCooldown(accountID string) (int, error) {
+	return s.core.ClearCursorAccountQuotaCooldown(accountID)
 }
 
 func (s *ProxyService) ExecuteCursorClientAccountSwitch(confirmationToken string) (CursorAccountSwitchResult, error) {

@@ -193,6 +193,102 @@ func ResolveCursorAccountTokens(modelID, specJSON string, configured int) int {
 	return Resolve(modelID, configured)
 }
 
+// CompactCursorModelSpecJSON strips verbose UI-only tooltips and badges from a
+// stored CursorModelSpec while preserving every parameter, variant, label,
+// hotkey flag, cost hint, and context window needed by the IDE model picker and
+// runtime parameter completion. Already-compact specs are returned unchanged so
+// persisted configs and test fixtures stay byte-stable.
+func CompactCursorModelSpecJSON(specJSON string) string {
+	trimmed := strings.TrimSpace(specJSON)
+	if trimmed == "" {
+		return ""
+	}
+	if !strings.Contains(trimmed, `"markdownTooltip"`) &&
+		!strings.Contains(trimmed, `"tooltipData"`) &&
+		!strings.Contains(trimmed, `"modelPickerBadges"`) &&
+		!strings.Contains(trimmed, `"confirmationDialogue"`) &&
+		!strings.Contains(trimmed, `"variantStringRepresentation"`) &&
+		!strings.Contains(trimmed, `"legacySlug"`) {
+		return trimmed
+	}
+	var root map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &root); err != nil || len(root) == 0 {
+		return trimmed
+	}
+	changed := false
+	if defs, ok := root["parameterDefinitions"].([]any); ok {
+		for _, rawDef := range defs {
+			def, ok := rawDef.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, exists := def["markdownTooltip"]; exists {
+				delete(def, "markdownTooltip")
+				changed = true
+			}
+			paramType, _ := def["parameterType"].(map[string]any)
+			for _, kind := range []string{"enumParameter", "booleanParameter"} {
+				typed, ok := paramType[kind].(map[string]any)
+				if !ok {
+					continue
+				}
+				values, ok := typed["values"].([]any)
+				if !ok {
+					continue
+				}
+				for _, rawVal := range values {
+					val, ok := rawVal.(map[string]any)
+					if !ok {
+						continue
+					}
+					for _, dropKey := range []string{
+						"markdownTooltip",
+						"modelPickerBadges",
+						"blockedByAdminAllowlist",
+						"defaultBlockedInAdminAllowlist",
+						"hideFromUserPickerWhenAdminBlocked",
+					} {
+						if _, exists := val[dropKey]; exists {
+							delete(val, dropKey)
+							changed = true
+						}
+					}
+				}
+			}
+		}
+	}
+	if variants, ok := root["variants"].([]any); ok {
+		for _, rawVariant := range variants {
+			variant, ok := rawVariant.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, dropKey := range []string{
+				"displayName",
+				"displayNameOutsidePicker",
+				"tooltipData",
+				"tagline",
+				"variantStringRepresentation",
+				"confirmationDialogue",
+				"legacySlug",
+			} {
+				if _, exists := variant[dropKey]; exists {
+					delete(variant, dropKey)
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
+		return trimmed
+	}
+	compacted, err := json.Marshal(root)
+	if err != nil {
+		return trimmed
+	}
+	return string(compacted)
+}
+
 func parseCursorModelSpec(specJSON string) (cursorModelSpec, bool) {
 	raw := strings.TrimSpace(specJSON)
 	if raw == "" {

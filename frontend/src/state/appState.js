@@ -93,7 +93,7 @@ export {
   validateModelAdapters,
 } from "@/utils/modelAdapter";
 // toUserError 系列定义已归位 utils/errorHumanizer.js，此处转发保持既有调用方零改动。
-import { toUserError } from "@/utils/errorHumanizer";
+import { toUserError, toUserErrorWithCause } from "@/utils/errorHumanizer";
 import { safeErrorLogAttributes } from "@/utils/errorContract";
 export { toUserError, toUserErrorWithCause } from "@/utils/errorHumanizer";
 export {
@@ -312,6 +312,14 @@ async function persistConfigPayload(config, options = {}) {
 }
 
 async function persistConfigPayloadNow(config, { modelAdaptersOnly = false } = {}) {
+  try {
+    return await persistConfigPayloadInner(config, { modelAdaptersOnly });
+  } catch (error) {
+    return { ok: false, error: toUserErrorWithCause(error) };
+  }
+}
+
+async function persistConfigPayloadInner(config, { modelAdaptersOnly = false }) {
   const latestConfig = await loadPersistedUserConfig();
   const requestedConfig = normalizeConfig(config);
   const mergedConfig = {
@@ -359,7 +367,7 @@ async function persistConfigPayloadNow(config, { modelAdaptersOnly = false } = {
   } catch (error) {
     return {
       ok: false,
-      error: toUserError(error),
+      error: toUserErrorWithCause(error),
     };
   } finally {
     appState.configSaving = false;
@@ -1281,6 +1289,56 @@ export async function saveModelAdaptersBatch(adapters) {
     { modelAdaptersOnly: true },
   );
   return result.ok ? { ...result, added, skipped, updated, total: added + skipped + updated } : result;
+}
+
+/**
+ * replaceCursorAccountAdapters — 用一次落盘完成「清理旧 Cursor 账户模型 + 写入新目录」。
+ *
+ * 此前同步分三步：两次 removeModelAdaptersWhere 各落盘一次，再 saveModelAdaptersBatch
+ * 落盘一次。任一中间步骤失败时整次同步都会失败，而用户只看到一句通用错误；
+ * 三次全量配置读写也让 48 个模型的同步变得脆弱。这里先基于当前配置算出最终
+ * 列表，再单次落盘。
+ *
+ * @param {Array<object>} adapters 目标 cursor_account 适配器（已由目录构建）
+ * @param {{ ownerAccountID: string, drop: (adapter) => boolean }} options
+ *        drop 判断「哪些既有 adapter 应在本次同步中被替换/删除」
+ * @returns {{ ok, error, added, updated, removed }}
+ */
+export async function replaceCursorAccountAdapters(adapters, options = {}) {
+  const currentConfig = await loadPersistedUserConfig();
+  const existing = normalizeModelAdapters(currentConfig.modelAdapters);
+  const drop = typeof options.drop === "function" ? options.drop : () => false;
+  const next = existing.filter((adapter) => !drop(adapter));
+  const removed = existing.length - next.length;
+
+  const indexByIdentity = new Map(next.map((adapter, index) => [buildModelAdapterIdentityKey(adapter), index]));
+  let added = 0;
+  let updated = 0;
+  for (const source of Array.isArray(adapters) ? adapters : []) {
+    const adapter = normalizeModelAdapter(source);
+    const identity = buildModelAdapterIdentityKey(adapter);
+    const existingIndex = indexByIdentity.get(identity);
+    if (existingIndex == null) {
+      indexByIdentity.set(identity, next.length);
+      next.push(adapter);
+      added += 1;
+      continue;
+    }
+    const merged = mergeDuplicateModelAdapter(next[existingIndex], adapter);
+    if (JSON.stringify(merged) !== JSON.stringify(next[existingIndex])) {
+      next[existingIndex] = merged;
+      updated += 1;
+    }
+  }
+
+  if (removed === 0 && added === 0 && updated === 0) {
+    return { ok: true, error: "", added: 0, updated: 0, removed: 0 };
+  }
+  const result = await persistConfigPayload(
+    { ...currentConfig, modelAdapters: next },
+    { modelAdaptersOnly: true },
+  );
+  return result.ok ? { ...result, added, updated, removed } : result;
 }
 
 /**

@@ -10,26 +10,41 @@ import (
 	"strings"
 
 	"cursor/gen/aiserverv1"
+	modeladapter "cursor/internal/backend/agent/model"
+	"cursor/internal/backend/server/upstream"
 
 	"google.golang.org/protobuf/proto"
 )
 
 // CursorAccountPlan is the non-secret plan and included-usage snapshot for one
-// Cursor account. Amounts are cents, matching Cursor's dashboard fields.
+// Cursor account. Amounts are cents, matching Cursor's dashboard fields, plus
+// the separate Auto vs Named-Model ("API") usage buckets introduced in Cursor 3.x.
 type CursorAccountPlan struct {
-	PlanName           string  `json:"planName,omitempty"`
-	MembershipType     string  `json:"membershipType,omitempty"`
-	SubscriptionStatus string  `json:"subscriptionStatus,omitempty"`
-	Price              string  `json:"price,omitempty"`
-	IncludedCents      int32   `json:"includedCents,omitempty"`
-	RemainingCents     int32   `json:"remainingCents,omitempty"`
-	LimitCents         int32   `json:"limitCents,omitempty"`
-	UsedCents          int32   `json:"usedCents,omitempty"`
-	PercentUsed        float64 `json:"percentUsed,omitempty"`
-	BillingCycleEnd    int64   `json:"billingCycleEnd,omitempty"`
-	DisplayMessage     string  `json:"displayMessage,omitempty"`
-	UsageKnown         bool    `json:"usageKnown"`
-	Message            string  `json:"message,omitempty"`
+	PlanName            string   `json:"planName,omitempty"`
+	MembershipType      string   `json:"membershipType,omitempty"`
+	SubscriptionStatus  string   `json:"subscriptionStatus,omitempty"`
+	Price               string   `json:"price,omitempty"`
+	IncludedCents       int32    `json:"includedCents,omitempty"`
+	BonusCents          int32    `json:"bonusCents,omitempty"`
+	BonusTooltip        string   `json:"bonusTooltip,omitempty"`
+	RemainingCents      int32    `json:"remainingCents,omitempty"`
+	LimitCents          int32    `json:"limitCents,omitempty"`
+	UsedCents           int32    `json:"usedCents,omitempty"`
+	PercentUsed         float64  `json:"percentUsed,omitempty"`
+	AutoUsedCents       int32    `json:"autoUsedCents,omitempty"`
+	AutoLimitCents      int32    `json:"autoLimitCents,omitempty"`
+	AutoPercentUsed     float64  `json:"autoPercentUsed,omitempty"`
+	NamedUsedCents      int32    `json:"namedUsedCents,omitempty"`
+	NamedLimitCents     int32    `json:"namedLimitCents,omitempty"`
+	NamedPercentUsed    float64  `json:"namedPercentUsed,omitempty"`
+	HasBucketBreakdown  bool     `json:"hasBucketBreakdown,omitempty"`
+	BillingCycleEnd     int64    `json:"billingCycleEnd,omitempty"`
+	DisplayMessage      string   `json:"displayMessage,omitempty"`
+	NamedDisplayMessage string   `json:"namedDisplayMessage,omitempty"`
+	AutoDisplayMessage  string   `json:"autoDisplayMessage,omitempty"`
+	ExhaustedModels     []string `json:"exhaustedModels,omitempty"`
+	UsageKnown          bool     `json:"usageKnown"`
+	Message             string   `json:"message,omitempty"`
 }
 
 type cursorStripeProfile struct {
@@ -50,14 +65,46 @@ func (s *ProxyService) GetCursorAccountPlan(accountID string) (CursorAccountPlan
 	return s.loadCursorAccountPlan(ctx, accountID)
 }
 
+// ClearCursorAccountQuotaCooldown clears active per-(account, model) quota
+// cooldowns for an account (or all accounts when accountID is empty).
+func (s *ProxyService) ClearCursorAccountQuotaCooldown(accountID string) (int, error) {
+	return modeladapter.ClearAllCursorAccountExhausted(accountID), nil
+}
+
 func (s *ProxyService) loadCursorAccountPlan(ctx context.Context, accountID string) (CursorAccountPlan, error) {
-	authorization, err := s.cursorAccount.AuthorizationFor(ctx, strings.TrimSpace(accountID))
+	accountID = strings.TrimSpace(accountID)
+	resolvedID := accountID
+	if resolvedID == "" {
+		resolvedID = strings.TrimSpace(s.cursorAccount.CurrentAccountID())
+	}
+	authorization, err := s.cursorAccount.AuthorizationFor(ctx, accountID)
+	if err != nil && resolvedID != "" {
+		if renewed, refreshErr := s.cursorAccount.ForceRefresh(ctx, resolvedID); refreshErr == nil {
+			authorization = renewed
+			err = nil
+		}
+	}
 	if err != nil {
 		return CursorAccountPlan{Message: "Could not authorize this account."}, nil
 	}
 	plan, err := fetchCursorAccountPlan(ctx, authorization)
+	if err != nil && resolvedID != "" {
+		if renewed, refreshErr := s.cursorAccount.ForceRefresh(ctx, resolvedID); refreshErr == nil {
+			plan, err = fetchCursorAccountPlan(ctx, renewed)
+		}
+	}
 	if err != nil {
 		return CursorAccountPlan{Message: "Cursor did not return plan or usage for this key."}, nil
+	}
+	if resolvedID != "" {
+		exhausted := modeladapter.ListCursorAccountExhaustedModels(resolvedID)
+		if len(exhausted) > 0 {
+			names := make([]string, 0, len(exhausted))
+			for _, item := range exhausted {
+				names = append(names, item.ModelID)
+			}
+			plan.ExhaustedModels = names
+		}
 	}
 	return plan, nil
 }
@@ -92,20 +139,32 @@ func fetchCursorAccountPlan(ctx context.Context, authorization string) (CursorAc
 	return buildCursorAccountPlan(planInfo, usage, stripe), nil
 }
 
+func doCursorControlPlaneRequest(req *http.Request) (*http.Response, error) {
+	resp, err := cursorHealthHTTPClient.Do(req)
+	if err == nil {
+		return resp, nil
+	}
+	clone := req.Clone(req.Context())
+	if req.GetBody != nil {
+		if body, bodyErr := req.GetBody(); bodyErr == nil {
+			clone.Body = body
+		}
+	}
+	return cursorModelsDirectHTTPClient.Do(clone)
+}
+
 func postCursorDashboard(ctx context.Context, authorization, path string, request proto.Message, response proto.Message) error {
 	body, err := proto.Marshal(request)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api2.cursor.sh"+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cursorBackendRoot, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("authorization", authorization)
-	req.Header.Set("content-type", "application/proto")
+	upstream.ApplyCursorClientHeaders(req, authorization, "application/proto")
 	req.Header.Set("accept", "application/proto")
-	req.Header.Set("connect-protocol-version", "1")
-	resp, err := cursorHealthHTTPClient.Do(req)
+	resp, err := doCursorControlPlaneRequest(req)
 	if err != nil {
 		return err
 	}
@@ -121,13 +180,13 @@ func postCursorDashboard(ctx context.Context, authorization, path string, reques
 }
 
 func getCursorStripeProfile(ctx context.Context, authorization string, profile *cursorStripeProfile) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api2.cursor.sh/auth/full_stripe_profile", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cursorBackendRoot, "/")+"/auth/full_stripe_profile", nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("authorization", authorization)
+	upstream.ApplyCursorClientHeaders(req, authorization, "")
 	req.Header.Set("accept", "application/json")
-	resp, err := cursorHealthHTTPClient.Do(req)
+	resp, err := doCursorControlPlaneRequest(req)
 	if err != nil {
 		return err
 	}
@@ -169,6 +228,33 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 			plan.BillingCycleEnd = usage.GetBillingCycleEnd()
 		}
 		plan.DisplayMessage = strings.TrimSpace(usage.GetDisplayMessage())
+		plan.NamedDisplayMessage = strings.TrimSpace(usage.GetNamedModelSelectedDisplayMessage())
+		plan.AutoDisplayMessage = strings.TrimSpace(usage.GetAutoModelSelectedDisplayMessage())
+
+		if pu := usage.GetPlanUsage(); pu != nil {
+			plan.BonusCents = pu.GetBonusSpend()
+			plan.BonusTooltip = strings.TrimSpace(pu.GetBonusTooltip())
+			if pu.AutoSpend != nil || pu.AutoLimit != nil || pu.AutoPercentUsed != nil {
+				plan.AutoUsedCents = pu.GetAutoSpend()
+				plan.AutoLimitCents = pu.GetAutoLimit()
+				plan.AutoPercentUsed = clampPercent(pu.GetAutoPercentUsed())
+				if plan.AutoPercentUsed == 0 && plan.AutoLimitCents > 0 && plan.AutoUsedCents > 0 {
+					plan.AutoPercentUsed = clampPercent(float64(plan.AutoUsedCents) / float64(plan.AutoLimitCents) * 100)
+				}
+			}
+			if pu.ApiSpend != nil || pu.ApiLimit != nil || pu.ApiPercentUsed != nil {
+				plan.NamedUsedCents = pu.GetApiSpend()
+				plan.NamedLimitCents = pu.GetApiLimit()
+				plan.NamedPercentUsed = clampPercent(pu.GetApiPercentUsed())
+				if plan.NamedPercentUsed == 0 && plan.NamedLimitCents > 0 && plan.NamedUsedCents > 0 {
+					plan.NamedPercentUsed = clampPercent(float64(plan.NamedUsedCents) / float64(plan.NamedLimitCents) * 100)
+				}
+			}
+			if plan.NamedLimitCents > 0 || plan.AutoLimitCents > 0 || plan.NamedPercentUsed > 0 || plan.AutoPercentUsed > 0 {
+				plan.HasBucketBreakdown = true
+			}
+		}
+
 		remaining, limit, known := includedUsage(usage)
 		if known {
 			plan.UsageKnown = true
@@ -178,9 +264,6 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 				plan.IncludedCents = limit
 			}
 			used := limit - remaining
-			if remaining < 0 {
-				used = limit - remaining
-			}
 			if used < 0 {
 				used = 0
 			}
@@ -200,6 +283,16 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 		plan.Message = "Cursor did not return plan or usage for this key."
 	}
 	return plan
+}
+
+func clampPercent(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }
 
 func includedUsage(usage *aiserverv1.GetCurrentPeriodUsageResponse) (remaining int32, limit int32, known bool) {

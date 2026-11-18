@@ -11,7 +11,7 @@ import {
   MODEL_SOURCE_CURSOR_ACCOUNT,
   createEmptyModelAdapter,
   normalizeModelAdapter,
-} from "@/utils/modelAdapter";
+} from "./modelAdapter.js";
 
 const CURSOR_ACCOUNT_SUPPLIER_ID = "cursor_account";
 

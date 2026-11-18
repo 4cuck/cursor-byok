@@ -3,6 +3,7 @@ package upstream
 import (
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -57,6 +58,56 @@ func CursorClientCommit() string {
 // CursorMachineID returns the machine id Cursor uses in x-cursor-checksum.
 func CursorMachineID() string {
 	return cursorIdentity().MachineID
+}
+
+// CursorClientOS returns Electron's process.platform value for the host OS.
+func CursorClientOS() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "win32"
+	case "darwin":
+		return "darwin"
+	default:
+		return "linux"
+	}
+}
+
+// CursorClientArch returns Electron's process.arch value for the host CPU.
+func CursorClientArch() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "arm64"
+	case "386":
+		return "ia32"
+	default:
+		return "x64"
+	}
+}
+
+// ApplyCursorClientHeaders attaches the same client identity headers as the
+// installed Cursor IDE on control-plane and agent-plane requests.
+func ApplyCursorClientHeaders(req *http.Request, authorization, contentType string) {
+	if req == nil {
+		return
+	}
+	identity := cursorIdentity()
+	if strings.TrimSpace(authorization) != "" {
+		req.Header.Set("authorization", authorization)
+		req.Header.Set("x-cursor-checksum", BuildCursorChecksum(authorization))
+	}
+	req.Header.Set("x-cursor-client-type", "ide")
+	req.Header.Set("x-cursor-client-version", identity.Version)
+	if identity.Commit != "" {
+		req.Header.Set("x-cursor-client-commit", identity.Commit)
+	}
+	req.Header.Set("x-cursor-client-os", CursorClientOS())
+	req.Header.Set("x-cursor-client-arch", CursorClientArch())
+	req.Header.Set("x-cursor-client-device-type", "desktop")
+	req.Header.Set("x-ghost-mode", "false")
+	req.Header.Set("connect-protocol-version", "1")
+	if strings.TrimSpace(contentType) != "" {
+		req.Header.Set("content-type", contentType)
+	}
 }
 
 // RefreshCursorIdentity forces re-detection. Called when settings change.

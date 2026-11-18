@@ -16,6 +16,11 @@ const (
 	ProviderDiagnosticsStateReady       = "ready"
 	ProviderDiagnosticsStateUnavailable = "unavailable"
 	ProviderDiagnosticsStateError       = "error"
+
+	// cursorAccountDiagnosticHost is what the diagnostics panel shows for Cursor
+	// account channels. They have no configured base URL because the account
+	// gateway always talks to Cursor's own control plane.
+	cursorAccountDiagnosticHost = "api2.cursor.sh"
 )
 
 // ProviderDiagnosticsSnapshot is a read-only, credential-safe view of the live router.
@@ -30,7 +35,11 @@ type ProviderDiagnosticsSnapshot struct {
 // ProviderChannelDiagnostic intentionally contains no credential values, full URLs,
 // request headers, provider bodies, cache keys, or request-parameter JSON.
 type ProviderChannelDiagnostic struct {
-	ChannelID               string `json:"channelId"`
+	ChannelID string `json:"channelId"`
+	// Source tells the UI whether the channel is a third-party adapter or a
+	// Cursor account model. Account models deliberately carry no API key and no
+	// base URL, which otherwise looks like a misconfigured channel.
+	Source                  string `json:"source,omitempty"`
 	DisplayName             string `json:"displayName"`
 	GroupName               string `json:"groupName,omitempty"`
 	Provider                string `json:"provider"`
@@ -103,8 +112,11 @@ func (router *Router) ProviderDiagnostics(ctx context.Context) ProviderDiagnosti
 }
 
 func projectProviderChannelDiagnostic(channel *legacyruntime.ResolvedChannel) ProviderChannelDiagnostic {
+	source := legacyruntime.NormalizeModelSource(channel.Source)
+	accountModel := source == legacyruntime.ModelSourceCursorAccount
 	diagnostic := ProviderChannelDiagnostic{
 		ChannelID:               strings.TrimSpace(channel.ID),
+		Source:                  source,
 		DisplayName:             strings.TrimSpace(channel.Name),
 		GroupName:               strings.TrimSpace(channel.GroupName),
 		Provider:                strings.TrimSpace(channel.Provider),
@@ -116,6 +128,17 @@ func projectProviderChannelDiagnostic(channel *legacyruntime.ResolvedChannel) Pr
 		CredentialConfigured:    strings.TrimSpace(channel.APIKey) != "",
 		CustomHeadersConfigured: channel.CustomHeadersEnabled && strings.TrimSpace(channel.CustomHeadersJSON) != "",
 		HealthState:             ProviderChannelHealthReady,
+	}
+	if accountModel {
+		// Cursor account models never store an API key or a base URL: the account
+		// gateway injects the signed-in credential at request time.
+		diagnostic.CredentialConfigured = true
+		diagnostic.EndpointScheme = "https"
+		diagnostic.EndpointHost = cursorAccountDiagnosticHost
+		if until, cooling := CursorAccountModelCooldownUntil(channel.CursorAccountID, channel.Model); cooling {
+			diagnostic.HealthState = ProviderChannelHealthCooldown
+			diagnostic.CooldownUntilUnixMS = until.UnixMilli()
+		}
 	}
 	if parsed, err := url.Parse(strings.TrimSpace(channel.BaseURL)); err == nil && parsed.Scheme != "" && parsed.Host != "" {
 		diagnostic.EndpointScheme = strings.ToLower(parsed.Scheme)

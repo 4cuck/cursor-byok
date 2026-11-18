@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -186,6 +187,38 @@ func (manager *Manager) ListAccounts() ([]CursorAccountSummary, error) {
 		return []CursorAccountSummary{}, fmt.Errorf("cursor account store is not initialized")
 	}
 	return manager.store.List()
+}
+
+// CandidateAccountIDs lists all saved, non-device-locked Cursor account IDs in
+// failover priority order: the current account first, followed by other saved
+// accounts ordered from most recently used to oldest.
+func (manager *Manager) CandidateAccountIDs() []string {
+	if manager == nil || manager.store == nil {
+		return nil
+	}
+	accounts, err := manager.store.List()
+	if err != nil || len(accounts) == 0 {
+		return nil
+	}
+	now := time.Now()
+	ordered := make([]CursorAccountSummary, 0, len(accounts))
+	for _, item := range accounts {
+		if strings.TrimSpace(item.ID) == "" || item.IsLocked(now) {
+			continue
+		}
+		ordered = append(ordered, item)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].IsCurrent != ordered[j].IsCurrent {
+			return ordered[i].IsCurrent
+		}
+		return ordered[i].LastUsedAtUnixMS > ordered[j].LastUsedAtUnixMS
+	})
+	ids := make([]string, 0, len(ordered))
+	for _, item := range ordered {
+		ids = append(ids, item.ID)
+	}
+	return ids
 }
 
 func (manager *Manager) SetCurrent(id string) (CursorAccountSummary, error) {
@@ -803,11 +836,8 @@ func (manager *Manager) fetchProfile(ctx context.Context, authorization string) 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("authorization", authorization)
-	req.Header.Set("x-cursor-checksum", upstream.BuildCursorChecksum(authorization))
-	req.Header.Set("content-type", "application/proto")
+	upstream.ApplyCursorClientHeaders(req, authorization, "application/proto")
 	req.Header.Set("accept", "application/proto")
-	req.Header.Set("connect-protocol-version", "1")
 	resp, err := manager.client.Do(req)
 	if err != nil {
 		return nil, err

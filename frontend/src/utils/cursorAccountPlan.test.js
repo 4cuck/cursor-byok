@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  autoBucketCaption,
+  autoBucketRemainingPercent,
+  bonusUsageCaption,
+  credentialTypeLabel,
   formatPlanCents,
+  namedBucketCaption,
+  namedBucketRemainingPercent,
   remainingUsagePercent,
   renewalLabel,
   subscriptionStatusLabel,
@@ -29,6 +35,24 @@ test("caption distinguishes leftover usage from an overage", () => {
     "$2.50 over the included amount",
   );
   assert.equal(usageRemainingCaption({ usageKnown: false }), "");
+});
+
+test("formats Named and Auto bucket breakdown and credential types", () => {
+  const plan = {
+    hasBucketBreakdown: true,
+    namedUsedCents: 1500,
+    namedLimitCents: 2000,
+    autoUsedCents: 400,
+    autoLimitCents: 2000,
+    bonusCents: 500,
+  };
+  assert.equal(namedBucketRemainingPercent(plan), 25);
+  assert.equal(autoBucketRemainingPercent(plan), 80);
+  assert.equal(namedBucketCaption(plan), "Named models: $5.00 / $20.00 left (25%)");
+  assert.equal(autoBucketCaption(plan), "Auto: $16.00 / $20.00 left (80%)");
+  assert.equal(bonusUsageCaption(plan), "Bonus used: $5.00");
+  assert.equal(credentialTypeLabel("api_key"), "API Key");
+  assert.equal(credentialTypeLabel("oauth"), "OAuth");
 });
 
 test("subscription status stays readable", () => {

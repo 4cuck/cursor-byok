@@ -17,6 +17,7 @@ type ProviderDiagnosticsSnapshot struct {
 
 type ProviderChannelDiagnostic struct {
 	ChannelID               string `json:"channelId"`
+	Source                  string `json:"source,omitempty"`
 	DisplayName             string `json:"displayName"`
 	GroupName               string `json:"groupName,omitempty"`
 	Provider                string `json:"provider"`
@@ -67,6 +68,7 @@ func (s *ProxyService) GetProviderDiagnostics() ProviderDiagnosticsSnapshot {
 		for _, channel := range router.Channels {
 			result.Channels = append(result.Channels, ProviderChannelDiagnostic{
 				ChannelID:               channel.ChannelID,
+				Source:                  channel.Source,
 				DisplayName:             channel.DisplayName,
 				GroupName:               channel.GroupName,
 				Provider:                channel.Provider,

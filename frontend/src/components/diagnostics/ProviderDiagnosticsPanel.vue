@@ -108,7 +108,9 @@ function formatTokens(value) {
 }
 
 // channelMeta 汇总渠道「供应商 · 协议（· 自定义头）」一行文本，行内与 title 复用。
+// Cursor 账户模型没有第三方协议，标注来源比显示协议更有意义。
 function channelMeta(channel) {
+  if (channel.source === "cursor_account") return "Cursor 账户";
   const meta = `${channel.provider || "—"} · ${channel.protocolGroup || channel.protocolMode || "—"}`;
   return channel.customHeadersConfigured ? `${meta} · 自定义头` : meta;
 }

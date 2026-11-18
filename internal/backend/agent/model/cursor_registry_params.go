@@ -174,9 +174,34 @@ func completeCursorRegistryParameters(catalog cursorRegistryCatalog, client []Mo
 				value = canonical
 			}
 		}
-		if definition.id == "fast" && fast && !registryClientSet(client, "fast") {
-			if canonical, allowed := definition.canonical("true"); allowed {
-				value = canonical
+		if definition.id == "fast" && !registryClientSet(client, "fast") {
+			if tierFast, hasClientTier := registryClientServingTierFast(client); hasClientTier {
+				want := "false"
+				if tierFast {
+					want = "true"
+				}
+				if canonical, allowed := definition.canonical(want); allowed {
+					value = canonical
+				}
+			} else if fast {
+				if canonical, allowed := definition.canonical("true"); allowed {
+					value = canonical
+				}
+			}
+		}
+		if definition.id == "speed" && !registryClientSet(client, "speed") {
+			if tierFast, hasClientTier := registryClientServingTierFast(client); hasClientTier {
+				want := "default"
+				if tierFast {
+					want = "fast"
+				}
+				if canonical, allowed := definition.canonical(want); allowed {
+					value = canonical
+				}
+			} else if fast {
+				if canonical, allowed := definition.canonical("fast"); allowed {
+					value = canonical
+				}
 			}
 		}
 		if value == "" {
@@ -367,11 +392,38 @@ func (catalog cursorRegistryCatalog) effortDefinition() (cursorRegistryDefinitio
 
 func isRegistryStructuralParameter(id string) bool {
 	switch id {
-	case "context", "fast", "thinking":
+	case "context", "fast", "speed", "thinking":
 		return true
 	default:
 		return false
 	}
+}
+
+// registryClientServingTierFast mirrors Cursor IDE's serving-tier.ts:
+// "fast" ("true"/"false") and "speed" ("fast"/"default") are interchangeable
+// serving-tier parameters across model families.
+func registryClientServingTierFast(parameters []ModelParameter) (bool, bool) {
+	for _, parameter := range parameters {
+		id := strings.ToLower(strings.TrimSpace(parameter.ID))
+		val := strings.ToLower(strings.TrimSpace(parameter.Value))
+		switch id {
+		case "fast":
+			if val == "true" || val == "fast" {
+				return true, true
+			}
+			if val == "false" || val == "default" {
+				return false, true
+			}
+		case "speed":
+			if val == "fast" || val == "true" {
+				return true, true
+			}
+			if val == "default" || val == "false" {
+				return false, true
+			}
+		}
+	}
+	return false, false
 }
 
 func (definition cursorRegistryDefinition) hasEffortValue() bool {

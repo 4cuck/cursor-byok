@@ -45,6 +45,12 @@ const ACCOUNT_ERROR_MESSAGES = new Map([
   ["account_import_invalid_schema", "The import file does not match the expected format."],
   ["account_import_local_state_missing", "No local Cursor login state was found to import."],
   ["account_export_empty", "No accounts were selected to export."],
+  ["cursor_account_service_unavailable", "The Cursor account service is not available. Restart the app and retry."],
+  ["cursor_account_sign_in_required", "No usable Cursor session. Import the account or set another account as current."],
+  ["cursor_model_catalog_failed", "Cursor rejected the model catalog request. Check the account's sign-in and network, then retry."],
+  ["config_save_failed", "Saving the model list failed. The configuration was rejected."],
+  ["cursor_restore_failed", "The configuration saved, but restoring Cursor's official login failed. Restart Cursor and retry."],
+  ["cursor_account_reinject_failed", "The configuration saved, but installing the selected Cursor account failed. Restart Cursor and retry."],
 ]);
 
 const DIAGNOSTIC_CODES = new Map([
@@ -68,6 +74,29 @@ function asText(value) {
   return value == null ? "" : String(value).trim();
 }
 
+function deepestCauseText(error) {
+  let node = error && typeof error === "object" ? error.cause : null;
+  for (let depth = 0; node && depth < 6; depth += 1) {
+    const candidate = typeof node === "string" ? node.trim() : asText(node);
+    if (candidate && candidate !== "unknown error") {
+      return candidate;
+    }
+    node = typeof node === "object" ? node.cause : null;
+  }
+  return "";
+}
+
+function redactTechnicalText(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "unknown error";
+  return text
+    .replace(/(authorization\s*[=:]\s*)(?:bearer\s+)?[^\s,;&?#]+/gi, "$1[redacted]")
+    .replace(/\bcrsr_[A-Za-z0-9_-]+/g, "crsr_[redacted]")
+    .replace(/([?&](?:api[_-]?key|token|secret|password)=)[^&\s]*/gi, "$1[redacted]")
+    .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;&?#]+/gi, "$1[redacted]")
+    .slice(0, 1000);
+}
+
 function makeTraceId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -83,13 +112,15 @@ export function extractStatusCode(error) {
 }
 
 function technicalMessage(error) {
-  const text = asText(error);
-  if (!text) return "unknown error";
-  return text
-    .replace(/(authorization\s*[=:]\s*)(?:bearer\s+)?[^\s,;&?#]+/gi, "$1[redacted]")
-    .replace(/([?&](?:api[_-]?key|token|secret|password)=)[^&\s]*/gi, "$1[redacted]")
-    .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;&?#]+/gi, "$1[redacted]")
-    .slice(0, 1000);
+  if (typeof error?.technicalMessage === "string" && error.technicalMessage.trim() && error.technicalMessage.trim() !== "unknown error") {
+    return redactTechnicalText(error.technicalMessage);
+  }
+  const causeText = deepestCauseText(error);
+  const directText = asText(error);
+  if (causeText && causeText !== directText) {
+    return redactTechnicalText(causeText);
+  }
+  return redactTechnicalText(directText);
 }
 
 function safeTraceId(value) {
@@ -98,24 +129,50 @@ function safeTraceId(value) {
 }
 
 export function normalizeClientError(error, { operation = "ui.operation", traceId = "" } = {}) {
-  const text = asText(error);
+  const directText = asText(error);
+  const causeText = deepestCauseText(error);
+  const text = (causeText && (!directText || directText === error?.userMessage)) ? causeText : directText;
   const lower = text.toLowerCase();
-  const status = extractStatusCode(error);
+  const status = extractStatusCode(error) || (causeText ? extractStatusCode(causeText) : 0);
   const structuredCode = typeof error?.code === "string" ? error.code.trim() : "";
   const messageCode = lower.match(/\bmcp_workspace_trust_required\b/)?.[0] || "";
   const diagnosticCode = DIAGNOSTIC_CODES.has(structuredCode) ? structuredCode : messageCode;
   const mapped = DIAGNOSTIC_CODES.get(diagnosticCode) || STATUS_CODES.get(status);
-  let result = mapped;
 
-  // Account codes take precedence over HTTP status mapping: the backend has no
-  // status code for these, only a stable name.
-  if (!result) {
-    for (const [code, message] of ACCOUNT_ERROR_MESSAGES) {
-      if (structuredCode === code || lower.includes(code)) {
-        result = { code, kind: "account", disposition: "blocked", message };
-        break;
+  // Account codes take precedence over HTTP status mapping: the backend reports
+  // these by stable name, and a bare number inside the message would otherwise
+  // replace the specific cause with a generic status sentence.
+  let accountHit = null;
+  for (const [code, message] of ACCOUNT_ERROR_MESSAGES) {
+    if (structuredCode === code || lower.includes(code)) {
+      accountHit = { code, kind: "account", disposition: "blocked", message };
+      break;
+    }
+  }
+  let result = accountHit || mapped;
+
+  // Keep the backend's own explanation when an account/config failure includes detail.
+  if (accountHit && (result.code === "cursor_model_catalog_failed" || result.code === "config_save_failed")) {
+    const idx = lower.indexOf(result.code);
+    if (idx >= 0) {
+      const detail = redactTechnicalText(text.slice(idx + result.code.length).replace(/^[\s:]+/, "").trim());
+      if (detail && detail !== "unknown error") {
+        result = { ...result, message: `${result.message} (${detail})` };
       }
     }
+  }
+
+  // Anything else the Cursor account layer reports is still far more useful than
+  // the generic fatal sentence. Cursor account failures carry no HTTP status, so
+  // without this fallback every expired session, revoked key, or unresolved
+  // account id looked identical to the user.
+  if (!result && /cursor account|cursor_account|sign in to a cursor/i.test(text)) {
+    result = {
+      code: "cursor_account_error",
+      kind: "account",
+      disposition: "blocked",
+      message: `Cursor account error: ${text}`,
+    };
   }
 
   if (!result && (lower.includes("cancel") || lower.includes("aborted") || lower.includes("已取消"))) {

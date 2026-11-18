@@ -15,9 +15,9 @@ import {
   GetControlCenterOverview, ListCursorAccounts, ImportCursorAccount,
   PrepareCursorAccountRecoveryExport, ExecuteCursorAccountRecoveryExport,
   SetCurrentCursorAccount, UpdateCursorAccountTags, DeleteCursorAccounts,
-  ClearCursorAccountLock, CheckCursorAccountHealth, GetCursorAccountPlan,
+  ClearCursorAccountLock, ClearCursorAccountQuotaCooldown, CheckCursorAccountHealth, GetCursorAccountPlan,
   PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
-  FetchCursorAccountModels,
+  FetchCursorAccountModels, SyncCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
   ListRequestSources, BuildRequestComparison, ExportSanitizedRequestComparison,
   GetRoutingPolicy, SaveRoutingPolicy, PreviewRoutingDecision, GetRoutingDecisionHistory,
@@ -82,9 +82,9 @@ const desktopMethods = {
   GetControlCenterOverview, ListCursorAccounts, ImportCursorAccount,
   PrepareCursorAccountRecoveryExport, ExecuteCursorAccountRecoveryExport,
   SetCurrentCursorAccount, UpdateCursorAccountTags, DeleteCursorAccounts,
-  ClearCursorAccountLock, CheckCursorAccountHealth, GetCursorAccountPlan,
+  ClearCursorAccountLock, ClearCursorAccountQuotaCooldown, CheckCursorAccountHealth, GetCursorAccountPlan,
   PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
-  FetchCursorAccountModels,
+  FetchCursorAccountModels, SyncCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
   ListRequestSources, BuildRequestComparison, ExportSanitizedRequestComparison,
   GetRoutingPolicy, SaveRoutingPolicy, PreviewRoutingDecision, GetRoutingDecisionHistory,
@@ -260,6 +260,13 @@ export function clearCursorAccountLock(accountID) {
     return Promise.resolve({ id: accountID, lockedUntilUnixMs: 0, lockReason: "" });
   }
   return withApiLogging("ClearCursorAccountLock", { accountID }, () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "ClearCursorAccountLock", [accountID]));
+}
+
+export function clearCursorAccountQuotaCooldown(accountID = "") {
+  if (isBrowserPreview) {
+    return Promise.resolve(0);
+  }
+  return withApiLogging("ClearCursorAccountQuotaCooldown", { accountID }, () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "ClearCursorAccountQuotaCooldown", [accountID]));
 }
 
 const PREVIEW_ACCOUNT_PLAN = {
@@ -640,7 +647,8 @@ export function fetchModelCatalog(request) {
 // imported API-key account usable as a BYOK upstream: the returned names are
 // materialized into cursor_account adapters so the user can choose between the
 // official upstream and third-party suppliers.
-export function fetchCursorAccountModels() {
+// accountID selects the account to read; empty means the current account.
+export function fetchCursorAccountModels(accountID = "") {
   if (isBrowserPreview) {
     return Promise.resolve({
       models: [
@@ -674,7 +682,25 @@ export function fetchCursorAccountModels() {
       email: "preview@cursor.test",
     });
   }
-  return withApiLogging("FetchCursorAccountModels", undefined, () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "FetchCursorAccountModels", []));
+  return withApiLogging("FetchCursorAccountModels", accountID || undefined, () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "FetchCursorAccountModels", [accountID || ""]));
+}
+
+// Syncs Cursor account models atomically inside Go (avoiding WebView2 request
+// body size limits) and emits user-config:changed to refresh appState.
+export function syncCursorAccountModelsRpc(request = {}) {
+  const payload = {
+    accountId: String(request?.accountId || ""),
+    mode: String(request?.mode || "merge"),
+  };
+  if (isBrowserPreview) {
+    return SyncCursorAccountModels(payload);
+  }
+  return withApiLogging(
+    "SyncCursorAccountModels",
+    payload,
+    () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "SyncCursorAccountModels", [payload]),
+    { timeoutMs: 60_000 },
+  );
 }
 
 // 一键自动配对所有模型适配器的上下文窗口：目录命中仅下调（保留用户手动设置的更小窗口），目录未命中则探测 provider /models 回填。

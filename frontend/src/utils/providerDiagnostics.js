@@ -23,6 +23,7 @@ export function normalizeProviderDiagnostics(snapshot, now = Date.now()) {
       const cooling = safeText(channel.healthState) === "cooldown";
       return {
         channelId: safeText(channel.channelId) || `channel-${index + 1}`,
+        source: safeText(channel.source).toLowerCase(),
         displayName: safeText(channel.displayName) || safeText(channel.modelId) || `渠道 ${index + 1}`,
         groupName: safeText(channel.groupName),
         provider: safeText(channel.provider),

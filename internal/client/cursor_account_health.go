@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"cursor/gen/aiserverv1"
+	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/backend/server/upstream"
 	"cursor/internal/cursoraccount"
+	"cursor/internal/netproxy"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -25,8 +27,12 @@ const (
 	HealthStateRejected     = "rejected"
 	HealthStateExpired      = "expired"
 	HealthStatePlanRequired = "plan_required"
-	HealthStateError        = "error"
-	HealthStateSignedOut    = "signed_out"
+	// HealthStateUsageExhausted means the account is signed in and its plan is
+	// valid, but included usage for the probed model is used up. Unlike
+	// plan_required this resolves by itself when Cursor's usage window resets.
+	HealthStateUsageExhausted = "usage_exhausted"
+	HealthStateError          = "error"
+	HealthStateSignedOut      = "signed_out"
 )
 
 // CursorAccountHealth is the non-secret result of probing the active account.
@@ -90,6 +96,11 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 		health.AccountID = s.cursorAccount.CurrentAccountID()
 	}
 	if plan, planErr := fetchCursorAccountPlan(ctx, authorization); planErr == nil {
+		if exhausted := modeladapter.ListCursorAccountExhaustedModels(health.AccountID); len(exhausted) > 0 {
+			for _, item := range exhausted {
+				plan.ExhaustedModels = append(plan.ExhaustedModels, item.ModelID)
+			}
+		}
 		health.Plan = &plan
 	}
 
@@ -97,7 +108,7 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 		health.Email = strings.TrimSpace(profile.GetEmail())
 	}
 
-	model := "default"
+	model := s.cursorAccountProbeModel(health.AccountID)
 	health.Model = model
 	result, err := probeCursorModelCall(ctx, authorization, model)
 	if apiKeySessionRejected(result, err) && s.cursorAccount.UsesAPIKey(health.AccountID) {
@@ -134,6 +145,20 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 			"Cursor requires a paid plan for this call (%s). The key and client are valid; "+
 				"the account's plan does not cover model requests.",
 			strings.TrimSpace(result.Code))
+	case isUsageExhausted(result):
+		// Cursor answers an exhausted model with prose or usage-limit codes; record
+		// the per-(account, model) cooldown so live traffic fails over automatically.
+		if health.AccountID != "" && model != "" && model != "default" {
+			modeladapter.MarkCursorAccountModelExhaustedWithReason(
+				health.AccountID,
+				model,
+				firstNonEmpty(result.Detail, result.Title, result.Code),
+			)
+		}
+		health.State = HealthStateUsageExhausted
+		health.Message = fmt.Sprintf(
+			"No included usage left for %s (%s). Other saved accounts will serve this model automatically, or wait for the usage window to reset.",
+			model, strings.TrimSpace(firstNonEmpty(result.Detail, result.Title, result.Code)))
 	default:
 		health.State = HealthStateError
 		health.Message = fmt.Sprintf("Cursor refused the model call (%s). %s",
@@ -157,6 +182,44 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 		}
 	}
 	return health, nil
+}
+
+// cursorAccountProbeModel picks a model this account actually serves, so the
+// health check reflects real usage instead of the meta alias "default". Probing
+// "default" reported an account as working while every synced Cursor model on it
+// was rejected for exhausting its included usage.
+func (s *ProxyService) cursorAccountProbeModel(accountID string) string {
+	if s == nil {
+		return "default"
+	}
+	cfg, err := s.LoadUserConfig()
+	if err != nil {
+		return "default"
+	}
+	accountID = strings.TrimSpace(accountID)
+	fallback := ""
+	for _, adapter := range cfg.ModelAdapters {
+		if adapter.Disabled {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(adapter.Source), "cursor_account") {
+			continue
+		}
+		model := strings.TrimSpace(adapter.ModelID)
+		if model == "" {
+			continue
+		}
+		if accountID != "" && strings.TrimSpace(adapter.CursorAccountID) == accountID {
+			return model
+		}
+		if fallback == "" {
+			fallback = model
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "default"
 }
 
 type cursorModelProbeResult struct {
@@ -202,17 +265,14 @@ func fetchCursorProfile(ctx context.Context, authorization string) (*aiserverv1.
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api2.cursor.sh/aiserver.v1.DashboardService/GetMe", bytes.NewReader(body))
+		strings.TrimRight(cursorBackendRoot, "/")+"/aiserver.v1.DashboardService/GetMe", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("authorization", authorization)
-	req.Header.Set("x-cursor-checksum", upstream.BuildCursorChecksum(authorization))
-	req.Header.Set("content-type", "application/proto")
+	upstream.ApplyCursorClientHeaders(req, authorization, "application/proto")
 	req.Header.Set("accept", "application/proto")
-	req.Header.Set("connect-protocol-version", "1")
 
-	resp, err := cursorHealthHTTPClient.Do(req)
+	resp, err := doCursorControlPlaneRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +291,10 @@ func fetchCursorProfile(ctx context.Context, authorization string) (*aiserverv1.
 	return profile, nil
 }
 
-var cursorHealthHTTPClient = &http.Client{Timeout: cursorHealthTimeout}
+var cursorHealthHTTPClient = &http.Client{
+	Timeout:   cursorHealthTimeout,
+	Transport: netproxy.NewTransport(nil),
+}
 
 // isPlanGateCode reports error codes the installed Cursor client maps to a plan
 // upgrade or a payment prompt. ERROR_GPT_4_VISION_PREVIEW_RATE_LIMIT and
@@ -284,6 +347,17 @@ func isPlanRestriction(result cursorModelProbeResult) bool {
 		return false
 	}
 	return result.Action == "payment" || result.Action == "upgrade" || isPlanGateCode(result.Code)
+}
+
+// isUsageExhausted reports Cursor's "no included usage left" answer, which comes
+// back as prose rather than a status code: "Switched to Auto after reaching Other
+// Models usage limit". The account and plan are fine; only this model is spent.
+func isUsageExhausted(result cursorModelProbeResult) bool {
+	if isClientVersionGate(result) {
+		return false
+	}
+	combined := result.Title + " " + result.Detail + " " + result.Code
+	return modeladapter.CursorAccountQuotaRefusalText(combined)
 }
 
 func cursorVersionGateMessage(result cursorModelProbeResult) string {

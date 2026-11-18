@@ -72,37 +72,100 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 	if modelID == "" {
 		return fmt.Errorf("cursor account model id is empty")
 	}
-	accountID := usableCursorAccountID(gateway.auth, req.CursorAccountID)
-	authorization, err := gateway.authorize(ctx, accountID)
-	if err != nil {
-		return fmt.Errorf("cursor account is not signed in: %w", err)
+	candidates := candidateCursorAccountsForModel(gateway.auth, req.CursorAccountID, modelID)
+	requested := strings.TrimSpace(req.CursorAccountID)
+	if len(candidates) > 0 && requested != "" && candidates[0] != "" && candidates[0] != requested {
+		logger.Infof("cursor account model using account=%s instead of unavailable account=%s for model=%s", candidates[0], requested, modelID)
 	}
+
 	output := &cursorAccountOutput{sink: sink}
-	err = gateway.streamAuthorizedForAccount(ctx, req, accountID, authorization, output)
-	if err == nil {
-		return nil
-	}
-	// A turn that already streamed text or a tool call is not replayed:
-	// the caller would see that output twice.
-	if !output.forwarded && cursorAccountAuthRejected(err) && cursorAccountUsesAPIKey(gateway.auth, accountID) {
-		if renewed, refreshErr := cursorAccountForceRefresh(ctx, gateway.auth, accountID); refreshErr == nil {
-			if retryErr := gateway.streamAuthorizedForAccount(ctx, req, accountID, renewed, output); retryErr == nil {
-				return nil
-			} else {
-				err = retryErr
+	var lastErr error
+	for idx, accountID := range candidates {
+		hasMore := idx+1 < len(candidates)
+		authorization, authErr := gateway.authorize(ctx, accountID)
+		if authErr != nil {
+			lastErr = fmt.Errorf("cursor account is not signed in: %w", authErr)
+			if hasMore && !output.forwarded {
+				logger.Warnf("cursor account authorize failed account=%s err=%v; trying next account=%s", accountID, authErr, candidates[idx+1])
+				continue
+			}
+			return lastErr
+		}
+
+		err := gateway.streamAuthorizedForAccount(ctx, req, accountID, authorization, output)
+		if err == nil {
+			// A served turn proves this account has usage left for this model again.
+			ClearCursorAccountModelExhausted(accountID, modelID)
+			return nil
+		}
+
+		// A turn that already streamed text or a tool call is not replayed:
+		// the caller would see that output twice.
+		if !output.forwarded && cursorAccountAuthRejected(err) && cursorAccountUsesAPIKey(gateway.auth, accountID) {
+			if renewed, refreshErr := cursorAccountForceRefresh(ctx, gateway.auth, accountID); refreshErr == nil {
+				if retryErr := gateway.streamAuthorizedForAccount(ctx, req, accountID, renewed, output); retryErr == nil {
+					ClearCursorAccountModelExhausted(accountID, modelID)
+					return nil
+				} else {
+					err = retryErr
+				}
 			}
 		}
-	}
-	if cursorAccountDeviceLimited(err) {
-		cursorAccountMarkLocked(gateway.auth, accountID)
-		if alt := unlockedCurrentCursorAccount(gateway.auth, accountID); alt != "" && !output.forwarded {
-			logger.Infof("cursor account model skipped device-locked account=%s using current=%s", accountID, alt)
-			if altAuth, altErr := gateway.authorize(ctx, alt); altErr == nil {
-				return gateway.streamAuthorizedForAccount(ctx, req, alt, altAuth, output)
-			}
+
+		lastErr = err
+		if output.forwarded || ctx.Err() != nil {
+			return lastErr
 		}
+
+		if cursorAccountDeviceLimited(err) {
+			cursorAccountMarkLocked(gateway.auth, accountID)
+			if hasMore {
+				logger.Infof("cursor account model skipped device-locked account=%s; retrying with account=%s", accountID, candidates[idx+1])
+				continue
+			}
+			// Check if current account unlocked wasn't already in candidates (e.g. when requested was the only initial fallback).
+			if alt := unlockedCurrentCursorAccount(gateway.auth, accountID); alt != "" {
+				logger.Infof("cursor account model skipped device-locked account=%s using current=%s", accountID, alt)
+				if altAuth, altErr := gateway.authorize(ctx, alt); altErr == nil {
+					if retryErr := gateway.streamAuthorizedForAccount(ctx, req, alt, altAuth, output); retryErr == nil {
+						ClearCursorAccountModelExhausted(alt, modelID)
+						return nil
+					}
+				}
+			}
+			return lastErr
+		}
+
+		if cursorAccountRefusesModelText(err.Error()) {
+			// Only usage/plan wording becomes a cooldown; "does not have access" can
+			// also mean a silent stream, which resolves on its own.
+			if CursorAccountQuotaRefusalText(err.Error()) {
+				MarkCursorAccountModelExhaustedWithReason(accountID, modelID, err.Error())
+			}
+			if hasMore {
+				logger.Infof("cursor account model refused account=%s model=%s; retrying with account=%s", accountID, modelID, candidates[idx+1])
+				continue
+			}
+			if alt := alternateCursorAccountForModel(gateway.auth, accountID, modelID); alt != "" {
+				logger.Infof("cursor account model refused account=%s model=%s; retrying with account=%s", accountID, modelID, alt)
+				if altAuth, altErr := gateway.authorize(ctx, alt); altErr == nil {
+					if retryErr := gateway.streamAuthorizedForAccount(ctx, req, alt, altAuth, output); retryErr == nil {
+						ClearCursorAccountModelExhausted(alt, modelID)
+						return nil
+					}
+				}
+			}
+			return lastErr
+		}
+
+		if cursorAccountAuthRejected(err) && hasMore {
+			logger.Warnf("cursor account auth rejected account=%s; retrying with account=%s", accountID, candidates[idx+1])
+			continue
+		}
+
+		return lastErr
 	}
-	return err
+	return lastErr
 }
 
 // cursorAccountOutput forwards model events and records whether the caller
@@ -203,25 +266,22 @@ type cursorAccountDirectory interface {
 // created them, so selecting a different current account would otherwise keep
 // sending traffic to the locked one.
 func usableCursorAccountID(auth CursorAccountAuthorizer, requested string) string {
-	requested = strings.TrimSpace(requested)
-	directory, ok := auth.(cursorAccountDirectory)
-	if !ok {
-		return requested
+	return usableCursorAccountIDForModel(auth, requested, "")
+}
+
+// usableCursorAccountIDForModel additionally skips an account that Cursor
+// already refused for this specific model, consulting both CurrentAccountID()
+// and the full saved Cursor account pool.
+func usableCursorAccountIDForModel(auth CursorAccountAuthorizer, requested, modelID string) string {
+	candidates := candidateCursorAccountsForModel(auth, requested, modelID)
+	if len(candidates) == 0 {
+		return strings.TrimSpace(requested)
 	}
-	if requested != "" && !directory.AccountIsLocked(requested) {
-		return requested
+	chosen := candidates[0]
+	if trimmedReq := strings.TrimSpace(requested); trimmedReq != "" && chosen != "" && chosen != trimmedReq {
+		logger.Infof("cursor account model using account=%s instead of account=%s", chosen, trimmedReq)
 	}
-	current := strings.TrimSpace(directory.CurrentAccountID())
-	if current != "" && current != requested && !directory.AccountIsLocked(current) {
-		if requested != "" {
-			logger.Infof("cursor account model using current account=%s instead of locked account=%s", current, requested)
-		}
-		return current
-	}
-	if requested == "" {
-		return current
-	}
-	return requested
+	return chosen
 }
 
 func unlockedCurrentCursorAccount(auth CursorAccountAuthorizer, used string) string {
@@ -1558,16 +1618,7 @@ func appendCursorAccount(ctx context.Context, authorization, requestID string, s
 }
 
 func applyCursorAccountHeaders(req *http.Request, authorization, contentType string) {
-	req.Header.Set("authorization", authorization)
-	req.Header.Set("x-cursor-checksum", upstream.BuildCursorChecksum(authorization))
-	req.Header.Set("x-cursor-client-type", "ide")
-	req.Header.Set("x-cursor-client-version", upstream.CursorClientVersion())
-	req.Header.Set("x-cursor-client-os", "win32")
-	req.Header.Set("x-cursor-client-arch", "x64")
-	req.Header.Set("x-cursor-client-device-type", "desktop")
-	req.Header.Set("x-ghost-mode", "false")
-	req.Header.Set("connect-protocol-version", "1")
-	req.Header.Set("content-type", contentType)
+	upstream.ApplyCursorClientHeaders(req, authorization, contentType)
 }
 
 func cursorAccountGunzip(payload []byte) ([]byte, error) {

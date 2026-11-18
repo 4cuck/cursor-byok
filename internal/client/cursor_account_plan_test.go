@@ -64,3 +64,46 @@ func TestBuildCursorAccountPlanUsesSpendLimitWhenIncludedIsMissing(t *testing.T)
 		t.Fatalf("spend limit usage = %+v", plan)
 	}
 }
+
+func TestBuildCursorAccountPlanExtractsNamedAndAutoBuckets(t *testing.T) {
+	autoSpend := int32(400)
+	autoLimit := int32(2000)
+	autoPct := 20.0
+	apiSpend := int32(2000)
+	apiLimit := int32(2000)
+	apiPct := 100.0
+	namedMsg := "Other Models limit reached; switched to Auto"
+	bonusTip := "Promo bonus"
+
+	plan := buildCursorAccountPlan(
+		nil,
+		&aiserverv1.GetCurrentPeriodUsageResponse{
+			NamedModelSelectedDisplayMessage: &namedMsg,
+			PlanUsage: &aiserverv1.GetCurrentPeriodUsageResponse_PlanUsage{
+				Remaining:       1600,
+				Limit:           4000,
+				BonusSpend:      500,
+				BonusTooltip:    &bonusTip,
+				AutoSpend:       &autoSpend,
+				AutoLimit:       &autoLimit,
+				AutoPercentUsed: &autoPct,
+				ApiSpend:        &apiSpend,
+				ApiLimit:        &apiLimit,
+				ApiPercentUsed:  &apiPct,
+			},
+		},
+		cursorStripeProfile{MembershipType: "pro", SubscriptionStatus: "active"},
+	)
+	if !plan.HasBucketBreakdown {
+		t.Fatalf("expected HasBucketBreakdown = true, got %+v", plan)
+	}
+	if plan.NamedUsedCents != 2000 || plan.NamedLimitCents != 2000 || plan.NamedPercentUsed != 100 {
+		t.Fatalf("named bucket = %+v", plan)
+	}
+	if plan.AutoUsedCents != 400 || plan.AutoLimitCents != 2000 || plan.AutoPercentUsed != 20 {
+		t.Fatalf("auto bucket = %+v", plan)
+	}
+	if plan.BonusCents != 500 || plan.BonusTooltip != "Promo bonus" || plan.NamedDisplayMessage != namedMsg {
+		t.Fatalf("bonus/messages = %+v", plan)
+	}
+}
