@@ -646,6 +646,30 @@ export function fetchCursorAccountModels() {
       models: [
         { name: "composer-2.5", displayName: "composer-2.5", defaultOn: true },
         { name: "claude-4.5-sonnet", displayName: "claude-4.5-sonnet", defaultOn: false },
+        {
+          name: "claude-fable-5-2",
+          displayName: "Claude Fable 5.2",
+          defaultOn: true,
+          contextWindowTokens: 300_000,
+          pickerSpec: JSON.stringify({
+            contextTokenLimit: 300_000,
+            contextTokenLimitForMaxMode: 1_000_000,
+            contextWindows: [
+              { tokens: 300_000, value: "300k", default: true },
+              { tokens: 1_000_000, value: "1m", maxMode: true },
+            ],
+          }),
+        },
+        {
+          name: "gemini-4-hydrogen",
+          displayName: "Gemini 4 Hydrogen",
+          defaultOn: true,
+          contextWindowTokens: 1_000_000,
+          pickerSpec: JSON.stringify({
+            contextTokenLimit: 1_000_000,
+            contextWindows: [{ tokens: 1_000_000, default: true }],
+          }),
+        },
       ],
       email: "preview@cursor.test",
     });

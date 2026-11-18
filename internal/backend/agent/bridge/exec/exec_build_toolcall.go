@@ -216,7 +216,8 @@ func replayTruncationNotice(toolName string, limit int, kept int, original int) 
 // buildWriteCompletedToolCall 构造 Write 对应的完成态 ToolCall。
 func buildWriteCompletedToolCall(toolCallID string, argsJSON []byte, result *agentv1.WriteResult) *agentv1.ToolCall {
 	args, _ := decodeArgsMap(argsJSON)
-	streamContent := stringPtr(readStringArg(args, "contents", "content", "stream_content", "streamContent"))
+	rawContent := readStringArg(args, "contents", "content", "fileText", "file_text", "stream_content", "streamContent")
+	streamContent := stringPtr(rawContent)
 	return &agentv1.ToolCall{
 		Tool: &agentv1.ToolCall_EditToolCall{
 			EditToolCall: &agentv1.EditToolCall{
@@ -225,7 +226,7 @@ func buildWriteCompletedToolCall(toolCallID string, argsJSON []byte, result *age
 					Path:          strings.TrimSpace(readStringArg(args, "path", "file_path", "filePath")),
 					StreamContent: streamContent,
 				},
-				Result: convertWriteResultToEditResult(result),
+				Result: convertWriteResultToEditResultWithFallback(result, rawContent),
 			},
 		},
 	}

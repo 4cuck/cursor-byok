@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"cursor/internal/logger"
+	legacyruntime "cursor/internal/runtime"
 )
 
 // contextOverflowMaxCompactionRetries 是单轮回合因 context_length_exceeded 触发强制压缩重试的次数上限。
@@ -123,7 +124,7 @@ func (service *Service) maybeHalveContextWindowForOverflow(stream *ActiveStream,
 		return
 	}
 	channel, err := service.resolver.SelectChannelForModel(context.Background(), strings.TrimSpace(modelID))
-	if err != nil || channel == nil {
+	if err != nil || channel == nil || legacyruntime.NormalizeModelSource(channel.Source) == legacyruntime.ModelSourceCursorAccount {
 		return
 	}
 	currentWindow := channel.ContextWindowTokens
@@ -172,7 +173,7 @@ func (service *Service) learnContextWindowForDelegatedOverflow(ctx context.Conte
 		return 0, 0, false
 	}
 	channel, err := service.resolver.SelectChannelForModel(ctx, strings.TrimSpace(modelID))
-	if err != nil || channel == nil {
+	if err != nil || channel == nil || legacyruntime.NormalizeModelSource(channel.Source) == legacyruntime.ModelSourceCursorAccount {
 		return 0, 0, false
 	}
 	current := channel.ContextWindowTokens

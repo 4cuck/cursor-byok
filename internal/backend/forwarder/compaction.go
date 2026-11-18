@@ -24,8 +24,9 @@ const (
 	compactionSummaryOutputMaxTokens = 4096
 	// 自动上下文投影位于主模型请求之前，摘要慢于此预算时应直接使用
 	// recent-tail 侧车回退，避免维护任务放大用户可见的首字延迟。
-	contextProjectionSummaryTimeout = 1500 * time.Millisecond
-	compactionTurnSnippetMaxChars   = 900
+	contextProjectionSummaryTimeout   = 1500 * time.Millisecond
+	automaticCompactionSummaryTimeout = 45 * time.Second
+	compactionTurnSnippetMaxChars     = 900
 
 	autoCompactionPreservedToolResultLimitBytes = 16 * 1024
 	autoCompactionFallbackToolResultLimitBytes  = 4 * 1024
@@ -463,13 +464,17 @@ func (service *Service) startPendingCompactionSummary(stream *ActiveStream, plan
 	return nil
 }
 
-// newCompactionSummaryContext 仅限制自动上下文投影的维护预算。用户显式发起的
-// 压缩需要完整总结，因此仍只跟随 stream 的取消信号。
+// newCompactionSummaryContext bounds automatic summary LLM calls so an
+// unresponsive provider can never leave "Summarizing chat context" spinning
+// forever, while user-initiated manual compaction follows stream cancellation.
 func (service *Service) newCompactionSummaryContext(plan *PendingCompaction) (context.Context, context.CancelFunc) {
-	if plan != nil && plan.Trigger == contextProjectionTrigger {
+	if plan == nil || plan.Trigger == "manual" {
+		return context.WithCancel(context.Background())
+	}
+	if plan.Trigger == contextProjectionTrigger {
 		return context.WithTimeout(context.Background(), contextProjectionSummaryTimeout)
 	}
-	return context.WithCancel(context.Background())
+	return context.WithTimeout(context.Background(), automaticCompactionSummaryTimeout)
 }
 
 func (service *Service) runPendingCompaction(stream *ActiveStream, token uint64, plan *PendingCompaction, modelCallID string, ctx context.Context) {
@@ -482,6 +487,16 @@ func (service *Service) runPendingCompaction(stream *ActiveStream, token uint64,
 			summaryText = trimmed
 		} else {
 			summaryText = buildFallbackCompactionSummary(plan)
+		}
+	} else if plan.Trigger != "manual" && plan.Trigger != contextProjectionTrigger && !errors.Is(err, errProviderLoopInterrupted) {
+		stream.mu.Lock()
+		terminal := isTerminalStreamStatus(stream.Status)
+		activeToken := stream.CurrentCompactionToken == token
+		stream.mu.Unlock()
+		if !terminal && activeToken {
+			logger.Warnf("forwarder automatic compaction summary failed; falling back to deterministic summary request_id=%s trigger=%s err=%v", strings.TrimSpace(stream.RequestID), strings.TrimSpace(plan.Trigger), err)
+			summaryText = buildFallbackCompactionSummary(plan)
+			err = nil
 		}
 	}
 	if postErr := service.postStreamCommandWait(stream, streamCommand{
@@ -552,6 +567,9 @@ func (service *Service) handleCompactionEvent(stream *ActiveStream, payload *str
 		}); err != nil {
 			return err
 		}
+		_ = service.broker.Publish(stream.RequestID, StreamEvent{
+			Message: buildSummaryCompletedFailedMessage("Summarization stopped"),
+		})
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", payload.Err)
 	}
@@ -731,6 +749,7 @@ func (service *Service) applyCompactionPlan(stream *ActiveStream, conversationID
 		return validationErr
 	}
 	replacementEntries := append([]HistoryEntry(nil), candidateConversation.Entries...)
+	modeladapter.ClearCursorAccountState(conversationID)
 	if service.store != nil {
 		// 持久化互斥必须先于 ReplaceEntries 获取并覆盖到 baseline 重置：
 		// 若防抖回调此刻在飞（已快照旧 pending、正写压缩前文件），不等待它结束

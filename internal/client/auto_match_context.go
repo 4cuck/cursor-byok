@@ -98,7 +98,9 @@ func (s *ProxyService) AutoMatchContextWindows(ctx context.Context, force bool) 
 			Before:      before,
 			After:       before,
 		}
-		if cap := modelcontext.Capabilities(modelID); cap != nil && cap.ContextWindowTokens > 0 {
+		// Cursor's own catalog lists the windows of Cursor account models; local guesses must not replace them.
+		cursorWindows := isCursorAccountModelAdapter(adapters[i]) && len(modelcontext.CursorContextWindows(adapters[i].CursorModelSpec)) > 0
+		if cap := modelcontext.Capabilities(modelID); !cursorWindows && cap != nil && cap.ContextWindowTokens > 0 {
 			// 目录命中：仅下调不覆盖。用户主动设置更小值（如限制上下文/控制费用）时
 			// 保留用户设置；仅在用户值缺失（<=0）或大于目录真实窗口时收敛到目录值，
 			// 防止误填过大值触发 context_length_exceeded。

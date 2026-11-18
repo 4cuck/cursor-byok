@@ -1101,3 +1101,189 @@ func TestAvailableModelsUsesCursorPickerSpec(t *testing.T) {
 		t.Fatalf("max context = %#v", models[0]["contextTokenLimitForMaxMode"])
 	}
 }
+
+const testFableWindowSpec = `{"supportsMaxMode":true,"supportsNonMaxMode":true,"contextTokenLimit":300000,"contextTokenLimitForMaxMode":1000000,
+"parameterDefinitions":[
+{"id":"context","parameterType":{"enumParameter":{"values":[{"value":"300k","displayName":"300K"},{"value":"1m","displayName":"1M"}]}}},
+{"id":"effort","parameterType":{"enumParameter":{"values":[{"value":"medium"},{"value":"high"}]}}},
+{"id":"fast","parameterType":{"booleanParameter":{"values":[{"value":"false"},{"value":"true"}]}}}],
+"variants":[
+{"parameterValues":[{"id":"context","value":"300k"},{"id":"effort","value":"medium"},{"id":"fast","value":"false"}]},
+{"parameterValues":[{"id":"context","value":"300k"},{"id":"effort","value":"high"},{"id":"fast","value":"false"}],"isDefaultNonMaxConfig":true},
+{"parameterValues":[{"id":"context","value":"300k"},{"id":"effort","value":"medium"},{"id":"fast","value":"true"}],"isMaxMode":true},
+{"parameterValues":[{"id":"context","value":"300k"},{"id":"effort","value":"high"},{"id":"fast","value":"true"}],"isMaxMode":true},
+{"parameterValues":[{"id":"context","value":"1m"},{"id":"effort","value":"medium"},{"id":"fast","value":"false"}],"isMaxMode":true},
+{"parameterValues":[{"id":"context","value":"1m"},{"id":"effort","value":"high"},{"id":"fast","value":"false"}],"isMaxMode":true,"isDefaultMaxConfig":true}],
+"contextWindows":[{"tokens":300000,"value":"300k","default":true},{"tokens":1000000,"value":"1m","maxMode":true}]}`
+
+func cursorWindowModelEntry(t *testing.T, adapter legacyruntime.ModelAdapterConfig) map[string]any {
+	t.Helper()
+	body, err := proto.Marshal(&aiserverv1.AvailableModelsRequest{UseModelParameters: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx := newRequestContextWithAdapters([]legacyruntime.ModelAdapterConfig{adapter})
+	reqCtx.RequestBody = body
+	payload, err := AvailableModelsMockBuilder(reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := payload["models"].([]map[string]any)
+	if len(models) != 1 {
+		t.Fatalf("models = %d", len(models))
+	}
+	return models[0]
+}
+
+func cursorWindowDefinitionValues(t *testing.T, entry map[string]any, id string) []string {
+	t.Helper()
+	definition, ok := findModelParameterDefinition(entry, id)
+	if !ok {
+		t.Fatalf("%s parameter missing", id)
+	}
+	parameterType := definition["parameterType"].(map[string]any)
+	var raw []any
+	for _, kind := range []string{"enumParameter", "booleanParameter"} {
+		if parameter, ok := parameterType[kind].(map[string]any); ok {
+			raw = parameter["values"].([]any)
+		}
+	}
+	values := make([]string, 0, len(raw))
+	for _, item := range raw {
+		values = append(values, item.(map[string]any)["value"].(string))
+	}
+	return values
+}
+
+func cursorWindowVariantSummary(entry map[string]any) []string {
+	variants := entry["variants"].([]map[string]any)
+	summary := make([]string, 0, len(variants))
+	for _, variant := range variants {
+		values := cursorVariantValues(variant)
+		line := values["context"] + "/" + values["effort"] + "/" + values["fast"]
+		if variant["isMaxMode"] == true {
+			line += "+max"
+		}
+		if variant["isDefaultNonMaxConfig"] == true {
+			line += " defaultNonMax"
+		}
+		if variant["isDefaultMaxConfig"] == true {
+			line += " defaultMax"
+		}
+		summary = append(summary, line)
+	}
+	return summary
+}
+
+func TestAvailableModelsExposesAllCursorWindowsForIDESelection(t *testing.T) {
+	for _, configured := range []int{300_000, 1_000_000} {
+		entry := cursorWindowModelEntry(t, legacyruntime.ModelAdapterConfig{
+			ID:                  "cursor_account1:claude-fable-5-2",
+			Source:              legacyruntime.ModelSourceCursorAccount,
+			DisplayName:         "Claude Fable 5.2",
+			ModelID:             "claude-fable-5-2",
+			Type:                legacyruntime.ModelSourceCursorAccount,
+			ContextWindowTokens: configured,
+			CursorModelSpec:     testFableWindowSpec,
+		})
+		if entry["contextTokenLimit"] != 300_000 || entry["contextTokenLimitForMaxMode"] != 1_000_000 || entry["autoContextMaxTokens"] != 1_000_000 {
+			t.Fatalf("configured=%d limits = %#v / %#v / %#v", configured, entry["contextTokenLimit"], entry["contextTokenLimitForMaxMode"], entry["autoContextMaxTokens"])
+		}
+		if entry["supportsMaxMode"] != true || entry["supportsNonMaxMode"] != true {
+			t.Fatalf("configured=%d max flags = %#v / %#v, want both true so IDE can switch 300k <-> 1m", configured, entry["supportsMaxMode"], entry["supportsNonMaxMode"])
+		}
+		if got := strings.Join(cursorWindowDefinitionValues(t, entry, "context"), ","); got != "300k,1m" {
+			t.Fatalf("configured=%d context values = %q, want 300k,1m", configured, got)
+		}
+		if got := strings.Join(cursorWindowDefinitionValues(t, entry, "fast"), ","); got != "false,true" {
+			t.Fatalf("configured=%d fast values = %q, want false,true", configured, got)
+		}
+		want := []string{
+			"300k/medium/false",
+			"300k/high/false defaultNonMax",
+			"300k/medium/true+max",
+			"300k/high/true+max",
+			"1m/medium/false+max",
+			"1m/high/false+max defaultMax",
+		}
+		if got := cursorWindowVariantSummary(entry); strings.Join(got, ";") != strings.Join(want, ";") {
+			t.Fatalf("configured=%d variants = %v, want %v", configured, got, want)
+		}
+		variants := entry["variants"].([]map[string]any)
+		if got := variants[0]["variantStringRepresentation"]; got != "cursor_account1:claude-fable-5-2[context=300k,effort=medium,fast=false]" {
+			t.Fatalf("variant 0 representation = %#v", got)
+		}
+		if got, _ := variants[5]["displayNameOutsidePicker"].(string); !strings.Contains(got, "Claude Fable 5.2") || !strings.Contains(got, "1M") {
+			t.Fatalf("1M variant displayNameOutsidePicker = %q, want model name and 1M label", got)
+		}
+		tooltip := entry["tooltipData"].(map[string]any)["markdownContent"].(string)
+		if !strings.Contains(tooltip, "300,000") || !strings.Contains(tooltip, "1,000,000") {
+			t.Fatalf("tooltip = %q, want both 300K and 1M windows", tooltip)
+		}
+		payload := map[string]any{"models": []map[string]any{entry}}
+		if _, err := encodeMockProto("aiserver.v1.AvailableModelsResponse", payload); err != nil {
+			t.Fatalf("encode AvailableModelsResponse failed: %v", err)
+		}
+	}
+}
+
+func TestAvailableModelsSynthesizesContextParameterWhenSpecHasDualLimitsOnly(t *testing.T) {
+	entry := cursorWindowModelEntry(t, legacyruntime.ModelAdapterConfig{
+		ID:                  "cursor_account1:dual-limit-model",
+		Source:              legacyruntime.ModelSourceCursorAccount,
+		DisplayName:         "Dual Limit Model",
+		ModelID:             "dual-limit-model",
+		Type:                legacyruntime.ModelSourceCursorAccount,
+		ContextWindowTokens: 200_000,
+		CursorModelSpec:     `{"supportsMaxMode":true,"supportsNonMaxMode":true,"contextTokenLimit":200000,"contextTokenLimitForMaxMode":1000000,"parameterDefinitions":[{"id":"fast","parameterType":{"booleanParameter":{"values":[{"value":"false"},{"value":"true"}]}}}],"variants":[{"parameterValues":[{"id":"fast","value":"false"}],"isDefaultNonMaxConfig":true},{"parameterValues":[{"id":"fast","value":"true"}],"isMaxMode":true}]}`,
+	})
+	if got := strings.Join(cursorWindowDefinitionValues(t, entry, "context"), ","); got != "200k,1m" {
+		t.Fatalf("synthesized context values = %q, want 200k,1m", got)
+	}
+	payload := map[string]any{"models": []map[string]any{entry}}
+	if _, err := encodeMockProto("aiserver.v1.AvailableModelsResponse", payload); err != nil {
+		t.Fatalf("encode synthesized AvailableModelsResponse failed: %v", err)
+	}
+}
+
+func TestAvailableModelsReplacesStaleCursorWindow(t *testing.T) {
+	entry := cursorWindowModelEntry(t, legacyruntime.ModelAdapterConfig{
+		ID:                  "cursor_account1:gemini-4-hydrogen",
+		Source:              legacyruntime.ModelSourceCursorAccount,
+		DisplayName:         "Gemini 4 Hydrogen",
+		ModelID:             "gemini-4-hydrogen",
+		Type:                legacyruntime.ModelSourceCursorAccount,
+		ContextWindowTokens: 128_000,
+		CursorModelSpec:     `{"supportsMaxMode":true,"supportsNonMaxMode":true,"contextTokenLimit":1000000,"contextTokenLimitForMaxMode":1000000}`,
+	})
+	if entry["contextTokenLimit"] != 1_000_000 || entry["autoContextMaxTokens"] != 1_000_000 {
+		t.Fatalf("limits = %#v / %#v, want Cursor's 1M window", entry["contextTokenLimit"], entry["autoContextMaxTokens"])
+	}
+	if entry["supportsNonMaxMode"] != true {
+		t.Fatalf("supportsNonMaxMode = %#v", entry["supportsNonMaxMode"])
+	}
+	tooltip := entry["tooltipData"].(map[string]any)["markdownContent"].(string)
+	if !strings.Contains(tooltip, "1,000,000") {
+		t.Fatalf("tooltip = %q, want the 1M window", tooltip)
+	}
+}
+
+func TestCursorAccountFamilyAdvertisesCatalogParameterIDs(t *testing.T) {
+	spec := `{
+		"parameterDefinitions":[{"id":"reasoning_effort","parameterType":{"enumParameter":{"values":[{"value":"low"},{"value":"high"}]}}}],
+		"variants":[{"parameterValues":[{"id":"reasoning_effort","value":"high"}],"isDefaultNonMaxConfig":true}]
+	}`
+	entries := buildAvailableModelEntriesForMode([]legacyruntime.ModelAdapterConfig{
+		{ID: "acc:grok-4.7-low", Source: legacyruntime.ModelSourceCursorAccount, GroupName: "cursor_account1", ModelID: "grok-4.7-low", DisplayName: "Grok 4.7", CursorModelSpec: spec},
+		{ID: "acc:grok-4.7-high", Source: legacyruntime.ModelSourceCursorAccount, GroupName: "cursor_account1", ModelID: "grok-4.7-high", DisplayName: "Grok 4.7", CursorModelSpec: spec},
+	}, true, false)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d", len(entries))
+	}
+	if _, ok := findModelParameterDefinition(entries[0], "effort"); ok {
+		t.Fatal("collapsed family advertised effort instead of the catalog id")
+	}
+	if _, ok := findModelParameterDefinition(entries[0], "reasoning_effort"); !ok {
+		t.Fatal("collapsed family did not advertise reasoning_effort")
+	}
+}

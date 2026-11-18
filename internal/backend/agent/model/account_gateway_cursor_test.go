@@ -48,12 +48,18 @@ func (dir lockDirectory) ForceRefresh(context.Context, string) (string, error) {
 }
 func (dir lockDirectory) MarkDeviceLocked(string) error { return nil }
 
+func staticCursorAccountAppender(authorization, requestID string) cursorAccountAppendFunc {
+	return func(ctx context.Context, seq int64, payload []byte) error {
+		return appendCursorAccount(ctx, authorization, requestID, seq, payload)
+	}
+}
+
 func TestReadCursorAccountStreamReportsMissingAccessWhenSilent(t *testing.T) {
 	reader, writer := io.Pipe()
 	t.Cleanup(func() { _ = writer.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := readCursorAccountStream(ctx, "Bearer test", "req", "conv", "claude-fable-5", "cursor_account1", 40*time.Millisecond, reader, nil, nil, nil, func(ModelEvent) error {
+	err := readCursorAccountStream(ctx, staticCursorAccountAppender("Bearer test", "req"), "req", "conv", "claude-fable-5", "cursor_account1", 40*time.Millisecond, reader, nil, nil, nil, func(ModelEvent) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not have access to claude-fable-5") {
@@ -74,6 +80,15 @@ func TestCursorAccountAccessDenialReadsDetail(t *testing.T) {
 	quoted := []byte("this account does not have access to claude-fable-5-2 \"detail\":\"); detail != \"")
 	if got := cursorAccountAccessDenial(quoted); got != "" {
 		t.Fatalf("model text flagged as denial: %q", got)
+	}
+}
+
+func TestCursorAccountErrorTextUnescapesEscapedQuotes(t *testing.T) {
+	raw := []byte(`{"error":{"code":"not_found","details":[{"debug":{"details":{"title":"AI Model Not Found","detail":"Invalid parameters for registry model: \"grok-4.7\" requires \"reasoning_effort\""}}}]}}`)
+	got := cursorAccountErrorText(raw)
+	want := `Invalid parameters for registry model: "grok-4.7" requires "reasoning_effort"`
+	if got != want {
+		t.Fatalf("error text = %q, want %q", got, want)
 	}
 }
 
@@ -98,7 +113,7 @@ func TestReadCursorAccountStreamKeepsGzippedCheckpoint(t *testing.T) {
 	}
 	frame := cursorAccountFrame(compressed.Bytes())
 	frame[0] = 0x01
-	err = readCursorAccountStream(context.Background(), "Bearer test", "req", conversationID, "claude-fable-5-2-low-fast", "cursor_account1", 0, bytes.NewReader(frame), nil, nil, nil, func(ModelEvent) error {
+	err = readCursorAccountStream(context.Background(), staticCursorAccountAppender("Bearer test", "req"), "req", conversationID, "claude-fable-5-2-low-fast", "cursor_account1", 0, bytes.NewReader(frame), nil, nil, nil, func(ModelEvent) error {
 		return nil
 	})
 	if err != nil {
@@ -206,7 +221,7 @@ func TestReadCursorAccountStreamKeepsModelTextThatMentionsAccess(t *testing.T) {
 		})
 	}()
 	var text string
-	err := readCursorAccountStream(context.Background(), "Bearer test", "req", "conv", "claude-fable-5-2", "cursor_account1", 0, reader, nil, nil, nil, func(event ModelEvent) error {
+	err := readCursorAccountStream(context.Background(), staticCursorAccountAppender("Bearer test", "req"), "req", "conv", "claude-fable-5-2", "cursor_account1", 0, reader, nil, nil, nil, func(event ModelEvent) error {
 		if event.Kind == ModelEventKindTextDelta {
 			text += event.Text
 		}
@@ -831,6 +846,42 @@ func waitCursorAppend(appended <-chan int64, want int64) bool {
 	case <-time.After(4 * time.Second):
 		return false
 	}
+}
+
+func TestCursorAccountRequestedModelKeepsRegistryParameterIDs(t *testing.T) {
+	requested := cursorAccountRequestedModel("grok-4.7", "low", true, false, []ModelParameter{
+		{ID: "context", Value: "256k"},
+		{ID: "reasoning_effort", Value: "low"},
+		{ID: "fast", Value: "true"},
+	}, "", 0)
+	if requested.GetModelId() != "grok-4.7" {
+		t.Fatalf("model id = %q", requested.GetModelId())
+	}
+	got := parameterPairs(requested)
+	want := []string{"context=256k", "reasoning_effort=low", "fast=true"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("parameters = %v, want %v", got, want)
+	}
+}
+
+func TestCursorAccountRequestedModelStillSynthesizesEffortForSlugs(t *testing.T) {
+	requested := cursorAccountRequestedModel("claude-fable-5-2-low-fast", "", false, false, nil, "", 0)
+	if requested.GetModelId() != "claude-fable-5-2" {
+		t.Fatalf("model id = %q", requested.GetModelId())
+	}
+	got := parameterPairs(requested)
+	want := []string{"effort=low", "fast=true"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("parameters = %v, want %v", got, want)
+	}
+}
+
+func parameterPairs(model *agentv1.RequestedModel) []string {
+	pairs := make([]string, 0, len(model.GetParameters()))
+	for _, parameter := range model.GetParameters() {
+		pairs = append(pairs, parameter.GetId()+"="+parameter.GetValue())
+	}
+	return pairs
 }
 
 func writeCursorAgentFrame(w io.Writer, msg proto.Message) {

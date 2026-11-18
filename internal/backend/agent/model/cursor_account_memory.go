@@ -3,6 +3,7 @@ package modeladapter
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,16 +22,14 @@ import (
 // stores that state and every KV blob, and the next run sends the checkpoint
 // back as conversation_state with only the new user message.
 type cursorAccountMemory struct {
-	mu       sync.Mutex
-	states   map[string]*agentv1.ConversationStateStructure
-	blobs    map[string][]byte
-	messages map[string][][]byte
+	mu     sync.Mutex
+	states map[string]*agentv1.ConversationStateStructure
+	blobs  map[string][]byte
 }
 
 var cursorAgentMemory = &cursorAccountMemory{
-	states:   map[string]*agentv1.ConversationStateStructure{},
-	blobs:    map[string][]byte{},
-	messages: map[string][][]byte{},
+	states: map[string]*agentv1.ConversationStateStructure{},
+	blobs:  map[string][]byte{},
 }
 
 var cursorAccountFrameNames []string
@@ -111,6 +110,34 @@ func cursorAccountServerMessageKind(msg *agentv1.AgentServerMessage) string {
 	}
 }
 
+// HasCursorAccountState reports whether an upstream Cursor checkpoint exists for conversationID.
+func HasCursorAccountState(conversationID string) bool {
+	return cursorAccountLoadState(conversationID) != nil
+}
+
+// CursorAccountUsedTokens returns the upstream token count stored in the saved Cursor checkpoint.
+func CursorAccountUsedTokens(conversationID string) uint32 {
+	state := cursorAccountLoadState(conversationID)
+	if state == nil || state.GetTokenDetails() == nil {
+		return 0
+	}
+	return state.GetTokenDetails().GetUsedTokens()
+}
+
+// ClearCursorAccountState deletes the cached and persisted upstream Cursor checkpoint for conversationID.
+func ClearCursorAccountState(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	cursorAgentMemory.mu.Lock()
+	delete(cursorAgentMemory.states, conversationID)
+	cursorAgentMemory.mu.Unlock()
+	if path := cursorAccountStatePath(conversationID); path != "" {
+		_ = os.Remove(path)
+	}
+}
+
 func cursorAccountRememberState(conversationID string, state *agentv1.ConversationStateStructure) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" || state == nil {
@@ -120,8 +147,8 @@ func cursorAccountRememberState(conversationID string, state *agentv1.Conversati
 	if cloned == nil {
 		return
 	}
+	sanitizeCursorAccountState(cloned)
 	cursorAgentMemory.mu.Lock()
-	cloned.RootPromptMessagesJson = appendMissingBlobIDs(cloned.RootPromptMessagesJson, cursorAgentMemory.messages[conversationID])
 	cursorAgentMemory.states[conversationID] = cloned
 	cursorAgentMemory.mu.Unlock()
 	raw, err := proto.Marshal(cloned)
@@ -138,34 +165,151 @@ func cursorAccountRememberState(conversationID string, state *agentv1.Conversati
 	_ = os.WriteFile(path, raw, 0o600)
 }
 
-func cursorAccountRememberMessageBlob(conversationID string, id []byte) {
-	conversationID = strings.TrimSpace(conversationID)
-	if conversationID == "" || len(id) == 0 {
-		return
-	}
-	copied := append([]byte(nil), id...)
-	cursorAgentMemory.mu.Lock()
-	cursorAgentMemory.messages[conversationID] = appendMissingBlobIDs(cursorAgentMemory.messages[conversationID], [][]byte{copied})
-	if state := cursorAgentMemory.states[conversationID]; state != nil {
-		state.RootPromptMessagesJson = appendMissingBlobIDs(state.RootPromptMessagesJson, [][]byte{copied})
-	}
-	cursorAgentMemory.mu.Unlock()
+type cursorRootBlobMeta struct {
+	id         []byte
+	role       string
+	empty      bool
+	isUserInfo bool
+	isSummary  bool
 }
 
-func appendMissingBlobIDs(existing [][]byte, extra [][]byte) [][]byte {
-	for _, id := range extra {
-		found := false
-		for _, current := range existing {
-			if bytes.Equal(current, id) {
-				found = true
-				break
+// sanitizeCursorAccountState repairs checkpoints whose root_prompt_messages_json
+// was polluted by raw KV SetBlob writes (foreign system prompts, empty assistant
+// placeholders, duplicate <user_info> headers, or pre-compaction messages
+// re-appended ahead of a newer <summary> block).
+func sanitizeCursorAccountState(state *agentv1.ConversationStateStructure) bool {
+	if state == nil || len(state.RootPromptMessagesJson) == 0 {
+		return false
+	}
+	cleaned, changed := sanitizeCursorAccountRootMessages(state.RootPromptMessagesJson)
+	if changed {
+		state.RootPromptMessagesJson = cleaned
+	}
+	return changed
+}
+
+func sanitizeCursorAccountRootMessages(ids [][]byte) ([][]byte, bool) {
+	if len(ids) == 0 {
+		return ids, false
+	}
+	kept := make([]cursorRootBlobMeta, 0, len(ids))
+	changed := false
+	seen := make(map[string]struct{}, len(ids))
+	for index, id := range ids {
+		if len(id) == 0 {
+			changed = true
+			continue
+		}
+		hexID := hex.EncodeToString(id)
+		meta := cursorRootBlobMeta{id: append([]byte(nil), id...)}
+		if data, ok := cursorAccountBlob(id); ok && len(data) > 0 {
+			role, empty, isUserInfo, isSummary, parsed := inspectCursorRootMessageBlob(data)
+			if parsed {
+				meta.role = role
+				meta.empty = empty
+				meta.isUserInfo = isUserInfo
+				meta.isSummary = isSummary
+				if index > 0 && role == "system" {
+					changed = true
+					continue
+				}
+				if role == "assistant" && empty {
+					changed = true
+					continue
+				}
+				if len(kept) > 1 && role == "user" && isUserInfo {
+					changed = true
+					continue
+				}
 			}
 		}
-		if !found {
-			existing = append(existing, append([]byte(nil), id...))
+		if _, dup := seen[hexID]; dup && (meta.role == "system" || meta.isUserInfo || meta.isSummary) {
+			changed = true
+			continue
+		}
+		seen[hexID] = struct{}{}
+		kept = append(kept, meta)
+	}
+	latestSummaryIdx := -1
+	for index := len(kept) - 1; index > 0; index-- {
+		if kept[index].isSummary {
+			latestSummaryIdx = index
+			break
 		}
 	}
-	return existing
+	if latestSummaryIdx > 0 {
+		headerEnd := 0
+		if headerEnd < latestSummaryIdx && kept[headerEnd].role == "system" {
+			headerEnd++
+		}
+		if headerEnd < latestSummaryIdx && kept[headerEnd].role == "user" && kept[headerEnd].isUserInfo {
+			headerEnd++
+		}
+		if headerEnd < latestSummaryIdx {
+			collapsed := make([]cursorRootBlobMeta, 0, headerEnd+(len(kept)-latestSummaryIdx))
+			collapsed = append(collapsed, kept[:headerEnd]...)
+			collapsed = append(collapsed, kept[latestSummaryIdx:]...)
+			kept = collapsed
+			changed = true
+		}
+	}
+	if !changed {
+		return ids, false
+	}
+	out := make([][]byte, 0, len(kept))
+	for _, item := range kept {
+		out = append(out, item.id)
+	}
+	return out, true
+}
+
+func inspectCursorRootMessageBlob(data []byte) (role string, empty bool, isUserInfo bool, isSummary bool, ok bool) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return "", false, false, false, false
+	}
+	var envelope struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+		return "", false, false, false, false
+	}
+	role = strings.ToLower(strings.TrimSpace(envelope.Role))
+	if role == "" {
+		return "", false, false, false, false
+	}
+	rawContent := bytes.TrimSpace(envelope.Content)
+	if len(rawContent) == 0 || bytes.Equal(rawContent, []byte("null")) || bytes.Equal(rawContent, []byte("[]")) || bytes.Equal(rawContent, []byte(`""`)) {
+		return role, true, false, false, true
+	}
+	var text string
+	if err := json.Unmarshal(rawContent, &text); err == nil {
+		trimmedText := strings.TrimSpace(text)
+		if trimmedText == "" {
+			return role, true, false, false, true
+		}
+		isUserInfo = strings.HasPrefix(trimmedText, "<user_info>")
+		isSummary = role == "user" && strings.HasPrefix(trimmedText, "<summary>")
+		return role, false, isUserInfo, isSummary, true
+	}
+	var parts []json.RawMessage
+	if err := json.Unmarshal(rawContent, &parts); err == nil {
+		if len(parts) == 0 {
+			return role, true, false, false, true
+		}
+		var firstPart struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(parts[0], &firstPart) == nil {
+			trimmedText := strings.TrimSpace(firstPart.Text)
+			isUserInfo = strings.HasPrefix(trimmedText, "<user_info>")
+			isSummary = role == "user" && strings.HasPrefix(trimmedText, "<summary>")
+		}
+		return role, false, isUserInfo, isSummary, true
+	}
+	return role, false, false, false, true
 }
 
 func cursorAccountLoadState(conversationID string) *agentv1.ConversationStateStructure {
@@ -177,6 +321,7 @@ func cursorAccountLoadState(conversationID string) *agentv1.ConversationStateStr
 	if state := cursorAgentMemory.states[conversationID]; state != nil {
 		cloned, _ := proto.Clone(state).(*agentv1.ConversationStateStructure)
 		cursorAgentMemory.mu.Unlock()
+		sanitizeCursorAccountState(cloned)
 		return cloned
 	}
 	cursorAgentMemory.mu.Unlock()
@@ -193,7 +338,12 @@ func cursorAccountLoadState(conversationID string) *agentv1.ConversationStateStr
 		return nil
 	}
 	cursorAccountRememberState(conversationID, state)
-	return state
+	cloned, _ := proto.Clone(state).(*agentv1.ConversationStateStructure)
+	if cloned == nil {
+		return state
+	}
+	sanitizeCursorAccountState(cloned)
+	return cloned
 }
 
 func cursorAccountRememberBlob(id, data []byte) {

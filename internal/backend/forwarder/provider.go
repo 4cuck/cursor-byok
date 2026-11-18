@@ -258,6 +258,7 @@ func (gateway *DefaultProviderGateway) StartStream(ctx context.Context, req Prov
 		ReviewerModel:             req.ReviewerModel,
 		ThinkingEffort:            req.ThinkingEffort,
 		FastMode:                  req.FastMode,
+		ModelParameters:           cloneModelParameters(req.ModelParameters),
 		MaxMode:                   req.MaxMode,
 		CursorToolResults:         req.CursorToolResults,
 		CursorRequestContext:      req.CursorRequestContext,

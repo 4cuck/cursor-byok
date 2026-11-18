@@ -75,6 +75,7 @@ export function buildCursorAccountAdapter(model, owner = {}) {
     cursorAccountID: String(owner.accountID || "").trim(),
     modelID: name,
     cursorModelSpec: String(model?.pickerSpec || "").trim(),
+    contextWindowTokens: Number(model?.contextWindowTokens) || 0,
     tooltipData: model?.defaultOn ? `${note} (default)` : note,
     customHeadersEnabled: false,
     customHeadersJSON: "",

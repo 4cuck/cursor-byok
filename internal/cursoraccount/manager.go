@@ -40,7 +40,7 @@ const (
 	authClientID  = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
 	loginTimeout  = 10 * time.Minute
 	pollInterval  = time.Second
-	refreshMargin = 2 * time.Minute
+	refreshMargin = 5 * time.Minute
 )
 
 var ErrNotSignedIn = errors.New("Not signed in to a Cursor account in cursor-byok")

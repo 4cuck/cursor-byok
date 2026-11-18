@@ -7,6 +7,7 @@ import (
 	"cursor/gen/agentv1"
 	execbridge "cursor/internal/backend/agent/bridge/exec"
 	runtimecore "cursor/internal/backend/agent/core"
+	modeladapter "cursor/internal/backend/agent/model"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -34,6 +35,17 @@ func rememberNativeExecSlot(stream *ActiveStream, invocation runtimecore.ToolInv
 		stream.nativeExecSlots = map[string]nativeExecSlot{}
 	}
 	stream.nativeExecSlots[toolCallID] = nativeExecSlot{id: original.GetId(), execID: strings.TrimSpace(original.GetExecId())}
+}
+
+func nativeParentParameters(parameters []modeladapter.ModelParameter) []execbridge.NativeModelParameter {
+	if len(parameters) == 0 {
+		return nil
+	}
+	copied := make([]execbridge.NativeModelParameter, 0, len(parameters))
+	for _, parameter := range parameters {
+		copied = append(copied, execbridge.NativeModelParameter{ID: parameter.ID, Value: parameter.Value})
+	}
+	return copied
 }
 
 func nativeExecIsWrite(raw []byte) bool {
@@ -64,6 +76,7 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 		ModelID:        stream.ModelID,
 		ThinkingEffort: stream.ThinkingEffort,
 		Fast:           stream.FastMode,
+		Parameters:     nativeParentParameters(stream.ModelParameters),
 		Overrides:      cloneSubagentModelOverrides(stream.SubagentModelOverrides),
 	}
 	displayModel := strings.TrimSpace(stream.ModelName)

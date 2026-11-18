@@ -185,6 +185,7 @@ func resolveModelAdapterChannel(adapters []ModelAdapterConfig, requestedModel st
 		Name:                        strings.TrimSpace(matched.DisplayName),
 		GroupName:                   strings.TrimSpace(matched.GroupName),
 		CursorAccountID:             strings.TrimSpace(matched.CursorAccountID),
+		CursorModelSpec:             strings.TrimSpace(matched.CursorModelSpec),
 		Provider:                    strings.TrimSpace(matched.Type),
 		ProtocolMode:                strings.TrimSpace(matched.ProtocolMode),
 		ProtocolGroup:               strings.TrimSpace(matched.ProtocolGroup),

@@ -34,7 +34,7 @@ func (service *Service) bootstrapRuntimeConversation(intent InboundIntent) (*Con
 	if service == nil {
 		return nil, agentv1.AgentMode_AGENT_MODE_AGENT, 0, nil, fmt.Errorf("forwarder service is nil")
 	}
-	contextWindowTokens := service.resolveContextWindowTokens(intent.ModelID)
+	contextWindowTokens := service.resolveStreamContextWindowTokens(intent.ModelID, intent.ModelParameters, intent.MaxMode)
 	var conversation *ConversationFile
 	var err error
 	if service.store != nil {

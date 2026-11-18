@@ -12,6 +12,7 @@ import (
 	"cursor/internal/backend/runtimeconfig"
 	"cursor/internal/historymetrics"
 	"cursor/internal/logger"
+	"cursor/internal/modelcontext"
 	"cursor/internal/routing"
 	legacyruntime "cursor/internal/runtime"
 )
@@ -354,6 +355,10 @@ func (manager *Manager) PersistChannelContextWindow(ctx context.Context, channel
 			continue
 		}
 		matched = true
+		// Cursor serves fixed windows; a halved size would silently switch the model to another window.
+		if legacyruntime.NormalizeModelSource(item.Source) == legacyruntime.ModelSourceCursorAccount && len(modelcontext.CursorContextWindows(item.CursorModelSpec)) > 0 {
+			return nil
+		}
 		// 仅下调：保留用户手动设置的更大值，只在中转站实测更小时收敛。
 		if item.ContextWindowTokens <= 0 || contextWindowTokens < item.ContextWindowTokens {
 			item.ContextWindowTokens = contextWindowTokens

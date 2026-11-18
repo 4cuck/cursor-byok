@@ -88,10 +88,11 @@ func (service *Service) updateConversationTokenState(stream *ActiveStream, conve
 		return nil
 	}
 	now := time.Now().UTC()
-	modelID := activeStreamModelID(stream)
+	modelID, modelParameters, maxMode := activeStreamWindowInputs(stream)
 	// updateConversationMetaAndCheckpoint 持有 stream.mu 调用 update 闭包，
 	// 锚点消息数必须在进入闭包前读出，闭包内再锁 stream.mu 会死锁。
 	anchorCount := activeStreamPromptAnchorMessageCount(stream)
+	resolvedWindowTokens := service.resolveStreamContextWindowTokens(modelID, modelParameters, maxMode)
 	autoCompactionReserveTokens := int64(compactionAutoReserveTokens)
 	if finalizeAutoCompaction {
 		autoCompactionReserveTokens = service.resolveCompactionReserveTokens(modelID)
@@ -113,8 +114,8 @@ func (service *Service) updateConversationTokenState(stream *ActiveStream, conve
 			item.UsageAnchorTokens = clampInt64ToUint32(promptTokensTotal)
 			item.UsageAnchorMessageCount = anchorCount
 		}
-		if item.TokenDetailsMaxTokens == 0 {
-			item.TokenDetailsMaxTokens = service.resolveContextWindowTokens(modelID)
+		if item.TokenDetailsMaxTokens == 0 && resolvedWindowTokens > 0 {
+			item.TokenDetailsMaxTokens = resolvedWindowTokens
 		}
 		if finalizeAutoCompaction {
 			updateConversationAutoCompactionState(item, usage.requestTokensTotal(), autoCompactionReserveTokens, modelCallID, now)
@@ -122,6 +123,15 @@ func (service *Service) updateConversationTokenState(stream *ActiveStream, conve
 		return nil
 	})
 	return err
+}
+
+func activeStreamWindowInputs(stream *ActiveStream) (string, []modeladapter.ModelParameter, bool) {
+	if stream == nil {
+		return "", nil, false
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return stream.ModelID, cloneModelParameters(stream.ModelParameters), stream.MaxMode
 }
 
 func activeStreamModelID(stream *ActiveStream) string {

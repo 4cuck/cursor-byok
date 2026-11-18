@@ -79,6 +79,9 @@ func collectCursorAccountTest(ctx context.Context, gateway modeladapter.AccountM
 		ProviderModelID: strings.TrimSpace(adapter.ModelID),
 		GroupName:       strings.TrimSpace(adapter.GroupName),
 		CursorAccountID: strings.TrimSpace(adapter.CursorAccountID),
+		CursorModelSpec: strings.TrimSpace(adapter.CursorModelSpec),
+		// Test the window the model is configured for; a max-mode window needs a plan that allows it.
+		ResolvedContextWindowTokens: adapter.ContextWindowTokens,
 		// 账号没有该模型权限时，上游可能一直不回包。测试不等满整个超时，
 		// 没有正文或明确报错就按「没有权限」结束。
 		SilentTimeout: 12 * time.Second,

@@ -168,6 +168,8 @@ type ActiveStream struct {
 	Status         StreamStatus
 	ThinkingEffort string
 	FastMode       bool
+	// ModelParameters 是 IDE 选中的 Cursor 注册表参数，账户模型原样转发。
+	ModelParameters []modeladapter.ModelParameter
 	// CursorToolResults 在 Cursor 账户回合内把工具结果送回仍打开的上游流。
 	CursorToolResults chan *agentv1.ExecClientMessage
 	// CursorInlineToolTurn 表示本次 provider pass 已把工具结果写回同一条上游流。
@@ -456,6 +458,7 @@ type ProviderRequest struct {
 	ThinkingEffort      string
 	FastMode            bool
 	MaxMode             bool
+	ModelParameters     []modeladapter.ModelParameter
 	Messages            []modeladapter.Message
 	StableMessageCount  int
 	Tools               []json.RawMessage
@@ -625,6 +628,7 @@ type InboundIntent struct {
 	ModelName                    string
 	ThinkingEffort               string
 	FastMode                     bool
+	ModelParameters              []modeladapter.ModelParameter
 	CustomSystemPrompt           string
 	MaxMode                      bool
 	Mode                         agentv1.AgentMode

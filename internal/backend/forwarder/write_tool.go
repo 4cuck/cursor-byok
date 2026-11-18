@@ -1,9 +1,11 @@
 package forwarder
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -398,8 +400,8 @@ func decodeWriteOperationArgs(raw []byte) (writeOperationArgs, error) {
 		return writeOperationArgs{}, fmt.Errorf("decode write args failed: %w", err)
 	}
 	result := writeOperationArgs{
-		Path:     firstNonEmpty(readStringAny(args["path"]), readStringAny(args["file_path"])),
-		Contents: firstNonEmpty(readStringAny(args["contents"]), readStringAny(args["content"]), readStringAny(args["fileText"]), readStringAny(args["file_text"]), readStringAny(args["stream_content"]), readStringAny(args["streamContent"])),
+		Path:     firstNonEmpty(readStringAny(args["path"]), readStringAny(args["file_path"]), readStringAny(args["filePath"]), readStringAny(args["Path"]), readStringAny(args["FilePath"])),
+		Contents: readWriteContentsAny(args),
 	}
 	if strings.TrimSpace(result.Path) == "" {
 		return writeOperationArgs{}, fmt.Errorf("write path is required")
@@ -408,6 +410,28 @@ func decodeWriteOperationArgs(raw []byte) (writeOperationArgs, error) {
 		return writeOperationArgs{}, fmt.Errorf("write path must be absolute")
 	}
 	return result, nil
+}
+
+func readWriteContentsAny(args map[string]any) string {
+	for _, key := range []string{"contents", "content", "fileText", "file_text", "stream_content", "streamContent"} {
+		if text, ok := args[key].(string); ok && text != "" {
+			return text
+		}
+	}
+	for _, key := range []string{"fileBytes", "file_bytes"} {
+		encoded, ok := args[key].(string)
+		if !ok || strings.TrimSpace(encoded) == "" {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+		if err != nil {
+			decoded, err = base64.RawStdEncoding.DecodeString(strings.TrimSpace(encoded))
+		}
+		if err == nil && utf8.Valid(decoded) {
+			return string(decoded)
+		}
+	}
+	return ""
 }
 
 func (args writeOperationArgs) MarshalJSON() ([]byte, error) {

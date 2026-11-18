@@ -2,6 +2,7 @@
 import Button from "@/components/ui/Button.vue";
 import Input from "@/components/ui/Input.vue";
 import ModelBehaviorFields from "@/components/model-editor/ModelBehaviorFields.vue";
+import CursorContextWindowSection from "@/components/model-editor/CursorContextWindowSection.vue";
 import ModelCapabilitiesSection from "@/components/model-editor/ModelCapabilitiesSection.vue";
 import ModelIdentityFields from "@/components/model-editor/ModelIdentityFields.vue";
 import ModelPricingSection from "@/components/model-editor/ModelPricingSection.vue";
@@ -12,6 +13,7 @@ import { getModelEditorContext } from "@/services/clientApi";
 import { popModelEditorReturn, popModelEditorSeed, stashModelEditorReturn } from "@/utils/modelEditorSeed";
 import { showModal } from "@/composables/useModal";
 import { isModelCovered, resolveModelContextWindow, resolveModelCapabilities } from "@/utils/modelContext";
+import { cursorContextWindows } from "@/utils/cursorContextWindows";
 import { providerIcon, providerLabel, providerSelectOptions } from "@/utils/providerMeta";
 import { supplierSelectOptions, supplierTemplate } from "@/utils/supplierCatalog";
 import {
@@ -321,6 +323,7 @@ const modelTestSummary = computed(() => {
 
 const isQuickMode = computed(() => editorIndex.value < 0);
 const isCursorAccountSource = computed(() => draft.source === MODEL_SOURCE_CURSOR_ACCOUNT);
+const cursorWindows = computed(() => (isCursorAccountSource.value ? cursorContextWindows(draft.cursorModelSpec) : []));
 const modelTestResultTitle = computed(() => isCursorAccountSource.value ? "账户模型状态" : "模型测试");
 const modelTestResultEmptyText = computed(() => isCursorAccountSource.value
   ? "执行通道待真实协议验证；保存配置不会发起模型调用。"
@@ -1160,6 +1163,10 @@ onMounted(async () => {
                 >
               </label>
             </div>
+            <CursorContextWindowSection
+              v-model="draft.contextWindowTokens"
+              :windows="cursorWindows"
+            />
             <ModelTestResultSection
               :title="modelTestResultTitle"
               :empty-text="modelTestResultEmptyText"

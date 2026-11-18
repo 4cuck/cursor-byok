@@ -171,6 +171,25 @@ func buildSummaryCompletedMessage(requestID string) *agentv1.AgentServerMessage 
 	}
 }
 
+// buildSummaryCompletedFailedMessage closes an in-flight summarization bubble
+// when compaction errors or is canceled, preventing the UI from remaining stuck
+// on "Summarizing chat context" (generatingBubbleIds in workbench).
+func buildSummaryCompletedFailedMessage(reason string) *agentv1.AgentServerMessage {
+	failed := true
+	return &agentv1.AgentServerMessage{
+		Message: &agentv1.AgentServerMessage_InteractionUpdate{
+			InteractionUpdate: &agentv1.InteractionUpdate{
+				Message: &agentv1.InteractionUpdate_SummaryCompleted{
+					SummaryCompleted: &agentv1.SummaryCompletedUpdate{
+						HookMessage: stringPtrIfNonEmpty(reason),
+						Failed:      &failed,
+					},
+				},
+			},
+		},
+	}
+}
+
 // buildToolCallStartedMessage 构造工具调用开始消息。
 func buildToolCallStartedMessage(callID string, modelCallID string, toolCall *agentv1.ToolCall) *agentv1.AgentServerMessage {
 	return &agentv1.AgentServerMessage{
@@ -550,17 +569,16 @@ func buildStartedToolCall(invocation runtimecore.ToolInvocation) *agentv1.ToolCa
 			},
 		}
 	case "Write":
-		var input struct {
-			Path     string `json:"path"`
-			Contents string `json:"contents"`
-		}
-		_ = json.Unmarshal(invocation.ArgsJSON, &input)
+		var args map[string]any
+		_ = json.Unmarshal(invocation.ArgsJSON, &args)
+		path := firstNonEmpty(readStringAny(args["path"]), readStringAny(args["file_path"]), readStringAny(args["filePath"]), readStringAny(args["Path"]), readStringAny(args["FilePath"]))
+		contents := readWriteContentsAny(args)
 		return &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_EditToolCall{
 				EditToolCall: &agentv1.EditToolCall{
 					Args: &agentv1.EditArgs{
-						Path:          strings.TrimSpace(input.Path),
-						StreamContent: literalStringPtr(input.Contents),
+						Path:          path,
+						StreamContent: literalStringPtr(contents),
 					},
 				},
 			},

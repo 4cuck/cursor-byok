@@ -467,3 +467,41 @@ func TestSyncCanonicalPressureForLargeWindowsSkipsSmallWindow(t *testing.T) {
 		t.Fatalf("TokenDetailsUsedTokens = %d, want 0 for 64K window", conversation.TokenDetailsUsedTokens)
 	}
 }
+
+type cursorSpecChannelResolver struct {
+	channel *legacyruntime.ResolvedChannel
+}
+
+func (r cursorSpecChannelResolver) SelectChannelForModel(context.Context, string) (*legacyruntime.ResolvedChannel, error) {
+	return r.channel, nil
+}
+func (cursorSpecChannelResolver) ProviderStreamIdleTimeout(context.Context) time.Duration { return 0 }
+func (cursorSpecChannelResolver) TurnStaleTimeout(context.Context) time.Duration          { return 0 }
+func (cursorSpecChannelResolver) NativeDelegationProgressTimeout(context.Context) time.Duration {
+	return 0
+}
+
+func TestResolveStreamContextWindowTokensFollowsIDECursorWindowSelection(t *testing.T) {
+	spec := `{"supportsMaxMode":true,"supportsNonMaxMode":true,"contextTokenLimit":300000,"contextTokenLimitForMaxMode":1000000,"parameterDefinitions":[{"id":"context","parameterType":{"enumParameter":{"values":[{"value":"300k"},{"value":"1m"}]}}}],"variants":[{"parameterValues":[{"id":"context","value":"300k"}],"isDefaultNonMaxConfig":true},{"parameterValues":[{"id":"context","value":"1m"}],"isMaxMode":true,"isDefaultMaxConfig":true}],"contextWindows":[{"tokens":300000,"value":"300k","default":true},{"tokens":1000000,"value":"1m","maxMode":true}]}`
+	service := &Service{
+		resolver: cursorSpecChannelResolver{
+			channel: &legacyruntime.ResolvedChannel{
+				ID:                  "cursor_account1:claude-fable-5-2",
+				Source:              legacyruntime.ModelSourceCursorAccount,
+				Model:               "claude-fable-5-2",
+				ContextWindowTokens: 300_000,
+				CursorModelSpec:     spec,
+			},
+		},
+	}
+
+	if got := service.resolveStreamContextWindowTokens("cursor_account1:claude-fable-5-2", []modeladapter.ModelParameter{{ID: "context", Value: "300k"}}, false); got != 300_000 {
+		t.Fatalf("300k IDE selection = %d, want 300000", got)
+	}
+	if got := service.resolveStreamContextWindowTokens("cursor_account1:claude-fable-5-2", []modeladapter.ModelParameter{{ID: "context", Value: "1m"}}, true); got != 1_000_000 {
+		t.Fatalf("1m IDE selection = %d, want 1000000", got)
+	}
+	if got := service.resolveStreamContextWindowTokens("cursor_account1:claude-fable-5-2", []modeladapter.ModelParameter{{ID: "context", Value: "300k"}, {ID: "fast", Value: "true"}}, true); got != 300_000 {
+		t.Fatalf("300k + fast maxMode = %d, want 300000", got)
+	}
+}

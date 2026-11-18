@@ -97,6 +97,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	modelName := stream.ModelName
 	thinkingEffort := stream.ThinkingEffort
 	maxMode := stream.MaxMode
+	modelParameters := cloneModelParameters(stream.ModelParameters)
 	mode := stream.Mode
 	latestUserText := stream.LatestUserText
 	customSystemPrompt := stream.CustomSystemPrompt
@@ -138,11 +139,20 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	canonicalConversation := conversation
 	canonicalCompiled := compiled
 	_, manualCompactionRequested := streamManualCompactionDirective(stream)
+	cursorAccountSavedState := !manualCompactionRequested &&
+		service.cursorAccountModel(modelID) &&
+		modeladapter.HasCursorAccountState(conversationID)
+	if cursorAccountSavedState {
+		if upstreamUsed := modeladapter.CursorAccountUsedTokens(conversationID); upstreamUsed > 0 {
+			canonicalConversation.TokenDetailsUsedTokens = upstreamUsed
+			conversation.TokenDetailsUsedTokens = upstreamUsed
+		}
+	}
 	var activeContextProjection *contextProjectionState
 	var activeTurnProjectionStats *activeTurnToolResultCompactionStats
 	projectionSidecarHit := false
 	projectionInvalidationReason := ""
-	if !manualCompactionRequested && service.contextProjectionPressureExceeded(stream, canonicalConversation, canonicalCompiled) {
+	if !manualCompactionRequested && !cursorAccountSavedState && service.contextProjectionPressureExceeded(stream, canonicalConversation, canonicalCompiled) {
 		projectedConversation, projectionState, active, invalidationReason := service.prepareConversationContextProjectionState(canonicalConversation, contextProjectionModelKey(stream))
 		if active {
 			projectedCompiled, compileErr := service.compiler.Compile(projectedConversation, mode, latestUserText, modelName, customSystemPrompt)
@@ -177,22 +187,34 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	}
 	// 大窗口下 provider usage 反映 projected 发送体积，UI/ canonical 体量更高时需同步压力标记，
 	// 否则 sidecar 有效时 80% 自动压缩不触发。64K 等小窗口测试场景不受影响。
-	service.syncCanonicalPressureForLargeWindows(canonicalConversation, canonicalCompiled)
-	if compacted, compactErr := service.maybeCompactBeforeProvider(stream, canonicalConversation, compiled); compactErr != nil {
-		// 自动/投影压缩链穷尽（或 preflight 前估算超限）时，先尝试一次强制 legacy 兜底压缩
-		//（自动 /summarize），而不是直接以 context_overflow_after_compaction 终态失败。
-		if escalated, escErr := service.escalateForcedPreflightCompaction(stream, canonicalConversation, canonicalCompiled, compactErr); escErr != nil {
+	// Cursor 账户模型在已有上游 checkpoint 时由 Cursor 服务端原生维护摘要与上下文窗口，
+	// 本地 context.json 不参与上游发送，不能把未压缩的本地历史强加为预检压缩压力。
+	if !cursorAccountSavedState {
+		service.syncCanonicalPressureForLargeWindows(canonicalConversation, canonicalCompiled)
+		if compacted, compactErr := service.maybeCompactBeforeProvider(stream, canonicalConversation, compiled); compactErr != nil {
+			// 自动/投影压缩链穷尽（或 preflight 前估算超限）时，先尝试一次强制 legacy 兜底压缩
+			//（自动 /summarize），而不是直接以 context_overflow_after_compaction 终态失败。
+			if escalated, escErr := service.escalateForcedPreflightCompaction(stream, canonicalConversation, canonicalCompiled, compactErr); escErr != nil {
+				service.setTurnPhase(stream, TurnPhaseFailed)
+				return service.failStream(stream, "unknown", escErr)
+			} else if escalated {
+				service.finalizeCompactionAdmission(stream)
+				return nil
+			}
 			service.setTurnPhase(stream, TurnPhaseFailed)
-			return service.failStream(stream, "unknown", escErr)
-		} else if escalated {
+			return service.failStream(stream, "unknown", compactErr)
+		} else if compacted {
 			service.finalizeCompactionAdmission(stream)
 			return nil
 		}
-		service.setTurnPhase(stream, TurnPhaseFailed)
-		return service.failStream(stream, "unknown", compactErr)
-	} else if compacted {
-		service.finalizeCompactionAdmission(stream)
-		return nil
+	} else if manualCompactionRequested {
+		if compacted, compactErr := service.maybeCompactBeforeProvider(stream, canonicalConversation, compiled); compactErr != nil {
+			service.setTurnPhase(stream, TurnPhaseFailed)
+			return service.failStream(stream, "unknown", compactErr)
+		} else if compacted {
+			service.finalizeCompactionAdmission(stream)
+			return nil
+		}
 	}
 	if err := service.syncSummarySnapshot(stream, canonicalConversation, requestID, modelCallID); err != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)
@@ -251,18 +273,20 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		}
 		requestKnobs["max_tokens_recovery_cap"] = recoveryCap
 	}
-	if err := validateProviderRequestContextBudget(conversation, compiled, maxTokens); err != nil {
-		// preflight 最终校验超限：尝试一次强制 legacy 兜底压缩（自动 /summarize），
-		// 压缩完成后 resume 重算预算；attempts 耗尽或无可压缩内容才按原样终态失败。
-		if escalated, escErr := service.escalateForcedPreflightCompaction(stream, canonicalConversation, canonicalCompiled, err); escErr != nil {
+	if !cursorAccountSavedState {
+		if err := validateProviderRequestContextBudget(conversation, compiled, maxTokens); err != nil {
+			// preflight 最终校验超限：尝试一次强制 legacy 兜底压缩（自动 /summarize），
+			// 压缩完成后 resume 重算预算；attempts 耗尽或无可压缩内容才按原样终态失败。
+			if escalated, escErr := service.escalateForcedPreflightCompaction(stream, canonicalConversation, canonicalCompiled, err); escErr != nil {
+				service.setTurnPhase(stream, TurnPhaseFailed)
+				return service.failStream(stream, "unknown", escErr)
+			} else if escalated {
+				service.finalizeCompactionAdmission(stream)
+				return nil
+			}
 			service.setTurnPhase(stream, TurnPhaseFailed)
-			return service.failStream(stream, "unknown", escErr)
-		} else if escalated {
-			service.finalizeCompactionAdmission(stream)
-			return nil
+			return service.failStream(stream, "unknown", err)
 		}
-		service.setTurnPhase(stream, TurnPhaseFailed)
-		return service.failStream(stream, "unknown", err)
 	}
 	projectionDiagnostics := contextProjectionRequestDiagnostics(
 		"parent",
@@ -336,6 +360,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	}
 	providerRequest.ThinkingEffort = thinkingEffort
 	providerRequest.FastMode = stream.FastMode
+	providerRequest.ModelParameters = modelParameters
 	if service.cursorAccountModel(modelID) {
 		results := make(chan *agentv1.ExecClientMessage, 32)
 		stream.mu.Lock()
@@ -776,11 +801,41 @@ func (service *Service) syncCanonicalPressureForLargeWindows(conversation *Conve
 }
 
 func (service *Service) resolveContextWindowTokens(modelID string) uint32 {
+	return service.resolveStreamContextWindowTokens(modelID, nil, false)
+}
+
+func (service *Service) resolveStreamContextWindowTokens(modelID string, modelParameters []modeladapter.ModelParameter, maxMode bool) uint32 {
 	if service == nil || service.resolver == nil {
 		return defaultResolvedContextWindowTokens
 	}
 	channel, err := service.resolver.SelectChannelForModel(context.Background(), strings.TrimSpace(modelID))
-	if err != nil || channel == nil || channel.ContextWindowTokens <= 0 {
+	if err != nil || channel == nil {
+		return defaultResolvedContextWindowTokens
+	}
+	clientContext := runtimeModelContextValue(modelParameters)
+	if legacyruntime.NormalizeModelSource(channel.Source) == legacyruntime.ModelSourceCursorAccount {
+		if window, ok := modelcontext.ResolveRuntimeCursorContextWindow(
+			channel.CursorModelSpec,
+			channel.ContextWindowTokens,
+			clientContext,
+			maxMode,
+		); ok && window.Tokens > 0 {
+			return clampInt64ToUint32(int64(window.Tokens))
+		}
+	} else {
+		if tokens := modelcontext.ParseCursorContextValue(clientContext); tokens > 0 {
+			return clampInt64ToUint32(int64(tokens))
+		}
+		if maxMode {
+			if catalogMax := modelcontext.WindowTokens(channel.Model); catalogMax > channel.ContextWindowTokens {
+				return clampInt64ToUint32(int64(catalogMax))
+			}
+			if catalogMax := modelcontext.WindowTokens(modelID); catalogMax > channel.ContextWindowTokens {
+				return clampInt64ToUint32(int64(catalogMax))
+			}
+		}
+	}
+	if channel.ContextWindowTokens <= 0 {
 		return defaultResolvedContextWindowTokens
 	}
 	return clampInt64ToUint32(int64(channel.ContextWindowTokens))
@@ -792,8 +847,10 @@ func (service *Service) syncConversationContextWindowTokens(stream *ActiveStream
 	}
 	stream.mu.Lock()
 	modelID := stream.ModelID
+	modelParameters := cloneModelParameters(stream.ModelParameters)
+	maxMode := stream.MaxMode
 	stream.mu.Unlock()
-	target := service.resolveContextWindowTokens(modelID)
+	target := service.resolveStreamContextWindowTokens(modelID, modelParameters, maxMode)
 	if target == 0 || conversation.TokenDetailsMaxTokens == target {
 		return conversation, nil
 	}

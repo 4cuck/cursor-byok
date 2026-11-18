@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +22,7 @@ import (
 	runtimecore "cursor/internal/backend/agent/core"
 	"cursor/internal/backend/server/upstream"
 	"cursor/internal/logger"
+	"cursor/internal/modelcontext"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -74,13 +77,16 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 	if err != nil {
 		return fmt.Errorf("cursor account is not signed in: %w", err)
 	}
-	err = gateway.streamAuthorized(ctx, req, authorization, sink)
+	output := &cursorAccountOutput{sink: sink}
+	err = gateway.streamAuthorizedForAccount(ctx, req, accountID, authorization, output)
 	if err == nil {
 		return nil
 	}
-	if cursorAccountAuthRejected(err) && cursorAccountUsesAPIKey(gateway.auth, accountID) {
+	// A turn that already streamed text or a tool call is not replayed:
+	// the caller would see that output twice.
+	if !output.forwarded && cursorAccountAuthRejected(err) && cursorAccountUsesAPIKey(gateway.auth, accountID) {
 		if renewed, refreshErr := cursorAccountForceRefresh(ctx, gateway.auth, accountID); refreshErr == nil {
-			if retryErr := gateway.streamAuthorized(ctx, req, renewed, sink); retryErr == nil {
+			if retryErr := gateway.streamAuthorizedForAccount(ctx, req, accountID, renewed, output); retryErr == nil {
 				return nil
 			} else {
 				err = retryErr
@@ -89,24 +95,58 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 	}
 	if cursorAccountDeviceLimited(err) {
 		cursorAccountMarkLocked(gateway.auth, accountID)
-		if alt := unlockedCurrentCursorAccount(gateway.auth, accountID); alt != "" {
+		if alt := unlockedCurrentCursorAccount(gateway.auth, accountID); alt != "" && !output.forwarded {
 			logger.Infof("cursor account model skipped device-locked account=%s using current=%s", accountID, alt)
 			if altAuth, altErr := gateway.authorize(ctx, alt); altErr == nil {
-				return gateway.streamAuthorized(ctx, req, altAuth, sink)
+				return gateway.streamAuthorizedForAccount(ctx, req, alt, altAuth, output)
 			}
 		}
 	}
 	return err
 }
 
-func (gateway *cursorAccountGateway) streamAuthorized(ctx context.Context, req StreamRequest, authorization string, sink func(ModelEvent) error) error {
+// cursorAccountOutput forwards model events and records whether the caller
+// has already received visible output for the turn.
+type cursorAccountOutput struct {
+	sink      func(ModelEvent) error
+	forwarded bool
+}
+
+func (output *cursorAccountOutput) emit(event ModelEvent) error {
+	switch event.Kind {
+	case ModelEventKindTextDelta, ModelEventKindThinkingDelta, ModelEventKindToolLikeCompleted:
+		output.forwarded = true
+	}
+	return output.sink(event)
+}
+
+// streamAuthorizedForAccount runs one turn. When Cursor refuses a saved
+// checkpoint before any output, the checkpoint is dropped and the turn is
+// sent again with the newest transcript as history. Without that, every
+// "continue" reloads the same refused state and fails the same way.
+func (gateway *cursorAccountGateway) streamAuthorizedForAccount(ctx context.Context, req StreamRequest, accountID, authorization string, output *cursorAccountOutput) error {
+	stateConversationID := cursorAccountStateConversationID(req)
+	usedSavedState := stateConversationID != "" && HasCursorAccountState(stateConversationID)
+	err := gateway.streamAuthorizedOnce(ctx, req, accountID, authorization, stateConversationID, 0, output.emit)
+	if err == nil || !usedSavedState || output.forwarded || ctx.Err() != nil || !cursorAccountShouldResetSavedState(err) {
+		return err
+	}
+	logger.Warnf("cursor account saved checkpoint rejected for conversation=%s; clearing checkpoint and retrying with bounded history: %v", stateConversationID, err)
+	ClearCursorAccountState(stateConversationID)
+	return gateway.streamAuthorizedOnce(ctx, req, accountID, authorization, stateConversationID, cursorAccountHistoryBudget(req.ResolvedContextWindowTokens), output.emit)
+}
+
+// streamAuthorizedOnce opens one RunSSE stream. stateConversationID names the
+// checkpoint to load and update ("" for none). historyBudget caps the history
+// bytes sent without a checkpoint (0 sends the whole transcript).
+func (gateway *cursorAccountGateway) streamAuthorizedOnce(ctx context.Context, req StreamRequest, accountID, authorization, stateConversationID string, historyBudget int, sink func(ModelEvent) error) error {
 	modelID := strings.TrimSpace(req.ProviderModelID)
 	if modelID == "" {
 		modelID = strings.TrimSpace(req.ModelID)
 	}
 	host := cursorAccountAgentHost(ctx, authorization)
 	requestID := uuid.NewString()
-	run := cursorAccountRunMessage(req, modelID)
+	run := cursorAccountRunMessageFor(req, modelID, stateConversationID, historyBudget)
 	if env := run.GetRunRequest().GetAction().GetUserMessageAction().GetRequestContext().GetEnv(); env != nil {
 		logger.Infof("cursor account environment os=%s shell=%s workspaces=%d", env.GetOsVersion(), env.GetShell(), len(env.GetWorkspacePaths()))
 	}
@@ -126,13 +166,14 @@ func (gateway *cursorAccountGateway) streamAuthorized(ctx context.Context, req S
 		return fmt.Errorf("cursor agent stream returned HTTP %d: %s", resp.StatusCode, cursorAccountErrorText(raw))
 	}
 
+	appendFrame := gateway.newStreamAppender(accountID, requestID, authorization).append
 	appendErr := make(chan error, 1)
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		appendErr <- appendCursorAccount(ctx, authorization, requestID, 0, mustCursorProto(run))
+		appendErr <- appendFrame(ctx, 0, mustCursorProto(run))
 	}()
 
-	return readCursorAccountStream(ctx, authorization, requestID, strings.TrimSpace(req.ConversationID), modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, req.CursorToolResults, cursorAccountRequestContext(req), sink)
+	return readCursorAccountStream(ctx, appendFrame, requestID, stateConversationID, modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, req.CursorToolResults, cursorAccountRequestContext(req), sink)
 }
 
 func (gateway *cursorAccountGateway) authorize(ctx context.Context, accountID string) (string, error) {
@@ -218,6 +259,9 @@ func cursorAccountMarkLocked(auth CursorAccountAuthorizer, accountID string) {
 	}
 }
 
+// cursorAccountAuthRejected matches Cursor's sign-in failures. An expired
+// access token on BidiAppend comes back as HTTP 401 with "If you are logged
+// in, try logging out and back in." rather than a Connect code.
 func cursorAccountAuthRejected(err error) bool {
 	text := strings.ToLower(errString(err))
 	return strings.Contains(text, "not logged in") ||
@@ -225,7 +269,44 @@ func cursorAccountAuthRejected(err error) bool {
 		strings.Contains(text, "unauthenticated") ||
 		strings.Contains(text, "unauthorized") ||
 		strings.Contains(text, "session expired") ||
-		strings.Contains(text, "session is no longer valid")
+		strings.Contains(text, "session is no longer valid") ||
+		strings.Contains(text, "http 401") ||
+		strings.Contains(text, "logging out and back in")
+}
+
+// cursorAccountShouldResetSavedState reports whether a refused turn points at
+// the saved checkpoint. Cancellation, sign-in, plan access, rate limits and
+// transport failures do not, and clearing the checkpoint for them would only
+// lose context.
+func cursorAccountShouldResetSavedState(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if cursorAccountAuthRejected(err) || cursorAccountDeviceLimited(err) {
+		return false
+	}
+	var appendErr *cursorAccountAppendError
+	if errors.As(err, &appendErr) {
+		return cursorAccountAppendRefusedPayload(appendErr.status)
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"context canceled",
+		"deadline exceeded",
+		"does not have access",
+		"rate limit",
+		"too many requests",
+		"resource_exhausted",
+		"usage limit",
+		"quota",
+		"unavailable",
+		"overloaded",
+	} {
+		if strings.Contains(text, marker) {
+			return false
+		}
+	}
+	return strings.Contains(text, "cursor refused the model call") || strings.Contains(text, "cursor agent frame is too large")
 }
 
 func cursorAccountDeviceLimited(err error) bool {
@@ -265,7 +346,7 @@ type cursorExecSlot struct {
 	execID string
 }
 
-func readCursorAccountStream(ctx context.Context, authorization, requestID, conversationID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, toolResults <-chan *agentv1.ExecClientMessage, requestContext *agentv1.RequestContext, sink func(ModelEvent) error) error {
+func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppendFunc, requestID, conversationID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, toolResults <-chan *agentv1.ExecClientMessage, requestContext *agentv1.RequestContext, sink func(ModelEvent) error) error {
 	cursorAccountResetFrameLog()
 	var pending []byte
 	tmp := make([]byte, 8192)
@@ -289,7 +370,7 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, conv
 		finishInline = signal
 		toolContinued = continued
 		pendingExecs = make(chan cursorExecSlot, 8)
-		go serveCursorAccountToolResults(streamCtx, authorization, requestID, nextSeq, toolResults, pendingExecs, signal, continued)
+		go serveCursorAccountToolResults(streamCtx, appendFrame, nextSeq, toolResults, pendingExecs, signal, continued)
 	}
 	thinkingActive := false
 	var thinkingStarted time.Time
@@ -420,7 +501,7 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, conv
 		case err := <-appendErr:
 			appendErr = nil
 			if err != nil {
-				return fmt.Errorf("cursor refused the model call: %s", err.Error())
+				return fmt.Errorf("cursor refused the model call: %w", err)
 			}
 			armSilent()
 			continue
@@ -480,13 +561,13 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, conv
 			}
 			cursorAccountNoteFrame(cursorAccountServerMessageKind(msg))
 			if kv := msg.GetKvServerMessage(); kv != nil {
-				if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(cursorAccountKVReply(kv))); err != nil {
+				if err := appendFrame(ctx, nextSeq(), mustCursorProto(cursorAccountKVReply(kv))); err != nil {
 					return err
 				}
+				// The IDE's KV store only records (blob_id, blob_data). The prompt
+				// root list comes from conversationCheckpointUpdate alone; adding
+				// message blobs here re-inflated compacted turns.
 				if set := kv.GetSetBlobArgs(); set != nil {
-					if bytes.HasPrefix(set.GetBlobData(), []byte(`{"role":`)) {
-						cursorAccountRememberMessageBlob(conversationID, set.GetBlobId())
-					}
 					if state := cursorAccountStateFromBlob(set.GetBlobData()); state != nil {
 						cursorAccountRememberState(conversationID, state)
 					}
@@ -499,13 +580,13 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, conv
 			}
 			if exec := msg.GetExecServerMessage(); exec != nil {
 				if exec.GetRequestContextArgs() != nil {
-					if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(cursorAccountContextReply(exec.GetId(), exec.GetExecId(), requestContext))); err != nil {
+					if err := appendFrame(ctx, nextSeq(), mustCursorProto(cursorAccountContextReply(exec.GetId(), exec.GetExecId(), requestContext))); err != nil {
 						return err
 					}
 					continue
 				}
 				if reply, ok := cursorAccountExecReply(exec); ok {
-					if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(reply)); err != nil {
+					if err := appendFrame(ctx, nextSeq(), mustCursorProto(reply)); err != nil {
 						return err
 					}
 					continue
@@ -605,7 +686,7 @@ func readCursorAccountStream(ctx context.Context, authorization, requestID, conv
 	}
 }
 
-func serveCursorAccountToolResults(ctx context.Context, authorization, requestID string, nextSeq func() int64, toolResults <-chan *agentv1.ExecClientMessage, pendingExecs <-chan cursorExecSlot, finish chan<- struct{}, continued chan<- struct{}) {
+func serveCursorAccountToolResults(ctx context.Context, appendFrame cursorAccountAppendFunc, nextSeq func() int64, toolResults <-chan *agentv1.ExecClientMessage, pendingExecs <-chan cursorExecSlot, finish chan<- struct{}, continued chan<- struct{}) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -633,7 +714,7 @@ func serveCursorAccountToolResults(ctx context.Context, authorization, requestID
 			wrapped := &agentv1.AgentClientMessage{
 				Message: &agentv1.AgentClientMessage_ExecClientMessage{ExecClientMessage: cloned},
 			}
-			if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(wrapped)); err != nil {
+			if err := appendFrame(ctx, nextSeq(), mustCursorProto(wrapped)); err != nil {
 				logger.Warnf("cursor account tool result was not delivered: %v", err)
 				select {
 				case finish <- struct{}{}:
@@ -654,7 +735,7 @@ func serveCursorAccountToolResults(ctx context.Context, authorization, requestID
 						},
 					},
 				}
-				if err := appendCursorAccount(ctx, authorization, requestID, nextSeq(), mustCursorProto(control)); err != nil {
+				if err := appendFrame(ctx, nextSeq(), mustCursorProto(control)); err != nil {
 					logger.Warnf("cursor account shell stream was not closed: %v", err)
 					select {
 					case finish <- struct{}{}:
@@ -673,7 +754,9 @@ func serveCursorAccountToolResults(ctx context.Context, authorization, requestID
 	}
 }
 
-func cursorAccountRequestedModel(modelID string, effort string, fast bool) *agentv1.RequestedModel {
+// contextWindowTokens supplies the fallback Cursor window when the client did
+// not send an explicit context parameter; IDE context selections take precedence.
+func cursorAccountRequestedModel(modelID string, effort string, fast bool, maxMode bool, parameters []ModelParameter, specJSON string, contextWindowTokens int) *agentv1.RequestedModel {
 	modelID = strings.TrimSpace(modelID)
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	base, slugEffort, slugFast, variant := splitCursorAccountRunVariant(modelID)
@@ -685,6 +768,57 @@ func cursorAccountRequestedModel(modelID string, effort string, fast bool) *agen
 		fast = fast || slugFast
 	}
 	requested := &agentv1.RequestedModel{ModelId: modelID}
+	// AvailableModels records the parameter ids for this family. Fill every
+	// registered parameter from that catalog so a model that calls effort
+	// "reasoning" or "reasoning_effort" is not sent the wrong id.
+	if catalog, ok := parseCursorRegistryCatalog(specJSON); ok {
+		rawClientContext := clientCursorContextValue(parameters)
+		window, matchedClientWindow := matchOfferedCursorContextWindow(specJSON, rawClientContext)
+		targetContext := ""
+		effectiveMaxMode := maxMode
+		hasWindow := false
+		if matchedClientWindow {
+			hasWindow = true
+			targetContext = window.Value
+			if targetContext != "" {
+				parameters = withCursorContextValue(parameters, targetContext)
+			} else {
+				parameters = withoutCursorContextValue(parameters)
+			}
+			effectiveMaxMode = window.MaxMode
+		} else {
+			if rawClientContext != "" {
+				parameters = withoutCursorContextValue(parameters)
+			}
+			if resolvedWindow, ok := modelcontext.ResolveRuntimeCursorContextWindow(specJSON, contextWindowTokens, "", maxMode); ok {
+				window = resolvedWindow
+				hasWindow = true
+				targetContext = window.Value
+				if targetContext != "" {
+					parameters = withCursorContextValue(parameters, targetContext)
+				}
+				effectiveMaxMode = maxMode || window.MaxMode
+			}
+		}
+		snapContext := ""
+		if hasWindow && window.MaxMode {
+			snapContext = targetContext
+		}
+		completed, variantMax := completeCursorRegistryParameters(catalog, parameters, effort, fast, effectiveMaxMode, snapContext)
+		for _, parameter := range completed {
+			requested.Parameters = append(requested.Parameters, &agentv1.RequestedModel_ModelParameterValue{Id: parameter.ID, Value: parameter.Value})
+		}
+		// Long-context variants are rejected unless max_mode is set on the
+		// same request. The IDE selects those variants whenever max mode is on.
+		requested.MaxMode = variantMax || (hasWindow && window.MaxMode)
+		return requested
+	}
+	if forwarded := cursorAccountForwardParameters(parameters); len(forwarded) > 0 {
+		requested.Parameters = forwarded
+		requested.MaxMode = maxMode
+		return requested
+	}
+	requested.MaxMode = maxMode
 	switch effort {
 	case "low", "medium", "high", "xhigh", "max":
 		requested.Parameters = append(requested.Parameters, &agentv1.RequestedModel_ModelParameterValue{Id: "effort", Value: effort})
@@ -693,6 +827,22 @@ func cursorAccountRequestedModel(modelID string, effort string, fast bool) *agen
 		requested.Parameters = append(requested.Parameters, &agentv1.RequestedModel_ModelParameterValue{Id: "fast", Value: "true"})
 	}
 	return requested
+}
+
+func cursorAccountForwardParameters(parameters []ModelParameter) []*agentv1.RequestedModel_ModelParameterValue {
+	if len(parameters) == 0 {
+		return nil
+	}
+	forwarded := make([]*agentv1.RequestedModel_ModelParameterValue, 0, len(parameters))
+	for _, parameter := range parameters {
+		id := strings.TrimSpace(parameter.ID)
+		value := strings.TrimSpace(parameter.Value)
+		if id == "" || value == "" {
+			continue
+		}
+		forwarded = append(forwarded, &agentv1.RequestedModel_ModelParameterValue{Id: id, Value: value})
+	}
+	return forwarded
 }
 
 func splitCursorAccountRunVariant(modelID string) (base string, effort string, fast bool, ok bool) {
@@ -713,13 +863,23 @@ func splitCursorAccountRunVariant(modelID string) (base string, effort string, f
 }
 
 func cursorAccountRunMessage(req StreamRequest, modelID string) *agentv1.AgentClientMessage {
+	return cursorAccountRunMessageFor(req, modelID, cursorAccountStateConversationID(req), 0)
+}
+
+func cursorAccountRunMessageFor(req StreamRequest, modelID, stateConversationID string, historyBudget int) *agentv1.AgentClientMessage {
 	mode := req.Mode
 	if mode == agentv1.AgentMode_AGENT_MODE_UNSPECIFIED {
 		mode = agentv1.AgentMode_AGENT_MODE_AGENT
 	}
 	conversationID := cursorAccountUpstreamConversationID(req)
-	history, text := cursorAccountTurn(req.Messages)
-	state := cursorAccountLoadState(strings.TrimSpace(req.ConversationID))
+	var history []*agentv1.ConversationHistoryMessage
+	var text string
+	if cursorAccountSideCall(req) {
+		history, text = cursorAccountSideCallTurn(req.Messages)
+	} else {
+		history, text = cursorAccountTurn(req.Messages)
+	}
+	state := cursorAccountLoadState(stateConversationID)
 	remembered := state != nil
 	if state == nil {
 		state = &agentv1.ConversationStateStructure{Mode: mode.Enum()}
@@ -737,7 +897,7 @@ func cursorAccountRunMessage(req StreamRequest, modelID string) *agentv1.AgentCl
 	// A saved checkpoint is the conversation. The IDE follow-up sends that
 	// state plus the new user message, not a second copy of the transcript.
 	if !remembered && len(history) > 0 {
-		action.ConversationHistory = &agentv1.ConversationHistory{Messages: history}
+		action.ConversationHistory = &agentv1.ConversationHistory{Messages: cursorAccountBoundHistory(history, historyBudget)}
 	}
 	return &agentv1.AgentClientMessage{
 		Message: &agentv1.AgentClientMessage_RunRequest{
@@ -746,7 +906,7 @@ func cursorAccountRunMessage(req StreamRequest, modelID string) *agentv1.AgentCl
 				Action: &agentv1.ConversationAction{
 					Action: &agentv1.ConversationAction_UserMessageAction{UserMessageAction: action},
 				},
-				RequestedModel: cursorAccountRequestedModel(modelID, req.ThinkingEffort, req.FastMode),
+				RequestedModel: cursorAccountRequestedModel(modelID, req.ThinkingEffort, req.FastMode, req.MaxMode, req.ModelParameters, req.CursorModelSpec, req.ResolvedContextWindowTokens),
 				ConversationId: proto.String(conversationID),
 			},
 		},
@@ -770,7 +930,88 @@ const (
 // and the next pass resent the same transcript.
 const cursorAccountToolStallTimeout = 3 * time.Minute
 
+// cursorAccountSideCallPrefixes are the CompileSummary prefixes of one-shot
+// calls made beside a conversation: summaries, titles, commit messages,
+// reviews and image descriptions.
+var cursorAccountSideCallPrefixes = []string{
+	"compaction ",
+	"delegated compaction summary",
+	"generate task title",
+	"generate commit message",
+	"delegation_supervisor_review",
+	"vision proxy describe image",
+}
+
+func cursorAccountSideCall(req StreamRequest) bool {
+	summary := strings.TrimSpace(req.CompileSummary)
+	for _, prefix := range cursorAccountSideCallPrefixes {
+		if strings.HasPrefix(summary, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// cursorAccountStateConversationID names the conversation whose Cursor
+// checkpoint a request loads and updates. A compaction summary carries the
+// conversation id but is not a turn of it: loading the checkpoint fed the
+// summarizer the very context it had to shrink, and its own writes replaced
+// the conversation's checkpoint.
+func cursorAccountStateConversationID(req StreamRequest) string {
+	if cursorAccountSideCall(req) {
+		return ""
+	}
+	return strings.TrimSpace(req.ConversationID)
+}
+
+// cursorAccountHistoryBudget is the history size, in bytes, sent after a
+// refused checkpoint: the context window less room for Cursor's prompt,
+// tools and the reply, at about three bytes per token.
+func cursorAccountHistoryBudget(windowTokens int) int {
+	const (
+		defaultWindowTokens  = 200_000
+		reservedWindowTokens = 64_000
+	)
+	if windowTokens <= 0 {
+		windowTokens = defaultWindowTokens
+	}
+	tokens := windowTokens - reservedWindowTokens
+	if half := windowTokens / 2; tokens < half {
+		tokens = half
+	}
+	return tokens * 3
+}
+
+// cursorAccountBoundHistory keeps the newest messages that fit in budget
+// bytes, then drops tool results whose call was cut off. A budget of 0 keeps
+// everything.
+func cursorAccountBoundHistory(history []*agentv1.ConversationHistoryMessage, budget int) []*agentv1.ConversationHistoryMessage {
+	if budget <= 0 {
+		return history
+	}
+	start := len(history)
+	used := 0
+	for start > 0 {
+		size := proto.Size(history[start-1])
+		if used+size > budget {
+			break
+		}
+		used += size
+		start--
+	}
+	for start < len(history) && history[start].GetTool() != nil {
+		start++
+	}
+	if start > 0 {
+		logger.Infof("cursor account history bounded to the newest %d of %d messages (budget=%d bytes)", len(history)-start, len(history), budget)
+	}
+	return history[start:]
+}
+
 func cursorAccountUpstreamConversationID(req StreamRequest) string {
+	if cursorAccountSideCall(req) {
+		return uuid.NewString()
+	}
 	// The tool stream is closed before the local shell result exists. Reusing
 	// that conversation id makes the next RunSSE wait on the unfinished exec.
 	if cursorAccountFollowsToolResult(req.Messages) {
@@ -806,7 +1047,34 @@ func cursorAccountFollowsToolResult(messages []Message) bool {
 // turns go in conversation_history. The agent server does not keep those
 // turns when the run is opened with only the latest sentence.
 func cursorAccountTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
-	messages = cursorAccountPromptMessages(messages)
+	return cursorAccountSplitTurn(cursorAccountPromptMessages(messages))
+}
+
+// cursorAccountSideCallTurn keeps a side call's own instructions and payload.
+// Cursor's agent server writes the system prompt and refuses
+// custom_system_prompt for these accounts, so the caller's system text rides
+// in front of the user message. The scaffolding filter is skipped: a
+// compaction transcript can contain those tags and still be the payload.
+func cursorAccountSideCallTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
+	var instructions []string
+	rest := make([]Message, 0, len(messages))
+	for _, message := range messages {
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "system") {
+			rest = append(rest, message)
+			continue
+		}
+		if text := strings.TrimSpace(message.Content); text != "" {
+			instructions = append(instructions, text)
+		}
+	}
+	history, text := cursorAccountSplitTurn(rest)
+	if len(instructions) == 0 {
+		return history, text
+	}
+	return history, "<instructions>\n" + strings.Join(instructions, "\n\n") + "\n</instructions>\n\n" + text
+}
+
+func cursorAccountSplitTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
 	if len(messages) == 0 {
 		return nil, "Continue."
 	}
@@ -1276,12 +1544,15 @@ func appendCursorAccount(ctx context.Context, authorization, requestID string, s
 	applyCursorAccountHeaders(req, authorization, "application/proto")
 	resp, err := cursorAccountHTTPClient.Do(req)
 	if err != nil {
-		return err
+		return &cursorAccountAppendError{err: err}
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("cursor append returned HTTP %d: %s", resp.StatusCode, cursorAccountErrorText(raw))
+		return &cursorAccountAppendError{
+			status: resp.StatusCode,
+			err:    fmt.Errorf("cursor append returned HTTP %d: %s", resp.StatusCode, cursorAccountErrorText(raw)),
+		}
 	}
 	return nil
 }
@@ -1378,8 +1649,23 @@ func quotedJSONField(text, marker string) string {
 		return ""
 	}
 	rest := text[index+len(marker):]
-	if end := strings.Index(rest, `"`); end >= 0 {
-		return rest[:end]
+	escaped := false
+	for i := 0; i < len(rest); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if rest[i] == '\\' {
+			escaped = true
+			continue
+		}
+		if rest[i] == '"' {
+			var decoded string
+			if err := json.Unmarshal([]byte(`"`+rest[:i]+`"`), &decoded); err == nil {
+				return decoded
+			}
+			return rest[:i]
+		}
 	}
 	return ""
 }

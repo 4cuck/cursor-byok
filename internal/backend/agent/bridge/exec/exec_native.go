@@ -15,10 +15,17 @@ import (
 // NativeSubagentParent is the parent run's model selection. Cursor account
 // execs arrive already resolved by the upstream agent, which turns the
 // cost-aware "auto" choice into composer before the IDE launches the child.
+// NativeModelParameter is one catalog parameter inherited by a subagent.
+type NativeModelParameter struct {
+	ID    string
+	Value string
+}
+
 type NativeSubagentParent struct {
 	ModelID        string
 	ThinkingEffort string
 	Fast           bool
+	Parameters     []NativeModelParameter
 	Overrides      map[string]runtimecore.SubagentModelOverrideSelection
 }
 
@@ -69,6 +76,9 @@ func RewriteNativeSubagentModel(exec *agentv1.ExecServerMessage, parent NativeSu
 }
 
 func nativeParentModelParameters(parent NativeSubagentParent) []*agentv1.RequestedModel_ModelParameterValue {
+	if inherited := nativeInheritedParameters(parent.Parameters); len(inherited) > 0 {
+		return inherited
+	}
 	var parameters []*agentv1.RequestedModel_ModelParameterValue
 	if effort := strings.ToLower(strings.TrimSpace(parent.ThinkingEffort)); effort != "" && effort != "disabled" {
 		parameters = append(parameters, &agentv1.RequestedModel_ModelParameterValue{Id: "effort", Value: effort})
@@ -77,6 +87,22 @@ func nativeParentModelParameters(parent NativeSubagentParent) []*agentv1.Request
 		parameters = append(parameters, &agentv1.RequestedModel_ModelParameterValue{Id: "fast", Value: "true"})
 	}
 	return parameters
+}
+
+func nativeInheritedParameters(parameters []NativeModelParameter) []*agentv1.RequestedModel_ModelParameterValue {
+	if len(parameters) == 0 {
+		return nil
+	}
+	inherited := make([]*agentv1.RequestedModel_ModelParameterValue, 0, len(parameters))
+	for _, parameter := range parameters {
+		id := strings.TrimSpace(parameter.ID)
+		value := strings.TrimSpace(parameter.Value)
+		if id == "" || value == "" {
+			continue
+		}
+		inherited = append(inherited, &agentv1.RequestedModel_ModelParameterValue{Id: id, Value: value})
+	}
+	return inherited
 }
 
 // OpenNativeExec forwards a Cursor agent exec to the local client without

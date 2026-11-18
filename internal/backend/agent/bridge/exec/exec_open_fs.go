@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
 )
@@ -87,7 +86,7 @@ func (bridge *Bridge) openWrite(toolCall runtimecore.ToolInvocation) (*agentv1.A
 	// content 必须与完成态渲染（buildWriteCompletedToolCall）保持同一别名集合，
 	// 否则会出现"写入空文件但 UI 显示正常"的不一致。
 	writePath := strings.TrimSpace(readStringArg(args, "path", "file_path", "filePath"))
-	contents := readStringArg(args, "contents", "content")
+	contents := readStringArg(args, "contents", "content", "fileText", "file_text")
 	messageID := bridge.nextID()
 	execID := fmt.Sprintf("exec-write-%d", time.Now().UnixNano())
 	encodingHint := "utf-8"

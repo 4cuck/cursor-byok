@@ -905,7 +905,7 @@ func normalizeReplayMessageSequence(messages []modeladapter.Message) []modeladap
 	}
 	normalized = filterProviderSuppressedToolReplayMessages(normalized)
 	normalized = coalesceInterleavedReplayToolBatches(normalized)
-	return trimReplayDanglingAssistantToolCalls(normalized)
+	return collapsePrefixChainedReplayReasoning(trimReplayDanglingAssistantToolCalls(normalized))
 }
 
 func filterProviderSuppressedToolReplayMessages(messages []modeladapter.Message) []modeladapter.Message {
@@ -985,8 +985,7 @@ func mergeReplayAssistantToolCalls(messages *[]modeladapter.Message, message mod
 		item.Index = startIndex + index
 		last.ToolCalls = append(last.ToolCalls, item)
 	}
-	last.ReasoningContent = mergeReplayReasoning(last.ReasoningContent, message.ReasoningContent)
-	mergeReplayReasoningMetadata(last, message)
+	mergeReplayReasoningOnto(last, message)
 	return true
 }
 
@@ -1047,8 +1046,7 @@ func coalesceInterleavedReplayToolBatches(messages []modeladapter.Message) []mod
 					item.Index = startIndex + toolIndex
 					batch.ToolCalls = append(batch.ToolCalls, item)
 				}
-				batch.ReasoningContent = mergeReplayReasoning(batch.ReasoningContent, next.ReasoningContent)
-				mergeReplayReasoningMetadata(&batch, next)
+				mergeReplayReasoningOnto(&batch, next)
 				changed = true
 				nextIndex++
 				continue
@@ -1131,17 +1129,45 @@ func replayToolCallGroupID(toolCallID string) string {
 	return ""
 }
 
+const replayReasoningPrefixChainMinChars = 256
+
+func mergeReplayReasoningOnto(target *modeladapter.Message, incoming modeladapter.Message) {
+	if target == nil {
+		return
+	}
+	previous := target.ReasoningContent
+	target.ReasoningContent = mergeReplayReasoning(previous, incoming.ReasoningContent)
+	mergeReplayReasoningMetadata(target, incoming, previous, incoming.ReasoningContent)
+}
+
 func mergeReplayReasoning(left string, right string) string {
 	left = strings.TrimSpace(left)
 	right = strings.TrimSpace(right)
 	switch {
 	case left == "":
 		return right
-	case right == "", right == left:
+	case right == "" || right == left:
+		return left
+	case replayReasoningExtends(right, left):
+		return right
+	case replayReasoningExtends(left, right):
 		return left
 	default:
 		return left + "\n\n" + right
 	}
+}
+
+// replayReasoningExtends reports whether longer is the same thinking buffer as
+// shorter with more text appended. That shape is the uncleared accumulator bug:
+// every later tool call stored the entire thinking text so far. Distinct thoughts
+// that merely share a short opening are left alone.
+func replayReasoningExtends(longer string, shorter string) bool {
+	longer = strings.TrimSpace(longer)
+	shorter = strings.TrimSpace(shorter)
+	if longer == "" || shorter == "" || longer == shorter {
+		return false
+	}
+	return len(shorter) >= replayReasoningPrefixChainMinChars && strings.HasPrefix(longer, shorter)
 }
 
 func mergeReplayReasoningSignature(left string, right string) string {
@@ -1170,8 +1196,18 @@ func mergeReplayReasoningSignatureSource(left string, right string) string {
 	}
 }
 
-func mergeReplayReasoningMetadata(last *modeladapter.Message, current modeladapter.Message) {
+func mergeReplayReasoningMetadata(last *modeladapter.Message, current modeladapter.Message, previousReasoning string, incomingReasoning string) {
 	if last == nil {
+		return
+	}
+	previous := strings.TrimSpace(previousReasoning)
+	incoming := strings.TrimSpace(incomingReasoning)
+	kept := strings.TrimSpace(last.ReasoningContent)
+	if kept != "" && kept == incoming && replayReasoningExtends(incoming, previous) {
+		adoptReplayReasoningSignature(last, current)
+		return
+	}
+	if kept != "" && kept == previous && replayReasoningExtends(previous, incoming) {
 		return
 	}
 	leftSignature := strings.TrimSpace(last.ReasoningSignature)
@@ -1204,6 +1240,80 @@ func mergeReplayReasoningMetadata(last *modeladapter.Message, current modeladapt
 			last.OpenAIResponsesReasoningSummary = append(json.RawMessage(nil), current.OpenAIResponsesReasoningSummary...)
 		}
 	}
+}
+
+func adoptReplayReasoningSignature(target *modeladapter.Message, source modeladapter.Message) {
+	if target == nil {
+		return
+	}
+	target.ReasoningSignature = strings.TrimSpace(source.ReasoningSignature)
+	target.ReasoningSignatureSource = strings.TrimSpace(source.ReasoningSignatureSource)
+	target.OpenAIResponsesReasoningID = source.OpenAIResponsesReasoningID
+	target.OpenAIResponsesReasoningStatus = source.OpenAIResponsesReasoningStatus
+	if len(source.OpenAIResponsesReasoningSummary) == 0 {
+		target.OpenAIResponsesReasoningSummary = nil
+		return
+	}
+	target.OpenAIResponsesReasoningSummary = append(json.RawMessage(nil), source.OpenAIResponsesReasoningSummary...)
+}
+
+func clearReplayReasoning(message *modeladapter.Message) {
+	if message == nil {
+		return
+	}
+	message.ReasoningContent = ""
+	message.ReasoningSignature = ""
+	message.ReasoningSignatureSource = ""
+	message.OpenAIResponsesReasoningID = ""
+	message.OpenAIResponsesReasoningStatus = ""
+	message.OpenAIResponsesReasoningSummary = nil
+}
+
+// collapsePrefixChainedReplayReasoning drops thinking copies that are already
+// contained in another replayed assistant message. A provider pass used to keep
+// appending to one thinking buffer and store that whole buffer on every tool
+// call, so replay sent the same thoughts once per tool. Identical copies and
+// strict prefix extensions collapse to a single copy. Separate thoughts stay.
+func collapsePrefixChainedReplayReasoning(messages []modeladapter.Message) []modeladapter.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	type keptReasoning struct {
+		index int
+		text  string
+	}
+	kept := make([]keptReasoning, 0)
+	for index := range messages {
+		if strings.TrimSpace(messages[index].Role) != "assistant" {
+			continue
+		}
+		text := strings.TrimSpace(messages[index].ReasoningContent)
+		if text == "" {
+			continue
+		}
+		dropCurrent := false
+		for cursor := len(kept) - 1; cursor >= 0; cursor-- {
+			previous := kept[cursor].text
+			switch {
+			case text == previous:
+				dropCurrent = true
+			case replayReasoningExtends(text, previous):
+				clearReplayReasoning(&messages[kept[cursor].index])
+				kept = append(kept[:cursor], kept[cursor+1:]...)
+			case replayReasoningExtends(previous, text):
+				dropCurrent = true
+			}
+			if dropCurrent {
+				break
+			}
+		}
+		if dropCurrent {
+			clearReplayReasoning(&messages[index])
+			continue
+		}
+		kept = append(kept, keptReasoning{index: index, text: text})
+	}
+	return messages
 }
 
 func trimReplayDanglingAssistantToolCalls(messages []modeladapter.Message) []modeladapter.Message {

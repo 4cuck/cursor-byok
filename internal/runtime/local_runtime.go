@@ -178,7 +178,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				Type:                ModelSourceCursorAccount,
 				TooltipData:         strings.TrimSpace(item.TooltipData),
 				ModelID:             strings.TrimSpace(item.ModelID),
-				ContextWindowTokens: modelcontext.Resolve(item.ModelID, normalizeMaxCompletionTokens(item.ContextWindowTokens)),
+				ContextWindowTokens: modelcontext.ResolveCursorAccountTokens(item.ModelID, item.CursorModelSpec, normalizeMaxCompletionTokens(item.ContextWindowTokens)),
 				MaxCompletionTokens: normalizeMaxCompletionTokens(item.MaxCompletionTokens),
 				Pricing:             item.Pricing,
 				CursorModelSpec:     strings.TrimSpace(item.CursorModelSpec),
@@ -473,6 +473,8 @@ type ResolvedChannel struct {
 	GroupName string
 	// CursorAccountID 是 cursor_account 渠道所属账户。
 	CursorAccountID string
+	// CursorModelSpec 是 AvailableModels 返回的参数目录 JSON。
+	CursorModelSpec string
 	// Provider 表示当前声明中的 Provider。
 	Provider string
 	// ProtocolMode 表示协议选择模式。

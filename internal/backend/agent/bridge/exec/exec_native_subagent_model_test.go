@@ -49,6 +49,41 @@ func TestRewriteNativeSubagentModelInheritsParentInsteadOfAuto(t *testing.T) {
 	}
 }
 
+func TestRewriteNativeSubagentModelInheritsCatalogParameters(t *testing.T) {
+	exec := &agentv1.ExecServerMessage{
+		Message: &agentv1.ExecServerMessage_SubagentArgs{
+			SubagentArgs: &agentv1.SubagentArgs{
+				SubagentType: "explore",
+				ModelId:      "composer-2.5",
+				ModelParameters: []*agentv1.RequestedModel_ModelParameterValue{
+					{Id: "effort", Value: "medium"},
+				},
+			},
+		},
+	}
+	parent := NativeSubagentParent{
+		ModelID: "grok-4.7",
+		Parameters: []NativeModelParameter{
+			{ID: "context", Value: "256k"},
+			{ID: "reasoning_effort", Value: "low"},
+			{ID: "fast", Value: "true"},
+		},
+		Overrides: map[string]runtimecore.SubagentModelOverrideSelection{
+			"explore": {Selection: "inherit"},
+		},
+	}
+	if err := RewriteNativeSubagentModel(exec, parent); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, parameter := range exec.GetSubagentArgs().GetModelParameters() {
+		got[parameter.GetId()] = parameter.GetValue()
+	}
+	if got["reasoning_effort"] != "low" || got["context"] != "256k" || got["fast"] != "true" || got["effort"] != "" {
+		t.Fatalf("parameters = %#v", got)
+	}
+}
+
 func TestRewriteNativeSubagentModelKeepsExplicitAutoWithoutInherit(t *testing.T) {
 	exec := &agentv1.ExecServerMessage{
 		Message: &agentv1.ExecServerMessage_SubagentArgs{

@@ -63,6 +63,12 @@ type ToolCallFunctionShape struct {
 	Arguments string `json:"arguments"`
 }
 
+// ModelParameter 是 Cursor 模型注册表上的一个参数，例如 reasoning_effort=low。
+type ModelParameter struct {
+	ID    string
+	Value string
+}
+
 // StreamRequest 表示一次统一的模型流请求。
 type StreamRequest struct {
 	// RequestID 表示当前模型调用所属 request。
@@ -141,6 +147,11 @@ type StreamRequest struct {
 	OpenAIServiceTier string
 	// FastMode 表示 OpenAI/GPT 是否启用 priority service tier。
 	FastMode bool
+	// ModelParameters 是 IDE 在模型选择器里选中的注册表参数。
+	ModelParameters []ModelParameter
+	// CursorModelSpec 是 AvailableModels 返回的参数目录。账户模型按它补齐
+	// context、thinking、fast 和该模型真正注册的 effort 参数名。
+	CursorModelSpec string
 	// CursorToolResults 把客户端工具结果送回仍打开的 Cursor 账户 RunSSE。
 	// 空通道表示沿用旧行为：第一个用户工具结束本次上游流。
 	CursorToolResults <-chan *agentv1.ExecClientMessage

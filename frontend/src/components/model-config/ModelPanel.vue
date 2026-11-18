@@ -14,6 +14,7 @@ import {
 } from "@/state/appState";
 import { providerIcon, providerLabel } from "@/utils/providerMeta";
 import { stashModelEditorSeed } from "@/utils/modelEditorSeed";
+import { cursorContextWindows, formatContextWindowTokens } from "@/utils/cursorContextWindows";
 import { computed } from "vue";
 import { useRouter } from "vue-router";
 
@@ -48,8 +49,13 @@ const infoRows = computed(() => {
     { label: "思考强度", value: a.reasoningEffort || "-" },
     { label: "Fast", value: a.fastMode ? "开启" : "关闭" },
   ];
+  const cursorWindows = cursorContextWindows(a.cursorModelSpec);
   if (a.contextWindowTokens) {
-    rows.push({ label: "上下文窗口", value: `${a.contextWindowTokens} tokens` });
+    const selected = cursorWindows.find((option) => option.tokens === a.contextWindowTokens);
+    rows.push({ label: "上下文窗口", value: `${a.contextWindowTokens} tokens${selected?.maxMode ? " (Max mode)" : ""}` });
+  }
+  if (cursorWindows.length > 1) {
+    rows.push({ label: "Cursor windows", value: cursorWindows.map(cursorWindowLabel).join(" · ") });
   }
   if (a.maxCompletionTokens) {
     rows.push({ label: "最大补全", value: `${a.maxCompletionTokens} tokens` });
@@ -65,6 +71,11 @@ const infoRows = computed(() => {
   }
   return rows;
 });
+
+function cursorWindowLabel(option) {
+  const label = `${formatContextWindowTokens(option.tokens)}${option.maxMode ? " Max" : ""}`;
+  return option.isDefault ? `${label} (default)` : label;
+}
 
 function index() {
   return appState.modelAdapters.indexOf(props.adapter);

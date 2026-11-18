@@ -5,6 +5,7 @@ import (
 	"context"
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
+	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/backend/delegation"
 	"cursor/internal/logger"
 	"cursor/internal/modelcontext"
@@ -59,6 +60,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.ModelID = extractRequestedModelID(message)
 		intent.ThinkingEffort = extractRuntimeThinkingEffort(message)
 		intent.FastMode = extractRuntimeFastMode(message)
+		intent.ModelParameters = extractRuntimeModelParameters(message)
 		intent.CustomSystemPrompt = truncatePromptGuardText("run_request.custom_system_prompt", runRequest.GetCustomSystemPrompt(), promptGuardCustomSystemPromptChars)
 		intent.MaxMode = extractRequestedMaxMode(message)
 		intent.SubagentTypeName = strings.TrimSpace(runRequest.GetSubagentTypeName())
@@ -106,6 +108,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.ModelID = firstNonEmpty(extractRequestedModelID(message), "default")
 		intent.ThinkingEffort = extractRuntimeThinkingEffort(message)
 		intent.FastMode = extractRuntimeFastMode(message)
+		intent.ModelParameters = extractRuntimeModelParameters(message)
 		intent.MaxMode = extractRequestedMaxMode(message)
 		intent.ModelName = service.resolveRequestedModelName(message, intent.ModelID)
 	case "conversation_action":
@@ -133,6 +136,8 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 					intent.ModelID = strings.TrimSpace(stream.ModelID)
 					intent.ModelName = strings.TrimSpace(stream.ModelName)
 					intent.ThinkingEffort = strings.TrimSpace(stream.ThinkingEffort)
+					intent.FastMode = stream.FastMode
+					intent.ModelParameters = cloneModelParameters(stream.ModelParameters)
 					intent.MaxMode = stream.MaxMode
 					intent.SubagentModelOverrides = cloneSubagentModelOverrides(stream.SubagentModelOverrides)
 					intent.SelectedSubagentModels = cloneSelectedSubagentModels(stream.SelectedSubagentModels)
@@ -203,11 +208,14 @@ func (service *Service) shouldReuseActiveRun(intent InboundIntent) bool {
 	case TurnPhaseCanceled, TurnPhaseCompleted, TurnPhaseFailed:
 		return false
 	}
-	// 用户切换模型后发送新 run_request 时，不应复用旧 stream（旧模型）。
+	// 用户切换模型或上下文窗口后发送新 run_request 时，不应复用旧 stream。
 	if requestedModel := strings.TrimSpace(intent.ModelID); requestedModel != "" {
 		if currentModel := strings.TrimSpace(stream.ModelID); currentModel != "" && requestedModel != currentModel {
 			return false
 		}
+	}
+	if stream.MaxMode != intent.MaxMode || runtimeModelContextValue(stream.ModelParameters) != runtimeModelContextValue(intent.ModelParameters) {
+		return false
 	}
 	if incomingMessageID := strings.TrimSpace(intent.UserMessage.GetMessageId()); intent.StartsRun && incomingMessageID != "" && stream.CheckpointConversation != nil {
 		matchesCurrentTurn := false
@@ -254,6 +262,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_skipped", rewindDecision)
 	}
 	if rewindDecision.Apply {
+		modeladapter.ClearCursorAccountState(intent.ConversationID)
 		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_detected", rewindDecision)
 		turnSeq = rewindDecision.TargetTurnSeq
 		initialEntries, err = buildRunEntries(intent, effectiveMode, turnSeq)
@@ -316,6 +325,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	stream.mu.Lock()
 	stream.ThinkingEffort = strings.TrimSpace(intent.ThinkingEffort)
 	stream.FastMode = intent.FastMode
+	stream.ModelParameters = cloneModelParameters(intent.ModelParameters)
 	stream.CustomSystemPrompt = strings.TrimSpace(intent.CustomSystemPrompt)
 	stream.MaxMode = intent.MaxMode
 	stream.SubagentModelOverrides = cloneSubagentModelOverrides(intent.SubagentModelOverrides)
@@ -459,6 +469,9 @@ func (service *Service) handleCancelIntent(intent InboundIntent) error {
 	for _, pending := range stream.PendingExecs {
 		pendingExecs = append(pendingExecs, pending)
 	}
+	wasCompactingWithSummaryBubble := phase == TurnPhaseCompacting &&
+		stream.PendingCompaction != nil &&
+		stream.PendingCompaction.Trigger != contextProjectionTrigger
 	if stream.ProviderCancel != nil {
 		stream.ProviderCancel()
 		stream.ProviderCancel = nil
@@ -470,6 +483,11 @@ func (service *Service) handleCancelIntent(intent InboundIntent) error {
 	stream.PendingCompaction = nil
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
+	if wasCompactingWithSummaryBubble {
+		_ = service.broker.Publish(intent.RequestID, StreamEvent{
+			Message: buildSummaryCompletedFailedMessage("Summarization stopped"),
+		})
+	}
 	if hasCheckpoint {
 		cancelReason := firstNonEmpty(intent.CancelReason, "user aborted")
 		// turnSeq/conversationID 用函数开头的持锁快照：解锁后裸读会被
@@ -925,6 +943,9 @@ func extractRequestedModelIDFromRequestedModel(model *agentv1.RequestedModel) st
 	if model == nil {
 		return ""
 	}
+	if bracketModelID, _, ok := parseRuntimeBracketVariantString(model.GetModelId()); ok && bracketModelID != "" {
+		return bracketModelID
+	}
 	if model.GetIsVariantStringRepresentation() {
 		modelID, _ := splitRuntimeThinkingEffortVariantString(model.GetModelId())
 		if modelID != "" {
@@ -935,6 +956,95 @@ func extractRequestedModelIDFromRequestedModel(model *agentv1.RequestedModel) st
 		return strings.TrimSpace(model.GetModelId())
 	}
 	return strings.TrimSpace(model.GetModelId())
+}
+
+func extractRuntimeModelParameters(message *agentv1.AgentClientMessage) []modeladapter.ModelParameter {
+	model := requestedModelFromClientMessage(message)
+	if model == nil {
+		return nil
+	}
+	parameters := make([]modeladapter.ModelParameter, 0, len(model.GetParameters()))
+	for _, parameter := range model.GetParameters() {
+		if parameter == nil {
+			continue
+		}
+		id := strings.TrimSpace(parameter.GetId())
+		value := strings.TrimSpace(parameter.GetValue())
+		if id == "" || value == "" {
+			continue
+		}
+		parameters = append(parameters, modeladapter.ModelParameter{ID: id, Value: value})
+	}
+	if len(parameters) == 0 {
+		if _, bracketParams, ok := parseRuntimeBracketVariantString(model.GetModelId()); ok && len(bracketParams) > 0 {
+			return bracketParams
+		}
+		return nil
+	}
+	return parameters
+}
+
+func runtimeModelContextValue(parameters []modeladapter.ModelParameter) string {
+	for _, parameter := range parameters {
+		if strings.EqualFold(strings.TrimSpace(parameter.ID), modelcontext.CursorContextParameterID) {
+			return strings.ToLower(strings.TrimSpace(parameter.Value))
+		}
+	}
+	return ""
+}
+
+// parseRuntimeBracketVariantString parses Cursor IDE's native modelId[k=v,...]
+// or modelId[] variant representation.
+func parseRuntimeBracketVariantString(raw string) (string, []modeladapter.ModelParameter, bool) {
+	text := strings.TrimSpace(raw)
+	openIdx := strings.IndexByte(text, '[')
+	closeIdx := strings.LastIndexByte(text, ']')
+	if openIdx <= 0 || closeIdx != len(text)-1 || closeIdx <= openIdx {
+		return "", nil, false
+	}
+	modelID := strings.TrimSpace(text[:openIdx])
+	if modelID == "" {
+		return "", nil, false
+	}
+	inner := strings.TrimSpace(text[openIdx+1 : closeIdx])
+	if inner == "" {
+		return modelID, nil, true
+	}
+	parts := strings.Split(inner, ",")
+	params := make([]modeladapter.ModelParameter, 0, len(parts))
+	for _, part := range parts {
+		eq := strings.IndexByte(part, '=')
+		if eq <= 0 || eq != strings.LastIndexByte(part, '=') || eq == len(part)-1 {
+			return "", nil, false
+		}
+		id := strings.TrimSpace(part[:eq])
+		val := strings.TrimSpace(part[eq+1:])
+		if id == "" || val == "" {
+			return "", nil, false
+		}
+		params = append(params, modeladapter.ModelParameter{ID: id, Value: val})
+	}
+	return modelID, params, true
+}
+
+func cloneModelParameters(parameters []modeladapter.ModelParameter) []modeladapter.ModelParameter {
+	if len(parameters) == 0 {
+		return nil
+	}
+	return append([]modeladapter.ModelParameter(nil), parameters...)
+}
+
+func requestedModelFromClientMessage(message *agentv1.AgentClientMessage) *agentv1.RequestedModel {
+	if message == nil {
+		return nil
+	}
+	if runRequest := message.GetRunRequest(); runRequest != nil {
+		return runRequest.GetRequestedModel()
+	}
+	if prewarm := message.GetPrewarmRequest(); prewarm != nil {
+		return prewarm.GetRequestedModel()
+	}
+	return nil
 }
 
 func extractRuntimeFastMode(message *agentv1.AgentClientMessage) bool {
@@ -950,16 +1060,46 @@ func extractRuntimeFastMode(message *agentv1.AgentClientMessage) bool {
 	if model == nil {
 		return false
 	}
-	for _, parameter := range model.GetParameters() {
-		if parameter == nil || !strings.EqualFold(strings.TrimSpace(parameter.GetId()), "fast") {
+	for _, parameter := range extractRuntimeParametersFromModel(model) {
+		if !strings.EqualFold(strings.TrimSpace(parameter.ID), "fast") {
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(parameter.GetValue())) {
+		switch strings.ToLower(strings.TrimSpace(parameter.Value)) {
 		case "1", "true", "on", "yes":
 			return true
 		}
 	}
-	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(model.GetModelId())), "-fast")
+	modelID := strings.TrimSpace(model.GetModelId())
+	if bracketID, _, ok := parseRuntimeBracketVariantString(modelID); ok {
+		modelID = bracketID
+	}
+	return strings.HasSuffix(strings.ToLower(modelID), "-fast")
+}
+
+func extractRuntimeParametersFromModel(model *agentv1.RequestedModel) []modeladapter.ModelParameter {
+	if model == nil {
+		return nil
+	}
+	if raw := model.GetParameters(); len(raw) > 0 {
+		out := make([]modeladapter.ModelParameter, 0, len(raw))
+		for _, item := range raw {
+			if item == nil {
+				continue
+			}
+			id := strings.TrimSpace(item.GetId())
+			val := strings.TrimSpace(item.GetValue())
+			if id != "" && val != "" {
+				out = append(out, modeladapter.ModelParameter{ID: id, Value: val})
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if _, bracketParams, ok := parseRuntimeBracketVariantString(model.GetModelId()); ok {
+		return bracketParams
+	}
+	return nil
 }
 
 func extractRuntimeThinkingEffort(message *agentv1.AgentClientMessage) string {
@@ -979,17 +1119,17 @@ func extractRuntimeThinkingEffortFromRequestedModel(model *agentv1.RequestedMode
 	if model == nil {
 		return ""
 	}
-	for _, parameter := range model.GetParameters() {
-		if parameter == nil || !isRuntimeThinkingEffortParameterID(parameter.GetId()) {
+	for _, parameter := range extractRuntimeParametersFromModel(model) {
+		if !isRuntimeThinkingEffortParameterID(parameter.ID) {
 			continue
 		}
-		if effort := normalizeRuntimeThinkingEffort(parameter.GetValue()); effort != "" {
+		if effort := normalizeRuntimeThinkingEffort(parameter.Value); effort != "" {
 			return effort
 		}
 		// 参数 ID 已显式声明为 effort：值可能是渠道自定义思考档位（AvailableModels
 		// 会原样下发 customThinkingEfforts 配置的档位），token 校验通过即保留，
 		// 由 router 按渠道配置决定是否采用。
-		if effort := customRuntimeThinkingEffortToken(parameter.GetValue()); effort != "" {
+		if effort := customRuntimeThinkingEffortToken(parameter.Value); effort != "" {
 			return effort
 		}
 	}
@@ -1080,16 +1220,32 @@ func splitRuntimeThinkingEffortVariantString(raw string) (string, string) {
 		return "", ""
 	}
 	modelID := strings.TrimSpace(text[:index])
-	effort := normalizeRuntimeThinkingEffort(text[index+1:])
+	rawSuffix := strings.TrimSpace(text[index+1:])
+	if isAllASCIIOrDigitsOnly(rawSuffix) {
+		return "", ""
+	}
+	effort := normalizeRuntimeThinkingEffort(rawSuffix)
 	if effort == "" {
 		// 变体串后缀是自定义档位（channelID:custom）时同样拆分，保证自定义档位
 		// 在变体（exploded）客户端上可选中回传。
-		effort = customRuntimeThinkingEffortToken(text[index+1:])
+		effort = customRuntimeThinkingEffortToken(rawSuffix)
 	}
 	if modelID == "" || effort == "" {
 		return "", ""
 	}
 	return modelID, effort
+}
+
+func isAllASCIIOrDigitsOnly(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (service *Service) resolveRequestedModelName(message *agentv1.AgentClientMessage, modelID string) string {

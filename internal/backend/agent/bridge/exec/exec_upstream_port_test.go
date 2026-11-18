@@ -114,6 +114,43 @@ func TestWriteAcceptsFilePathAlias(t *testing.T) {
 	}
 }
 
+func TestWriteCompletedToolCallEmitsMultilineUnifiedDiff(t *testing.T) {
+	bridge := NewBridge()
+	_, pending, err := bridge.OpenExec(OpenExecContext{WorkspaceHint: "/ws"}, runtimecoreToolInvocation("Write", `{"path":"notes/todo.md","fileText":"Line 1\nLine 2\nLine 3\n"}`))
+	if err != nil {
+		t.Fatalf("OpenExec(Write) error = %v", err)
+	}
+	applied, err := bridge.ApplyExecClientMessage(&agentv1.ExecClientMessage{
+		Id:     pending.MessageID,
+		ExecId: pending.ExecID,
+		Message: &agentv1.ExecClientMessage_WriteResult{
+			WriteResult: &agentv1.WriteResult{
+				Result: &agentv1.WriteResult_Success{
+					Success: &agentv1.WriteSuccess{
+						Path:         "notes/todo.md",
+						LinesCreated: 3,
+						FileSize:     21,
+					},
+				},
+			},
+		},
+	}, pending)
+	if err != nil {
+		t.Fatalf("ApplyExecClientMessage(Write) error = %v", err)
+	}
+	success := applied.ToolCall.GetEditToolCall().GetResult().GetSuccess()
+	if success == nil {
+		t.Fatal("expected EditResult_Success")
+	}
+	if got := success.GetLinesAdded(); got != 3 {
+		t.Fatalf("lines_added = %d, want 3", got)
+	}
+	wantDiff := "@@ -0,0 +1,3 @@\n+Line 1\n+Line 2\n+Line 3"
+	if got := success.GetDiffString(); got != wantDiff {
+		t.Fatalf("diff_string = %q, want %q", got, wantDiff)
+	}
+}
+
 func TestDeleteAcceptsFilePathAlias(t *testing.T) {
 	for _, alias := range []string{"path", "file_path", "filePath"} {
 		argsJSON := fmt.Sprintf(`{%q:"notes/obsolete.md"}`, alias)

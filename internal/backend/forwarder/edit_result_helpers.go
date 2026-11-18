@@ -12,7 +12,31 @@ import (
 	runtimecore "cursor/internal/backend/agent/core"
 )
 
-const editReadBinaryContentLimit = 32 * 1024
+const (
+	editReadBinaryContentLimit = 32 * 1024
+	unifiedDiffContextLines    = 3
+)
+
+type editDiffOpKind uint8
+
+const (
+	editDiffEqual editDiffOpKind = iota
+	editDiffDelete
+	editDiffInsert
+)
+
+type diffChunkLine struct {
+	text       string
+	hasNewline bool
+}
+
+type editDiffLine struct {
+	kind       editDiffOpKind
+	text       string
+	hasNewline bool
+	oldLine    int
+	newLine    int
+}
 
 type editComputation struct {
 	BeforeContent string
@@ -43,22 +67,179 @@ type normalizedEditContent struct {
 }
 
 func computeEditDiff(beforeContent string, afterContent string) (string, int32, int32) {
+	if beforeContent == afterContent {
+		return "", 0, 0
+	}
+	beforeNorm := normalizeLineEndingsToLF(beforeContent)
+	afterNorm := normalizeLineEndingsToLF(afterContent)
+	if beforeNorm == afterNorm {
+		return "", 0, 0
+	}
+
 	dmp := diffmatchpatch.New()
-	charsBefore, charsAfter, lineArray := dmp.DiffLinesToChars(beforeContent, afterContent)
+	charsBefore, charsAfter, lineArray := dmp.DiffLinesToChars(beforeNorm, afterNorm)
 	diffs := dmp.DiffMain(charsBefore, charsAfter, false)
 	diffs = dmp.DiffCharsToLines(diffs, lineArray)
 
+	var ops []editDiffLine
+	oldLine := 1
+	newLine := 1
 	linesAdded := int32(0)
 	linesRemoved := int32(0)
 	for _, diff := range diffs {
+		chunkLines := splitDiffChunkLines(diff.Text)
 		switch diff.Type {
-		case diffmatchpatch.DiffInsert:
-			linesAdded += countChangedLines(diff.Text)
+		case diffmatchpatch.DiffEqual:
+			for _, line := range chunkLines {
+				ops = append(ops, editDiffLine{
+					kind:       editDiffEqual,
+					text:       line.text,
+					hasNewline: line.hasNewline,
+					oldLine:    oldLine,
+					newLine:    newLine,
+				})
+				oldLine++
+				newLine++
+			}
 		case diffmatchpatch.DiffDelete:
-			linesRemoved += countChangedLines(diff.Text)
+			for _, line := range chunkLines {
+				ops = append(ops, editDiffLine{
+					kind:       editDiffDelete,
+					text:       line.text,
+					hasNewline: line.hasNewline,
+					oldLine:    oldLine,
+				})
+				oldLine++
+				linesRemoved++
+			}
+		case diffmatchpatch.DiffInsert:
+			for _, line := range chunkLines {
+				ops = append(ops, editDiffLine{
+					kind:       editDiffInsert,
+					text:       line.text,
+					hasNewline: line.hasNewline,
+					newLine:    newLine,
+				})
+				newLine++
+				linesAdded++
+			}
 		}
 	}
-	return dmp.PatchToText(dmp.PatchMake(beforeContent, diffs)), linesAdded, linesRemoved
+	return formatUnifiedEditDiff(ops, unifiedDiffContextLines), linesAdded, linesRemoved
+}
+
+func splitDiffChunkLines(text string) []diffChunkLine {
+	if text == "" {
+		return nil
+	}
+	parts := strings.Split(text, "\n")
+	if strings.HasSuffix(text, "\n") {
+		parts = parts[:len(parts)-1]
+		lines := make([]diffChunkLine, len(parts))
+		for i, part := range parts {
+			lines[i] = diffChunkLine{text: part, hasNewline: true}
+		}
+		return lines
+	}
+	lines := make([]diffChunkLine, len(parts))
+	for i, part := range parts {
+		lines[i] = diffChunkLine{
+			text:       part,
+			hasNewline: i < len(parts)-1,
+		}
+	}
+	return lines
+}
+
+func formatUnifiedEditDiff(ops []editDiffLine, contextLines int) string {
+	if len(ops) == 0 {
+		return ""
+	}
+	if contextLines < 0 {
+		contextLines = 0
+	}
+
+	type hunkSpan struct {
+		start int
+		end   int
+	}
+	var hunks []hunkSpan
+	for i, op := range ops {
+		if op.kind == editDiffEqual {
+			continue
+		}
+		start := max(i-contextLines, 0)
+		end := min(i+1+contextLines, len(ops))
+		if len(hunks) > 0 && start <= hunks[len(hunks)-1].end {
+			if end > hunks[len(hunks)-1].end {
+				hunks[len(hunks)-1].end = end
+			}
+			continue
+		}
+		hunks = append(hunks, hunkSpan{start: start, end: end})
+	}
+	if len(hunks) == 0 {
+		return ""
+	}
+
+	var out []string
+	for _, hunk := range hunks {
+		slice := ops[hunk.start:hunk.end]
+		oldStart, oldCount := 0, 0
+		newStart, newCount := 0, 0
+		for _, op := range slice {
+			if op.kind == editDiffEqual || op.kind == editDiffDelete {
+				if oldCount == 0 {
+					oldStart = op.oldLine
+				}
+				oldCount++
+			}
+			if op.kind == editDiffEqual || op.kind == editDiffInsert {
+				if newCount == 0 {
+					newStart = op.newLine
+				}
+				newCount++
+			}
+		}
+		if oldCount == 0 {
+			for i := hunk.start - 1; i >= 0; i-- {
+				if ops[i].oldLine > 0 {
+					oldStart = ops[i].oldLine
+					break
+				}
+			}
+		}
+		if newCount == 0 {
+			for i := hunk.start - 1; i >= 0; i-- {
+				if ops[i].newLine > 0 {
+					newStart = ops[i].newLine
+					break
+				}
+			}
+		}
+		out = append(out, fmt.Sprintf("@@ -%s +%s @@", formatUnifiedDiffRange(oldStart, oldCount), formatUnifiedDiffRange(newStart, newCount)))
+		for _, op := range slice {
+			prefix := " "
+			switch op.kind {
+			case editDiffDelete:
+				prefix = "-"
+			case editDiffInsert:
+				prefix = "+"
+			}
+			out = append(out, prefix+op.text)
+			if !op.hasNewline {
+				out = append(out, `\ No newline at end of file`)
+			}
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+func formatUnifiedDiffRange(start int, count int) string {
+	if count == 1 {
+		return fmt.Sprintf("%d", start)
+	}
+	return fmt.Sprintf("%d,%d", start, count)
 }
 
 func normalizeEditContentLineEndings(content string) normalizedEditContent {
@@ -321,7 +502,8 @@ func buildEditResultFromWriteResult(path string, result *agentv1.WriteResult) *a
 		return buildEditErrorResult(firstNonEmpty(item.Error.GetPath(), path), item.Error.GetError())
 	case *agentv1.WriteResult_Success:
 		afterContent := item.Success.GetFileContentAfterWrite()
-		return buildSuccessfulEditResult(firstNonEmpty(item.Success.GetPath(), path), "", afterContent, "", 0, 0, "")
+		diffString, linesAdded, linesRemoved := computeEditDiff("", afterContent)
+		return buildSuccessfulEditResult(firstNonEmpty(item.Success.GetPath(), path), "", afterContent, diffString, linesAdded, linesRemoved, "")
 	default:
 		return buildEditErrorResult(path, "unknown write result")
 	}

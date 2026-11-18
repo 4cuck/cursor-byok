@@ -26,6 +26,7 @@ import {
   validateOpenAIExtraParamsJSON,
 } from "./configValidators.js";
 import { contextWindowTokensForModel } from "./modelContext.js";
+import { cursorContextWindows, resolveCursorContextWindowTokens } from "./cursorContextWindows.js";
 import { normalizeModelAdapterTestResult } from "./modelAdapterTestResult.js";
 
 export {
@@ -312,6 +313,8 @@ export function normalizeModelAdapter(source) {
         ? asString(raw.groupName || raw.group_name).trim()
         : "cursor_account");
     const groupName = asString(raw.groupName || raw.group_name).trim() || ownerLabel;
+    const cursorModelSpec = asString(raw.cursorModelSpec || raw.cursor_model_spec);
+    const configuredWindow = raw.contextWindowTokens ?? raw.context_window_tokens ?? raw.maxInputTokens ?? raw.max_input_tokens;
     return {
       ...createEmptyModelAdapter(),
       id: asString(raw.id),
@@ -322,16 +325,14 @@ export function normalizeModelAdapter(source) {
       type: MODEL_SOURCE_CURSOR_ACCOUNT,
       supplierID: ownerLabel,
       cursorAccountID: asString(raw.cursorAccountID || raw.cursor_account_id),
-      cursorModelSpec: asString(raw.cursorModelSpec || raw.cursor_model_spec),
+      cursorModelSpec,
       disabled: asBoolean(raw.disabled),
       tooltipData: asString(raw.tooltipData) || "Cursor 账户模型",
       modelID: asString(raw.modelID),
       customHeadersEnabled: false,
       customHeadersJSON: "",
-      contextWindowTokens: contextWindowTokensForModel(
-        raw.modelID,
-        raw.contextWindowTokens ?? raw.context_window_tokens ?? raw.maxInputTokens ?? raw.max_input_tokens,
-      ),
+      contextWindowTokens: resolveCursorContextWindowTokens(cursorModelSpec, configuredWindow)
+        || contextWindowTokensForModel(raw.modelID, configuredWindow),
       maxCompletionTokens: asPositiveInteger(
         raw.maxCompletionTokens ?? raw.max_completion_tokens ?? raw.max_tokens ?? raw.max_token,
       ),
@@ -430,6 +431,16 @@ export function normalizeModelAdapters(source) {
   return asArray(source).map((item) => normalizeModelAdapter(item));
 }
 
+// A re-synced Cursor account model keeps a window chosen after windows were listed,
+// as long as Cursor still offers it. An older stored value was a local guess.
+function mergedContextWindowTokens(existing, incoming) {
+  if (existing.source === MODEL_SOURCE_CURSOR_ACCOUNT && cursorContextWindows(incoming.cursorModelSpec).length) {
+    const chosen = cursorContextWindows(existing.cursorModelSpec).length ? existing.contextWindowTokens : 0;
+    return resolveCursorContextWindowTokens(incoming.cursorModelSpec, chosen);
+  }
+  return existing.contextWindowTokens > 0 ? existing.contextWindowTokens : incoming.contextWindowTokens;
+}
+
 export function mergeDuplicateModelAdapter(existing, incoming) {
   const existingHasBalanceHeaders = Object.keys(existing.balanceQueryHeaders || {}).length > 0;
   const incomingBalanceHeadersJSON = incoming.balanceQueryHeadersJSON || balanceQueryHeadersToJSON(incoming.balanceQueryHeaders);
@@ -439,9 +450,7 @@ export function mergeDuplicateModelAdapter(existing, incoming) {
     supplierID: existing.supplierID || incoming.supplierID,
     groupName: existing.groupName || incoming.groupName,
     tooltipData: existing.tooltipData || incoming.tooltipData,
-    contextWindowTokens: existing.contextWindowTokens > 0
-      ? existing.contextWindowTokens
-      : incoming.contextWindowTokens,
+    contextWindowTokens: mergedContextWindowTokens(existing, incoming),
     pricing: existing.pricing || incoming.pricing,
     modelCatalogURL: existing.modelCatalogURL || incoming.modelCatalogURL,
     balanceQueryURL: existing.balanceQueryURL || incoming.balanceQueryURL,

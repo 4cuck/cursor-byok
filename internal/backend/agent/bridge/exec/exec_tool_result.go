@@ -594,6 +594,10 @@ func buildEmptyGlobResult(argsJSON []byte) *agentv1.GrepResult {
 
 // convertWriteResultToEditResult 把 WriteResult 映射为 EditResult。
 func convertWriteResultToEditResult(result *agentv1.WriteResult) *agentv1.EditResult {
+	return convertWriteResultToEditResultWithFallback(result, "")
+}
+
+func convertWriteResultToEditResultWithFallback(result *agentv1.WriteResult, fallbackContent string) *agentv1.EditResult {
 	if result == nil {
 		return &agentv1.EditResult{
 			Result: &agentv1.EditResult_Error{
@@ -603,9 +607,23 @@ func convertWriteResultToEditResult(result *agentv1.WriteResult) *agentv1.EditRe
 	}
 	switch item := result.GetResult().(type) {
 	case *agentv1.WriteResult_Success:
+		afterContent := item.Success.GetFileContentAfterWrite()
+		if afterContent == "" && fallbackContent != "" {
+			afterContent = fallbackContent
+		}
+		diffString, linesAdded := formatAddedUnifiedDiffForWrite(afterContent)
+		if linesAdded == 0 && item.Success.GetLinesCreated() > 0 {
+			linesAdded = item.Success.GetLinesCreated()
+		}
 		success := &agentv1.EditSuccess{
 			Path:                 item.Success.GetPath(),
-			AfterFullFileContent: item.Success.GetFileContentAfterWrite(),
+			AfterFullFileContent: afterContent,
+		}
+		if diffString != "" {
+			success.DiffString = stringPtr(diffString)
+		}
+		if linesAdded > 0 {
+			success.LinesAdded = int32Ptr(linesAdded)
 		}
 		return &agentv1.EditResult{
 			Result: &agentv1.EditResult_Success{Success: success},
@@ -655,6 +673,30 @@ func convertWriteResultToEditResult(result *agentv1.WriteResult) *agentv1.EditRe
 			},
 		}
 	}
+}
+
+func formatAddedUnifiedDiffForWrite(content string) (string, int32) {
+	if content == "" {
+		return "", 0
+	}
+	normalized := strings.ReplaceAll(strings.ReplaceAll(content, "\r\n", "\n"), "\r", "\n")
+	hasTrailingNewline := strings.HasSuffix(normalized, "\n")
+	trimmed := strings.TrimSuffix(normalized, "\n")
+	lines := strings.Split(trimmed, "\n")
+	count := len(lines)
+	header := fmt.Sprintf("@@ -0,0 +1,%d @@", count)
+	if count == 1 {
+		header = "@@ -0,0 +1 @@"
+	}
+	out := make([]string, 0, count+2)
+	out = append(out, header)
+	for _, line := range lines {
+		out = append(out, "+"+line)
+	}
+	if !hasTrailingNewline {
+		out = append(out, `\ No newline at end of file`)
+	}
+	return strings.Join(out, "\n"), int32(count)
 }
 
 // convertDiagnosticsResultToReadLintsToolResult 把 DiagnosticsResult 映射为 ReadLintsToolResult。

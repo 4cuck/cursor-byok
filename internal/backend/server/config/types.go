@@ -500,7 +500,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				TooltipData:         strings.TrimSpace(item.TooltipData),
 				ModelID:             strings.TrimSpace(item.ModelID),
 				ReasoningEffort:     strings.TrimSpace(item.ReasoningEffort),
-				ContextWindowTokens: modelcontext.Resolve(item.ModelID, normalizeMaxCompletionTokens(item.ContextWindowTokens)),
+				ContextWindowTokens: modelcontext.ResolveCursorAccountTokens(item.ModelID, item.CursorModelSpec, normalizeMaxCompletionTokens(item.ContextWindowTokens)),
 				MaxCompletionTokens: normalizeMaxCompletionTokens(item.MaxCompletionTokens),
 				Pricing:             item.Pricing,
 				FastMode:            item.FastMode,

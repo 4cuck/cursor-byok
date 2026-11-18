@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
 jobs:
   resolve-matrix:
     name: Resolve build matrix
@@ -22,10 +26,10 @@ jobs:
       - id: resolve
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            MATRIX='{"include":[{"name":"Windows x64 (64位)","runner":"windows-latest","target":"windows","artifact":"windows-x64","protoc_asset":"protoc-29.3-win64.zip"}]}'
-          else
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             MATRIX='{"include":[{"name":"Windows x64 (64位)","runner":"windows-latest","target":"windows","artifact":"windows-x64","protoc_asset":"protoc-29.3-win64.zip"},{"name":"Windows ARM64","runner":"windows-latest","target":"windows-arm64","artifact":"windows-arm64","protoc_asset":"protoc-29.3-win64.zip"},{"name":"Windows x32 (32位)","runner":"windows-latest","target":"windows-386","artifact":"windows-x32","protoc_asset":"protoc-29.3-win64.zip"},{"name":"Linux x64","runner":"ubuntu-24.04","target":"linux","artifact":"linux-x64","protoc_asset":"protoc-29.3-linux-x86_64.zip"},{"name":"macOS x64 (Intel)","runner":"macos-15-intel","target":"darwin-amd64","artifact":"macos-x64","protoc_asset":"protoc-29.3-osx-x86_64.zip"},{"name":"macOS ARM64 (Apple Silicon)","runner":"macos-15","target":"darwin-arm64","artifact":"macos-arm64","protoc_asset":"protoc-29.3-osx-aarch_64.zip"}]}'
+          else
+            MATRIX='{"include":[{"name":"Windows x64 (64位)","runner":"windows-latest","target":"windows","artifact":"windows-x64","protoc_asset":"protoc-29.3-win64.zip"}]}'
           fi
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
@@ -35,7 +39,7 @@ jobs:
 
   build:
     name: ${{ matrix.name }}
-    needs: [resolve-matrix, verify]
+    needs: [resolve-matrix]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -466,7 +470,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [verify, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

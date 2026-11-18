@@ -137,7 +137,7 @@ func (service *Service) NameTab(ctx context.Context, req *connect.Request[aiserv
 	generated := ""
 	err := service.provider.StartStream(ctx, ProviderRequest{
 		RequestID:      requestID,
-		ConversationID: strings.TrimSpace(req.Msg.GetConversationId()),
+		ConversationID: "",
 		RunID:          requestID,
 		ModelCallID:    requestID + "-model",
 		ModelID:        modelID,

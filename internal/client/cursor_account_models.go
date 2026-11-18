@@ -14,6 +14,7 @@ import (
 
 	"cursor/gen/aiserverv1"
 	"cursor/internal/backend/server/upstream"
+	"cursor/internal/modelcontext"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -30,8 +31,11 @@ type CursorAccountModel struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
 	DefaultOn   bool   `json:"defaultOn"`
-	// PickerSpec is the IDE's parameter definitions, max-mode flag, and context limits.
+	// PickerSpec is the IDE's parameter definitions, max-mode flags, context limits,
+	// and the context windows Cursor offers for the model.
 	PickerSpec string `json:"pickerSpec,omitempty"`
+	// ContextWindowTokens is Cursor's default context window for the model.
+	ContextWindowTokens int `json:"contextWindowTokens,omitempty"`
 }
 
 // CursorAccountModelCatalog is the non-secret result of listing account models.
@@ -61,42 +65,9 @@ func (s *ProxyService) FetchCursorAccountModels() (CursorAccountModelCatalog, er
 		return CursorAccountModelCatalog{}, fmt.Errorf("resolve Cursor account authorization: %w", err)
 	}
 
-	// Match the installed IDE: one model per family, with effort and fast as
-	// parameters. An empty request returns every suffix as its own model.
-	body, err := proto.Marshal(&aiserverv1.AvailableModelsRequest{
-		ExcludeMaxNamedModels: true,
-		UseModelParameters:    proto.Bool(true),
-		UseReactModelPicker:   proto.Bool(true),
-	})
+	parsed, err := requestCursorModelCatalog(ctx, authorization)
 	if err != nil {
 		return CursorAccountModelCatalog{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorModelsEndpoint, bytes.NewReader(body))
-	if err != nil {
-		return CursorAccountModelCatalog{}, err
-	}
-	req.Header.Set("authorization", authorization)
-	req.Header.Set("x-cursor-checksum", upstream.BuildCursorChecksum(authorization))
-	req.Header.Set("content-type", "application/proto")
-	req.Header.Set("accept", "application/proto")
-	req.Header.Set("connect-protocol-version", "1")
-
-	resp, err := cursorModelsHTTPClient.Do(req)
-	if err != nil {
-		return CursorAccountModelCatalog{}, fmt.Errorf("request Cursor model catalog: %w", err)
-	}
-	defer resp.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, cursorModelsMaxRespBytes))
-	if err != nil {
-		return CursorAccountModelCatalog{}, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return CursorAccountModelCatalog{}, fmt.Errorf("Cursor model catalog returned HTTP %d", resp.StatusCode)
-	}
-
-	parsed := &aiserverv1.AvailableModelsResponse{}
-	if err := proto.Unmarshal(payload, parsed); err != nil {
-		return CursorAccountModelCatalog{}, fmt.Errorf("decode Cursor model catalog: %w", err)
 	}
 
 	catalog := CursorAccountModelCatalog{Models: collapseCursorCatalogModels(parsed.GetModels())}
@@ -107,6 +78,49 @@ func (s *ProxyService) FetchCursorAccountModels() (CursorAccountModelCatalog, er
 }
 
 var cursorModelsHTTPClient = &http.Client{Timeout: cursorModelsTimeout}
+
+// requestCursorModelCatalog sends the same AvailableModels request as the installed IDE:
+// one model per family, with effort, fast, and context as parameters. An empty
+// request returns every suffix as its own model.
+func requestCursorModelCatalog(ctx context.Context, authorization string) (*aiserverv1.AvailableModelsResponse, error) {
+	body, err := proto.Marshal(&aiserverv1.AvailableModelsRequest{
+		ExcludeMaxNamedModels: true,
+		UseModelParameters:    proto.Bool(true),
+		UseReactModelPicker:   proto.Bool(true),
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorModelsEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("authorization", authorization)
+	req.Header.Set("x-cursor-checksum", upstream.BuildCursorChecksum(authorization))
+	req.Header.Set("x-cursor-client-type", "ide")
+	req.Header.Set("x-cursor-client-version", upstream.CursorClientVersion())
+	req.Header.Set("content-type", "application/proto")
+	req.Header.Set("accept", "application/proto")
+	req.Header.Set("connect-protocol-version", "1")
+
+	resp, err := cursorModelsHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request Cursor model catalog: %w", err)
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, cursorModelsMaxRespBytes))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("Cursor model catalog returned HTTP %d", resp.StatusCode)
+	}
+	parsed := &aiserverv1.AvailableModelsResponse{}
+	if err := proto.Unmarshal(payload, parsed); err != nil {
+		return nil, fmt.Errorf("decode Cursor model catalog: %w", err)
+	}
+	return parsed, nil
+}
 
 func collapseCursorCatalogModels(models []*aiserverv1.AvailableModelsResponse_AvailableModel) []CursorAccountModel {
 	type family struct {
@@ -167,6 +181,9 @@ func collapseCursorCatalogModels(models []*aiserverv1.AvailableModelsResponse_Av
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].order < ranked[j].order })
 	for _, item := range ranked {
+		if window, ok := modelcontext.ResolveCursorContextWindow(item.model.PickerSpec, 0); ok {
+			item.model.ContextWindowTokens = window.Tokens
+		}
 		catalog = append(catalog, item.model)
 	}
 	return catalog
@@ -200,6 +217,14 @@ func cursorPickerSpecJSON(model *aiserverv1.AvailableModelsResponse_AvailableMod
 	}
 	raw, err := json.Marshal(spec)
 	if err != nil {
+		return ""
+	}
+	windows := modelcontext.CursorContextWindows(string(raw))
+	if len(windows) == 0 {
+		return string(raw)
+	}
+	spec["contextWindows"] = windows
+	if raw, err = json.Marshal(spec); err != nil {
 		return ""
 	}
 	return string(raw)

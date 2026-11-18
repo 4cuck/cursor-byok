@@ -699,6 +699,20 @@ func (service *Service) handleProviderEvent(stream *ActiveStream, payload *strea
 	return service.applyProviderModelEvent(stream, payload.Event)
 }
 
+// clearProviderAccumulatedReasoning 丢掉已经快照到工具调用上的 thinking。
+// 调用方必须持有 stream.mu。
+func clearProviderAccumulatedReasoning(stream *ActiveStream) {
+	if stream == nil {
+		return
+	}
+	stream.ProviderAccumulatedReasoning = nil
+	stream.ProviderAccumulatedReasoningSignature = ""
+	stream.ProviderAccumulatedReasoningSignatureSource = ""
+	stream.ProviderAccumulatedReasoningItemID = ""
+	stream.ProviderAccumulatedReasoningStatus = ""
+	stream.ProviderAccumulatedReasoningSummary = nil
+}
+
 func providerTokenMatches(stream *ActiveStream, token uint64) bool {
 	if stream == nil || token == 0 {
 		return false
@@ -910,6 +924,12 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 			stream.ProviderPassFlushedAssistantText = true
 		}
 		stream.ProviderAccumulatedText = nil
+		// 这一段 thinking 已经挂到本次工具调用上。同一次 provider pass 里如果不清空，
+		// 后面的 thinking 会接在整段旧文本后面，每个工具结果都再存一份更长的前缀。
+		// replay 会把这些前缀全部送回主会话，上下文用量被重复计算，下一条用户消息
+		// （包括 continue）会因为虚高的估算去走 “Chat context summarized”。
+		// 同一段 thinking 后面的并行工具不再重复挂这份文本；下一段 thinking 从空缓冲开始。
+		clearProviderAccumulatedReasoning(stream)
 		stream.UpdatedAt = time.Now().UTC()
 		stream.mu.Unlock()
 		return service.handleToolInvocation(stream, invocation)

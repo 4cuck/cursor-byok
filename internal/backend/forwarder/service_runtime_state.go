@@ -9,6 +9,7 @@ import (
 
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
+	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/logger"
 )
 
@@ -116,6 +117,7 @@ func (service *Service) rewriteCheckpointTokenDetailsForClient(stream *ActiveStr
 	compiled, hasCompiled, projectionActive := service.checkpointCompiledConversation(stream, conversation)
 	state.TokenDetails.UsedTokens = clampInt64ToUint32(
 		service.checkpointDisplayUsedTokens(
+			stream,
 			conversation,
 			state,
 			compiled,
@@ -163,12 +165,23 @@ func (service *Service) checkpointDisplayMaxTokens(stream *ActiveStream, convers
 }
 
 func (service *Service) checkpointDisplayUsedTokens(
+	stream *ActiveStream,
 	conversation *ConversationFile,
 	state *agentv1.ConversationStateStructure,
 	compiled CompiledConversation,
 	hasCompiled bool,
 	projectionActive bool,
 ) int64 {
+	if service != nil && stream != nil && conversation != nil &&
+		service.cursorAccountModel(activeStreamModelID(stream)) &&
+		modeladapter.HasCursorAccountState(conversation.ConversationID) {
+		if upstreamUsed := int64(modeladapter.CursorAccountUsedTokens(conversation.ConversationID)); upstreamUsed > 0 {
+			return upstreamUsed
+		}
+		if conversation.TokenDetailsUsedTokens > 0 {
+			return int64(conversation.TokenDetailsUsedTokens)
+		}
+	}
 	if hasCompiled && projectionActive {
 		return estimateCompiledPromptTokens(compiled)
 	}

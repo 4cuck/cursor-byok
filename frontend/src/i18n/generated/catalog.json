@@ -99,7 +99,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1382,
+          "line": 1389,
           "column": 30
         }
       ]
@@ -210,7 +210,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 184,
+          "line": 186,
           "column": 12
         }
       ]
@@ -275,7 +275,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1105,
+          "line": 1108,
           "column": 58
         }
       ]
@@ -335,7 +335,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 46,
+          "line": 47,
           "column": 14
         },
         {
@@ -350,12 +350,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 293,
+          "line": 295,
           "column": 47
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1215,
+          "line": 1222,
           "column": 29
         }
       ]
@@ -391,7 +391,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1131,
+          "line": 1134,
           "column": 19
         }
       ]
@@ -456,7 +456,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1597,
+          "line": 1604,
           "column": 33
         }
       ]
@@ -593,7 +593,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 562,
+          "line": 571,
           "column": 14
         }
       ]
@@ -634,7 +634,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 133,
+          "line": 144,
           "column": 55
         },
         {
@@ -712,7 +712,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1615,
+          "line": 1622,
           "column": 27
         }
       ]
@@ -1145,7 +1145,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 727,
+          "line": 730,
           "column": 48
         }
       ]
@@ -1312,12 +1312,12 @@
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 79,
+          "line": 90,
           "column": 69
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 112,
+          "line": 123,
           "column": 70
         },
         {
@@ -1751,7 +1751,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 338,
+          "line": 341,
           "column": 35
         }
       ]
@@ -2191,8 +2191,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1170,
-          "column": 90
+          "line": 1178,
+          "column": 1
         }
       ]
     },
@@ -2275,8 +2275,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1287,
-          "column": 73
+          "line": 1295,
+          "column": 1
         }
       ]
     },
@@ -2311,7 +2311,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1466,
+          "line": 1473,
           "column": 31
         }
       ]
@@ -2467,7 +2467,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 932,
+          "line": 935,
           "column": 21
         }
       ]
@@ -2532,7 +2532,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 183,
+          "line": 185,
           "column": 12
         }
       ]
@@ -2559,7 +2559,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 889,
+          "line": 892,
           "column": 16
         }
       ]
@@ -2636,12 +2636,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1009,
-          "column": 53
+          "line": 1013,
+          "column": 1
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1209,
+          "line": 1216,
           "column": 58
         }
       ]
@@ -2701,7 +2701,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 142,
+          "line": 144,
           "column": 12
         }
       ]
@@ -2725,7 +2725,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 102,
+          "line": 113,
           "column": 12
         },
         {
@@ -2983,7 +2983,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 752,
+          "line": 776,
           "column": 66
         }
       ]
@@ -3058,7 +3058,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 979,
+          "line": 982,
           "column": 22
         }
       ]
@@ -3290,7 +3290,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1274,
+          "line": 1281,
           "column": 37
         }
       ]
@@ -3348,7 +3348,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1482,
+          "line": 1489,
           "column": 31
         }
       ]
@@ -3396,8 +3396,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1415,
-          "column": 60
+          "line": 1423,
+          "column": 1
         }
       ]
     },
@@ -3497,7 +3497,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1277,
+          "line": 1284,
           "column": 68
         }
       ]
@@ -3909,7 +3909,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 571,
+          "line": 580,
           "column": 14
         }
       ]
@@ -4047,7 +4047,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 155,
+          "line": 157,
           "column": 12
         }
       ]
@@ -4170,8 +4170,8 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 166,
-          "column": 87
+          "line": 178,
+          "column": 1
         }
       ]
     },
@@ -4278,7 +4278,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1670,
+          "line": 1677,
           "column": 27
         }
       ]
@@ -4302,7 +4302,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 569,
+          "line": 572,
           "column": 16
         }
       ]
@@ -4336,7 +4336,7 @@
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 105,
+          "line": 116,
           "column": 17
         },
         {
@@ -4456,8 +4456,8 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 880,
-          "column": 11
+          "line": 884,
+          "column": 1
         }
       ]
     },
@@ -4574,7 +4574,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1631,
+          "line": 1638,
           "column": 31
         }
       ]
@@ -4702,12 +4702,12 @@
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 104,
+          "line": 115,
           "column": 18
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 135,
+          "line": 146,
           "column": 56
         },
         {
@@ -4853,7 +4853,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1703,
+          "line": 1710,
           "column": 19
         }
       ]
@@ -4901,7 +4901,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 161,
+          "line": 172,
           "column": 67
         }
       ]
@@ -4961,7 +4961,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 327,
+          "line": 330,
           "column": 5
         }
       ]
@@ -4997,22 +4997,22 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 534,
+          "line": 543,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 540,
-          "column": 16
-        },
-        {
-          "file": "src/utils/modelAdapter.js",
-          "line": 546,
+          "line": 549,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
           "line": 555,
+          "column": 16
+        },
+        {
+          "file": "src/utils/modelAdapter.js",
+          "line": 564,
           "column": 16
         }
       ]
@@ -5500,7 +5500,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 159,
+          "line": 170,
           "column": 71
         }
       ]
@@ -5568,7 +5568,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 47,
+          "line": 48,
           "column": 14
         }
       ]
@@ -5795,8 +5795,8 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1586,
-          "column": 23
+          "line": 1594,
+          "column": 1
         }
       ]
     },
@@ -5935,7 +5935,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 128,
+          "line": 130,
           "column": 12
         }
       ]
@@ -6082,7 +6082,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1603,
+          "line": 1610,
           "column": 27
         }
       ]
@@ -6111,7 +6111,7 @@
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 49,
+          "line": 50,
           "column": 49
         },
         {
@@ -6707,7 +6707,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 290,
+          "line": 292,
           "column": 10
         }
       ]
@@ -6861,12 +6861,12 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 497,
+          "line": 506,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 512,
+          "line": 521,
           "column": 14
         }
       ]
@@ -6958,7 +6958,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 339,
+          "line": 342,
           "column": 30
         }
       ]
@@ -7047,8 +7047,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1377,
-          "column": 23
+          "line": 1385,
+          "column": 1
         }
       ]
     },
@@ -7410,12 +7410,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 953,
+          "line": 956,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1080,
+          "line": 1083,
           "column": 54
         }
       ]
@@ -7464,7 +7464,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 118,
+          "line": 120,
           "column": 12
         }
       ]
@@ -7493,7 +7493,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 119,
+          "line": 121,
           "column": 12
         }
       ]
@@ -7807,8 +7807,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1619,
-          "column": 72
+          "line": 1627,
+          "column": 1
         }
       ]
     },
@@ -7853,7 +7853,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 683,
+          "line": 707,
           "column": 128
         }
       ]
@@ -7889,12 +7889,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1373,
+          "line": 1380,
           "column": 127
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1419,
+          "line": 1426,
           "column": 28
         }
       ]
@@ -7955,12 +7955,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1149,
+          "line": 1152,
           "column": 19
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1158,
+          "line": 1161,
           "column": 19
         }
       ]
@@ -8083,8 +8083,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1580,
-          "column": 23
+          "line": 1588,
+          "column": 1
         }
       ]
     },
@@ -8191,7 +8191,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 147,
+          "line": 158,
           "column": 37
         }
       ]
@@ -8338,7 +8338,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1254,
+          "line": 1261,
           "column": 29
         }
       ]
@@ -8504,7 +8504,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1650,
+          "line": 1657,
           "column": 33
         }
       ]
@@ -8665,8 +8665,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1424,
-          "column": 25
+          "line": 1432,
+          "column": 1
         }
       ]
     },
@@ -8713,8 +8713,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1396,
-          "column": 70
+          "line": 1404,
+          "column": 1
         }
       ]
     },
@@ -9160,8 +9160,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 922,
-          "column": 66
+          "line": 926,
+          "column": 1
         }
       ]
     },
@@ -9718,7 +9718,7 @@
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 491,
+          "line": 500,
           "column": 20
         }
       ]
@@ -9742,7 +9742,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 132,
+          "line": 134,
           "column": 12
         }
       ]
@@ -9771,7 +9771,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 134,
+          "line": 145,
           "column": 60
         },
         {
@@ -9829,12 +9829,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1044,
+          "line": 1047,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1240,
+          "line": 1247,
           "column": 58
         }
       ]
@@ -9866,8 +9866,8 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1060,
-          "column": 17
+          "line": 1064,
+          "column": 1
         }
       ]
     },
@@ -10042,7 +10042,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 508,
+          "line": 517,
           "column": 14
         }
       ]
@@ -10091,7 +10091,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 319,
+          "line": 321,
           "column": 54
         }
       ]
@@ -10317,12 +10317,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1030,
+          "line": 1033,
           "column": 19
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1234,
+          "line": 1241,
           "column": 23
         }
       ]
@@ -10363,7 +10363,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 131,
+          "line": 142,
           "column": 14
         },
         {
@@ -10711,8 +10711,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1180,
-          "column": 73
+          "line": 1188,
+          "column": 1
         }
       ]
     },
@@ -11336,7 +11336,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 61,
+          "line": 67,
           "column": 42
         }
       ]
@@ -11401,7 +11401,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 93,
+          "line": 104,
           "column": 18
         },
         {
@@ -11430,7 +11430,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 79,
+          "line": 90,
           "column": 30
         },
         {
@@ -11445,12 +11445,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 333,
+          "line": 336,
           "column": 38
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 333,
+          "line": 336,
           "column": 59
         }
       ]
@@ -11491,7 +11491,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 326,
+          "line": 329,
           "column": 5
         }
       ]
@@ -11566,7 +11566,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1094,
+          "line": 1097,
           "column": 58
         }
       ]
@@ -11730,7 +11730,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 131,
+          "line": 142,
           "column": 14
         },
         {
@@ -11755,7 +11755,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 889,
+          "line": 892,
           "column": 16
         }
       ]
@@ -12106,7 +12106,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1373,
+          "line": 1380,
           "column": 62
         }
       ]
@@ -12152,7 +12152,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1665,
+          "line": 1672,
           "column": 33
         }
       ]
@@ -12357,12 +12357,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1025,
+          "line": 1028,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1228,
+          "line": 1235,
           "column": 29
         }
       ]
@@ -12533,7 +12533,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 523,
+          "line": 532,
           "column": 14
         }
       ]
@@ -12569,7 +12569,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1655,
+          "line": 1662,
           "column": 27
         }
       ]
@@ -12757,7 +12757,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1610,
+          "line": 1617,
           "column": 33
         }
       ]
@@ -12805,7 +12805,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 143,
+          "line": 145,
           "column": 12
         }
       ]
@@ -12851,7 +12851,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 694,
+          "line": 697,
           "column": 26
         }
       ]
@@ -13292,7 +13292,7 @@
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 44,
+          "line": 45,
           "column": 14
         }
       ]
@@ -13338,7 +13338,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 324,
+          "line": 327,
           "column": 86
         }
       ]
@@ -13382,7 +13382,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 117,
+          "line": 119,
           "column": 12
         }
       ]
@@ -13534,7 +13534,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 49,
+          "line": 50,
           "column": 42
         },
         {
@@ -13628,8 +13628,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 925,
-          "column": 71
+          "line": 929,
+          "column": 1
         }
       ]
     },
@@ -13717,7 +13717,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 526,
+          "line": 535,
           "column": 14
         }
       ]
@@ -13809,7 +13809,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 896,
+          "line": 899,
           "column": 16
         }
       ]
@@ -13821,7 +13821,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 60,
+          "line": 66,
           "column": 56
         }
       ]
@@ -14053,13 +14053,13 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1136,
+          "line": 1139,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1284,
-          "column": 68
+          "line": 1292,
+          "column": 1
         }
       ]
     },
@@ -14070,7 +14070,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 160,
+          "line": 171,
           "column": 74
         }
       ]
@@ -14238,7 +14238,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1260,
+          "line": 1267,
           "column": 23
         }
       ]
@@ -14404,7 +14404,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 47,
+          "line": 48,
           "column": 42
         },
         {
@@ -14822,8 +14822,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 947,
-          "column": 59
+          "line": 951,
+          "column": 1
         }
       ]
     },
@@ -14966,12 +14966,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 568,
+          "line": 571,
           "column": 14
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 570,
+          "line": 573,
           "column": 20
         }
       ]
@@ -15043,7 +15043,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 48,
+          "line": 49,
           "column": 14
         },
         {
@@ -15060,8 +15060,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1562,
-          "column": 63
+          "line": 1570,
+          "column": 1
         }
       ]
     },
@@ -15147,8 +15147,8 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 905,
-          "column": 7
+          "line": 909,
+          "column": 1
         }
       ]
     },
@@ -15195,8 +15195,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1122,
-          "column": 123
+          "line": 1126,
+          "column": 1
         }
       ]
     },
@@ -15410,7 +15410,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 515,
+          "line": 518,
           "column": 48
         }
       ]
@@ -15422,7 +15422,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 559,
+          "line": 568,
           "column": 14
         }
       ]
@@ -15446,7 +15446,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 55,
+          "line": 61,
           "column": 24
         }
       ]
@@ -15540,7 +15540,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1407,
+          "line": 1414,
           "column": 31
         }
       ]
@@ -15574,7 +15574,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 896,
+          "line": 899,
           "column": 16
         }
       ]
@@ -15945,7 +15945,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 103,
+          "line": 114,
           "column": 14
         },
         {
@@ -16032,7 +16032,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 889,
+          "line": 892,
           "column": 16
         }
       ]
@@ -16193,7 +16193,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1512,
+          "line": 1519,
           "column": 60
         }
       ]
@@ -16438,7 +16438,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1127,
+          "line": 1130,
           "column": 54
         }
       ]
@@ -16462,7 +16462,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 529,
+          "line": 538,
           "column": 14
         }
       ]
@@ -16486,7 +16486,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 293,
+          "line": 295,
           "column": 29
         }
       ]
@@ -16563,7 +16563,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 45,
+          "line": 46,
           "column": 14
         }
       ]
@@ -16599,8 +16599,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1310,
-          "column": 70
+          "line": 1318,
+          "column": 1
         }
       ]
     },
@@ -16944,7 +16944,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1382,
+          "line": 1389,
           "column": 30
         }
       ]
@@ -17079,7 +17079,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 129,
+          "line": 131,
           "column": 12
         }
       ]
@@ -17091,7 +17091,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1372,
+          "line": 1379,
           "column": 50
         }
       ]
@@ -17173,7 +17173,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1263,
+          "line": 1270,
           "column": 68
         }
       ]
@@ -17197,7 +17197,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 971,
+          "line": 974,
           "column": 54
         }
       ]
@@ -17400,7 +17400,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 138,
+          "line": 140,
           "column": 12
         }
       ]
@@ -17556,7 +17556,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1581,
+          "line": 1588,
           "column": 62
         }
       ]
@@ -17568,7 +17568,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 550,
+          "line": 559,
           "column": 14
         }
       ]
@@ -17652,7 +17652,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1452,
+          "line": 1459,
           "column": 31
         }
       ]
@@ -17924,7 +17924,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 52,
+          "line": 55,
           "column": 24
         },
         {
@@ -17953,8 +17953,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1313,
-          "column": 75
+          "line": 1321,
+          "column": 1
         }
       ]
     },
@@ -18560,7 +18560,7 @@
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 112,
+          "line": 123,
           "column": 30
         },
         {
@@ -18647,7 +18647,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1140,
+          "line": 1143,
           "column": 19
         }
       ]
@@ -18926,7 +18926,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 126,
+          "line": 128,
           "column": 12
         }
       ]
@@ -18962,7 +18962,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1244,
+          "line": 1251,
           "column": 23
         }
       ]
@@ -19141,7 +19141,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1145,
+          "line": 1148,
           "column": 54
         }
       ]
@@ -19267,7 +19267,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 147,
+          "line": 158,
           "column": 37
         }
       ]
@@ -19455,8 +19455,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1399,
-          "column": 75
+          "line": 1407,
+          "column": 1
         }
       ]
     },
@@ -19640,7 +19640,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 154,
+          "line": 156,
           "column": 12
         }
       ]
@@ -19746,7 +19746,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1438,
+          "line": 1445,
           "column": 29
         }
       ]
@@ -19905,7 +19905,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1568,
+          "line": 1575,
           "column": 31
         }
       ]
@@ -19999,7 +19999,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 493,
+          "line": 502,
           "column": 14
         }
       ]
@@ -20011,7 +20011,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 339,
+          "line": 342,
           "column": 41
         }
       ]
@@ -20088,12 +20088,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 986,
+          "line": 989,
           "column": 52
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1186,
+          "line": 1193,
           "column": 58
         }
       ]
@@ -20293,7 +20293,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1373,
+          "line": 1380,
           "column": 62
         }
       ]
@@ -20305,7 +20305,7 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 59,
+          "line": 65,
           "column": 55
         }
       ]
@@ -20363,7 +20363,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1541,
+          "line": 1548,
           "column": 31
         }
       ]
@@ -20375,7 +20375,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1507,
+          "line": 1514,
           "column": 60
         }
       ]
@@ -20560,7 +20560,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1517,
+          "line": 1524,
           "column": 31
         }
       ]
@@ -20572,7 +20572,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 486,
+          "line": 495,
           "column": 14
         }
       ]
@@ -20856,12 +20856,12 @@
       "refs": [
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 63,
+          "line": 69,
           "column": 63
         },
         {
           "file": "src/components/model-config/ModelPanel.vue",
-          "line": 64,
+          "line": 70,
           "column": 24
         },
         {
@@ -20871,22 +20871,22 @@
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 191,
+          "line": 192,
           "column": 18
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1035,
+          "line": 1038,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1154,
+          "line": 1157,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1698,
+          "line": 1705,
           "column": 25
         }
       ]
@@ -20983,7 +20983,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 505,
+          "line": 514,
           "column": 14
         }
       ]
@@ -21191,7 +21191,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 324,
+          "line": 327,
           "column": 75
         }
       ]
@@ -21239,8 +21239,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 936,
-          "column": 17
+          "line": 940,
+          "column": 1
         }
       ]
     },
@@ -21729,7 +21729,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 515,
+          "line": 524,
           "column": 14
         }
       ]
@@ -21741,7 +21741,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 518,
+          "line": 527,
           "column": 14
         }
       ]
@@ -21837,7 +21837,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1048,
+          "line": 1051,
           "column": 19
         }
       ]
@@ -22065,7 +22065,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 122,
+          "line": 124,
           "column": 12
         }
       ]
@@ -22183,7 +22183,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 962,
+          "line": 965,
           "column": 54
         }
       ]
@@ -22392,7 +22392,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 288,
+          "line": 290,
           "column": 42
         }
       ]
@@ -22433,13 +22433,13 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 944,
-          "column": 64
+          "line": 948,
+          "column": 1
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1177,
-          "column": 68
+          "line": 1185,
+          "column": 1
         }
       ]
     },
@@ -22672,7 +22672,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1681,
+          "line": 1688,
           "column": 31
         }
       ]
@@ -22776,7 +22776,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1269,
+          "line": 1276,
           "column": 29
         }
       ]
@@ -23266,17 +23266,17 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1490,
+          "line": 1497,
           "column": 31
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1525,
+          "line": 1532,
           "column": 31
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1549,
+          "line": 1556,
           "column": 31
         }
       ]
@@ -23368,12 +23368,12 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 565,
+          "line": 574,
           "column": 14
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 568,
+          "line": 577,
           "column": 14
         }
       ]
@@ -23409,7 +23409,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1039,
+          "line": 1042,
           "column": 19
         }
       ]
@@ -23564,7 +23564,7 @@
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 327,
+          "line": 330,
           "column": 49
         },
         {
@@ -23574,7 +23574,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 556,
+          "line": 559,
           "column": 41
         }
       ]
@@ -23622,7 +23622,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 149,
+          "line": 151,
           "column": 12
         }
       ]
@@ -23687,7 +23687,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 737,
+          "line": 740,
           "column": 30
         }
       ]
@@ -23740,7 +23740,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 289,
+          "line": 291,
           "column": 39
         }
       ]
@@ -24030,8 +24030,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1638,
-          "column": 61
+          "line": 1646,
+          "column": 1
         }
       ]
     },
@@ -24100,7 +24100,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 571,
+          "line": 574,
           "column": 19
         }
       ]
@@ -24165,7 +24165,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 502,
+          "line": 511,
           "column": 14
         }
       ]
@@ -24237,7 +24237,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 979,
+          "line": 982,
           "column": 22
         }
       ]

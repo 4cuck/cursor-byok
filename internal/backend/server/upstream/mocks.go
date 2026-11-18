@@ -913,7 +913,25 @@ func buildCursorAccountFamilyEntry(members []legacyruntime.ModelAdapterConfig, u
 	contextTokens := resolveAvailableModelContextTokens(representative)
 	entry["parameterDefinitions"] = buildCursorAccountFamilyParameters(orderCursorAccountEfforts(efforts), contextTokens, hasFast)
 	entry["variants"] = buildCursorAccountFamilyVariants(members, displayName, contextTokens, hasFast)
+	if specced, ok := cursorAccountCatalogSpec(members); ok {
+		channelID, _ := entry["name"].(string)
+		applyCursorModelSpec(entry, specced, strings.TrimSpace(channelID), useModelParameters)
+	}
 	return entry, true
+}
+
+func cursorAccountCatalogSpec(members []legacyruntime.ModelAdapterConfig) (legacyruntime.ModelAdapterConfig, bool) {
+	var found legacyruntime.ModelAdapterConfig
+	foundLen := 0
+	for _, member := range members {
+		spec := strings.TrimSpace(member.CursorModelSpec)
+		if spec == "" || len(spec) <= foundLen {
+			continue
+		}
+		found = member
+		foundLen = len(spec)
+	}
+	return found, foundLen > 0
 }
 
 func orderCursorAccountEfforts(efforts []string) []string {
@@ -1097,7 +1115,7 @@ func buildAvailableModelEntriesForMode(adapters []legacyruntime.ModelAdapterConf
 		// 展示价格、长上下文标记与「用户自建」标记。数据源优先 adapter 显式配置，
 		// 其次内置 modelcontext 目录（models.json 规则），缺失时省略对应字段。
 		applyAvailableModelAutoContextMetadata(entry, contextTokens)
-		applyCursorModelSpec(entry, adapter, channelID)
+		applyCursorModelSpec(entry, adapter, channelID, useModelParameters)
 		entry["isLongContextOnly"] = false
 		entry["isUserAdded"] = true
 		if price := resolveAvailableModelDisplayPrice(adapter); price > 0 {
@@ -1112,6 +1130,11 @@ func buildAvailableModelEntriesForMode(adapters []legacyruntime.ModelAdapterConf
 // token 数：优先 adapter 显式配置的 ContextWindowTokens，其次内置 modelcontext 目录
 // （models.json 的 pattern 规则，first-match-wins）。未知模型返回 0，调用方省略字段。
 func resolveAvailableModelContextTokens(adapter legacyruntime.ModelAdapterConfig) int {
+	if legacyruntime.NormalizeModelSource(adapter.Source) == legacyruntime.ModelSourceCursorAccount {
+		if window, ok := modelcontext.ResolveCursorContextWindow(adapter.CursorModelSpec, adapter.ContextWindowTokens); ok {
+			return window.Tokens
+		}
+	}
 	if adapter.ContextWindowTokens > 0 {
 		return adapter.ContextWindowTokens
 	}
@@ -1214,7 +1237,7 @@ func formatModelPrice(price float64, currency string) string {
 	}
 }
 
-func applyCursorModelSpec(entry map[string]any, adapter legacyruntime.ModelAdapterConfig, channelID string) {
+func applyCursorModelSpec(entry map[string]any, adapter legacyruntime.ModelAdapterConfig, channelID string, useModelParameters bool) {
 	raw := strings.TrimSpace(adapter.CursorModelSpec)
 	if entry == nil || raw == "" {
 		return
@@ -1235,12 +1258,34 @@ func applyCursorModelSpec(entry map[string]any, adapter legacyruntime.ModelAdapt
 	if limit := jsonSpecInt(spec["contextTokenLimitForMaxMode"]); limit > 0 {
 		entry["contextTokenLimitForMaxMode"] = limit
 	}
-	if defs := jsonSpecObjects(spec["parameterDefinitions"]); len(defs) > 0 {
+	windows := modelcontext.CursorContextWindows(raw)
+	if len(windows) > 0 {
+		applyCursorContextWindowLimits(entry, windows)
+		remark := strings.TrimSpace(adapter.TooltipData)
+		if md := buildCursorSpecTooltipMarkdown(remark, adapter, windows, false); md != "" {
+			entry["tooltipData"] = map[string]any{"markdownContent": md}
+		}
+		if md := buildCursorSpecTooltipMarkdown(remark, adapter, windows, true); md != "" {
+			entry["tooltipDataForMaxMode"] = map[string]any{"markdownContent": md}
+		}
+	}
+	if !useModelParameters {
+		return
+	}
+	defs := jsonSpecObjects(spec["parameterDefinitions"])
+	variants := jsonSpecObjects(spec["variants"])
+	defs, variants = prepareCursorContextParameters(entry, defs, variants, windows)
+	if len(defs) > 0 {
 		entry["parameterDefinitions"] = defs
 	}
-	if variants := jsonSpecObjects(spec["variants"]); len(variants) > 0 {
-		for index, variant := range variants {
-			variant["variantStringRepresentation"] = channelID + ":" + strconv.Itoa(index)
+	if len(variants) > 0 {
+		modelDisplayName, _ := entry["clientDisplayName"].(string)
+		if strings.TrimSpace(modelDisplayName) == "" {
+			modelDisplayName = strings.TrimSpace(adapter.DisplayName)
+		}
+		enrichCursorVariantDisplayNames(variants, adapter.ModelID, modelDisplayName, len(windows) > 1)
+		for _, variant := range variants {
+			variant["variantStringRepresentation"] = formatCursorVariantRepresentation(channelID, variant)
 		}
 		entry["variants"] = variants
 	}
