@@ -498,6 +498,32 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 		default:
 		}
 	}
+	defer toolSilence.Stop()
+
+	// Cursor's agent server (including Grok 4.7) flushes SetBlob writes for the
+	// user/assistant messages and the terminal conversationCheckpointUpdate AFTER
+	// emitting interactionUpdate.turnEnded, waiting for KvClientMessage acks
+	// before closing the RunSSE stream. Exiting on turnEnded dropped that final
+	// checkpoint and left conversations stuck on the pre-turn turns=0 stub.
+	sawTurnEnded := false
+	turnEndDrain := time.NewTimer(time.Hour)
+	if !turnEndDrain.Stop() {
+		select {
+		case <-turnEndDrain.C:
+		default:
+		}
+	}
+	defer turnEndDrain.Stop()
+	resetTurnEndDrain := func(d time.Duration) {
+		if !turnEndDrain.Stop() {
+			select {
+			case <-turnEndDrain.C:
+			default:
+			}
+		}
+		turnEndDrain.Reset(d)
+	}
+
 	armSilent := func() {
 		if silentTimeout <= 0 || sawUseful {
 			return
@@ -525,7 +551,6 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			}
 		}
 	}
-	defer toolSilence.Stop()
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -557,6 +582,8 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 		case <-toolSilence.C:
 			logger.Infof("cursor account stream stalled after a tool result request_id=%s model=%s; continuing in a fresh pass", requestID, modelID)
 			finishReason = "tool_calls"
+			return finishTurn()
+		case <-turnEndDrain.C:
 			return finishTurn()
 		case err := <-appendErr:
 			appendErr = nil
@@ -600,6 +627,9 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 				payload = decoded
 			}
 			if flags&0x02 != 0 {
+				if sawTurnEnded {
+					return finishTurn()
+				}
 				if denial := cursorAccountAccessDenial(payload); denial != "" {
 					return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
 				}
@@ -610,11 +640,13 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			}
 			msg := &agentv1.AgentServerMessage{}
 			if err := proto.Unmarshal(payload, msg); err != nil {
-				if denial := cursorAccountAccessDenial(payload); denial != "" {
-					return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
-				}
-				if text := cursorAccountErrorText(payload); text != "" {
-					return fmt.Errorf("cursor refused the model call: %s", text)
+				if !sawTurnEnded {
+					if denial := cursorAccountAccessDenial(payload); denial != "" {
+						return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
+					}
+					if text := cursorAccountErrorText(payload); text != "" {
+						return fmt.Errorf("cursor refused the model call: %s", text)
+					}
 				}
 				cursorAccountNoteFrame(fmt.Sprintf("unmarshal_fail flags=%02x bytes=%d", flags, len(payload)))
 				continue
@@ -622,6 +654,9 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			cursorAccountNoteFrame(cursorAccountServerMessageKind(msg))
 			if kv := msg.GetKvServerMessage(); kv != nil {
 				if err := appendFrame(ctx, nextSeq(), mustCursorProto(cursorAccountKVReply(kv))); err != nil {
+					if sawTurnEnded {
+						return finishTurn()
+					}
 					return err
 				}
 				// The IDE's KV store only records (blob_id, blob_data). The prompt
@@ -632,10 +667,18 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 						cursorAccountRememberState(conversationID, state)
 					}
 				}
+				if sawTurnEnded {
+					resetTurnEndDrain(cursorAccountPostTurnKVTimeout)
+				}
 				continue
 			}
 			if checkpoint := msg.GetConversationCheckpointUpdate(); checkpoint != nil {
 				cursorAccountRememberState(conversationID, checkpoint)
+				if sawTurnEnded {
+					// Terminal checkpoint received; allow brief window for the trailing
+					// Connect end-stream frame, then finish cleanly.
+					resetTurnEndDrain(cursorAccountPostCheckpointGrace)
+				}
 				continue
 			}
 			if exec := msg.GetExecServerMessage(); exec != nil {
@@ -734,11 +777,16 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 				reasoningTokens = ended.GetReasoningTokens()
 				usagePresent = true
 				finishReason = "stop"
-				return finishTurn()
+				sawTurnEnded = true
+				if err := finishThinking(); err != nil {
+					return err
+				}
+				resetTurnEndDrain(cursorAccountPostTurnDrainTimeout)
+				continue
 			}
 		}
 		if readErr != nil {
-			if readErr == io.EOF {
+			if readErr == io.EOF || sawTurnEnded {
 				return finishTurn()
 			}
 			return readErr
@@ -940,8 +988,12 @@ func cursorAccountRunMessageFor(req StreamRequest, modelID, stateConversationID 
 		history, text = cursorAccountTurn(req.Messages)
 	}
 	state := cursorAccountLoadState(stateConversationID)
-	remembered := state != nil
-	if state == nil {
+	remembered := cursorAccountStateCoversHistory(state, history)
+	if !remembered {
+		if state != nil && stateConversationID != "" {
+			logger.Infof("cursor account discarding incomplete or stale checkpoint for conversation=%s; replaying history (%d items)", stateConversationID, len(history))
+			ClearCursorAccountState(stateConversationID)
+		}
 		state = &agentv1.ConversationStateStructure{Mode: mode.Enum()}
 	} else if state.Mode == nil {
 		state.Mode = mode.Enum()
@@ -989,6 +1041,16 @@ const (
 // for well over ten seconds on a large turn; cutting there closed the stream
 // and the next pass resent the same transcript.
 const cursorAccountToolStallTimeout = 3 * time.Minute
+
+// Post-turnEnded drain windows: Cursor's agent harness (especially Grok 4.7)
+// sends SetBlob writes (~65ms per round-trip) and the terminal
+// conversationCheckpointUpdate AFTER interactionUpdate.turnEnded before closing
+// the Connect stream.
+var (
+	cursorAccountPostTurnDrainTimeout = 1500 * time.Millisecond
+	cursorAccountPostTurnKVTimeout    = 1000 * time.Millisecond
+	cursorAccountPostCheckpointGrace  = 80 * time.Millisecond
+)
 
 // cursorAccountSideCallPrefixes are the CompileSummary prefixes of one-shot
 // calls made beside a conversation: summaries, titles, commit messages,

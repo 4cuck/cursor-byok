@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -892,4 +894,210 @@ func writeCursorAgentFrame(w io.Writer, msg proto.Message) {
 	header := make([]byte, 5)
 	binary.BigEndian.PutUint32(header[1:], uint32(len(payload)))
 	_, _ = w.Write(append(header, payload...))
+}
+
+func TestReadCursorAccountStreamDrainsPostTurnEndedKVAndTerminalCheckpoint(t *testing.T) {
+	t.Setenv("CURSOR_BYOK_HOME", t.TempDir())
+	const conversationID = "conv-grok47-post-turn-checkpoint"
+
+	sysID := bytes.Repeat([]byte{0x11}, 32)
+	infoID := bytes.Repeat([]byte{0x22}, 32)
+	userID := bytes.Repeat([]byte{0x33}, 32)
+	asstID := bytes.Repeat([]byte{0x44}, 32)
+	turnID := bytes.Repeat([]byte{0x55}, 32)
+
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+
+	kvAcked := make(chan uint32, 8)
+	appendFn := func(_ context.Context, _ int64, payload []byte) error {
+		msg := &agentv1.AgentClientMessage{}
+		if err := proto.Unmarshal(payload, msg); err == nil && msg.GetKvClientMessage() != nil {
+			kvAcked <- msg.GetKvClientMessage().GetId()
+		}
+		return nil
+	}
+
+	go func() {
+		defer writer.Close()
+		// 1. Pre-turn bootstrap blobs + empty turns=0 checkpoint (what Grok 4.7 sends before answering).
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_KvServerMessage{
+				KvServerMessage: &agentv1.KvServerMessage{
+					Id: 1,
+					Message: &agentv1.KvServerMessage_SetBlobArgs{SetBlobArgs: &agentv1.SetBlobArgs{
+						BlobId:   sysID,
+						BlobData: []byte(`{"role":"system","content":"You are powered by Grok 4.7."}`),
+					}},
+				},
+			},
+		})
+		<-kvAcked
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_KvServerMessage{
+				KvServerMessage: &agentv1.KvServerMessage{
+					Id: 2,
+					Message: &agentv1.KvServerMessage_SetBlobArgs{SetBlobArgs: &agentv1.SetBlobArgs{
+						BlobId:   infoID,
+						BlobData: []byte(`{"role":"user","content":"<user_info>\nOS Version: win32\n</user_info>"}`),
+					}},
+				},
+			},
+		})
+		<-kvAcked
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_ConversationCheckpointUpdate{
+				ConversationCheckpointUpdate: &agentv1.ConversationStateStructure{
+					Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+					RootPromptMessagesJson: [][]byte{sysID, infoID},
+				},
+			},
+		})
+
+		// 2. Assistant streams reply and emits TurnEnded BEFORE flushing final blobs/checkpoint.
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionUpdate{
+				InteractionUpdate: &agentv1.InteractionUpdate{
+					Message: &agentv1.InteractionUpdate_TextDelta{
+						TextDelta: &agentv1.TextDeltaUpdate{Text: "bananana bananana bananana bananana bananana"},
+					},
+				},
+			},
+		})
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionUpdate{
+				InteractionUpdate: &agentv1.InteractionUpdate{
+					Message: &agentv1.InteractionUpdate_TurnEnded{
+						TurnEnded: &agentv1.TurnEndedUpdate{InputTokens: proto.Int64(1200), OutputTokens: proto.Int64(25)},
+					},
+				},
+			},
+		})
+
+		// 3. Post-TurnEnded (~40ms later): server writes user/assistant blobs, waits for ack, then emits terminal checkpoint.
+		time.Sleep(40 * time.Millisecond)
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_KvServerMessage{
+				KvServerMessage: &agentv1.KvServerMessage{
+					Id: 3,
+					Message: &agentv1.KvServerMessage_SetBlobArgs{SetBlobArgs: &agentv1.SetBlobArgs{
+						BlobId:   userID,
+						BlobData: []byte(`{"role":"user","content":"say bananana 5 times"}`),
+					}},
+				},
+			},
+		})
+		<-kvAcked
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_KvServerMessage{
+				KvServerMessage: &agentv1.KvServerMessage{
+					Id: 4,
+					Message: &agentv1.KvServerMessage_SetBlobArgs{SetBlobArgs: &agentv1.SetBlobArgs{
+						BlobId:   asstID,
+						BlobData: []byte(`{"role":"assistant","content":"bananana bananana bananana bananana bananana"}`),
+					}},
+				},
+			},
+		})
+		<-kvAcked
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_ConversationCheckpointUpdate{
+				ConversationCheckpointUpdate: &agentv1.ConversationStateStructure{
+					Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+					RootPromptMessagesJson: [][]byte{sysID, infoID, userID, asstID},
+					Turns:                  [][]byte{turnID},
+				},
+			},
+		})
+		// End-of-stream Connect trailer frame.
+		_, _ = writer.Write([]byte{0x02, 0, 0, 0, 2, '{', '}'})
+	}()
+
+	var gotText string
+	var finished bool
+	err := readCursorAccountStream(context.Background(), appendFn, "req", conversationID, "grok-4.7", "cursor_account1", 0, reader, nil, nil, nil, func(event ModelEvent) error {
+		if event.Kind == ModelEventKindTextDelta {
+			gotText += event.Text
+		}
+		if event.Kind == ModelEventKindTurnFinished {
+			finished = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("readCursorAccountStream error = %v", err)
+	}
+	if !finished || !strings.Contains(gotText, "bananana") {
+		t.Fatalf("finished=%v text=%q", finished, gotText)
+	}
+
+	saved := cursorAccountLoadState(conversationID)
+	if saved == nil || len(saved.GetTurns()) != 1 || len(saved.GetRootPromptMessagesJson()) != 4 {
+		t.Fatalf("saved checkpoint lost post-turnEnded state: %+v", saved)
+	}
+
+	// Follow-up turn must use the saved complete checkpoint without duplicating ConversationHistory.
+	follow := cursorAccountRunMessage(StreamRequest{
+		ConversationID: conversationID,
+		Messages: []Message{
+			{Role: "user", Content: "say bananana 5 times"},
+			{Role: "assistant", Content: "bananana bananana bananana bananana bananana"},
+			{Role: "user", Content: "what did u just say?"},
+		},
+	}, "grok-4.7")
+	if len(follow.GetRunRequest().GetConversationState().GetTurns()) != 1 {
+		t.Fatalf("follow-up did not carry saved turn checkpoint: %+v", follow.GetRunRequest().GetConversationState())
+	}
+	if follow.GetRunRequest().GetAction().GetUserMessageAction().GetConversationHistory() != nil {
+		t.Fatal("follow-up duplicated ConversationHistory despite up-to-date checkpoint")
+	}
+}
+
+func TestCursorAccountBootstrapStubOrBehindCheckpointFallsBackToHistory(t *testing.T) {
+	t.Setenv("CURSOR_BYOK_HOME", t.TempDir())
+	const convBootstrap = "conv-bootstrap-stub"
+	sysID := bytes.Repeat([]byte{0xaa}, 32)
+	infoID := bytes.Repeat([]byte{0xbb}, 32)
+	cursorAccountRememberBlob(sysID, []byte(`{"role":"system","content":"system prompt"}`))
+	cursorAccountRememberBlob(infoID, []byte(`{"role":"user","content":"<user_info>\nOS: win32\n</user_info>"}`))
+
+	// Simulate a legacy/aborted turns=0 bootstrap file already on disk.
+	rawStub, _ := proto.Marshal(&agentv1.ConversationStateStructure{
+		Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		RootPromptMessagesJson: [][]byte{sysID, infoID},
+	})
+	stubPath := cursorAccountStatePath(convBootstrap)
+	_ = os.MkdirAll(filepath.Dir(stubPath), 0o755)
+	_ = os.WriteFile(stubPath, rawStub, 0o600)
+
+	if HasCursorAccountState(convBootstrap) {
+		t.Fatal("header-only turns=0 bootstrap stub must not report HasCursorAccountState=true")
+	}
+
+	follow := cursorAccountRunMessage(StreamRequest{
+		ConversationID: convBootstrap,
+		Messages: []Message{
+			{Role: "user", Content: "say bananana 5 times"},
+			{Role: "assistant", Content: "bananana bananana bananana bananana bananana"},
+			{Role: "user", Content: "what did u just say?"},
+		},
+	}, "grok-4.7")
+	history := follow.GetRunRequest().GetAction().GetUserMessageAction().GetConversationHistory().GetMessages()
+	if len(history) != 2 {
+		t.Fatalf("expected ConversationHistory fallback with 2 messages when checkpoint is an empty stub, got %d", len(history))
+	}
+
+	// Also verify an in-memory completed checkpoint is never clobbered by a new turn's pre-turn bootstrap stub.
+	const convProtected = "conv-protected-from-stub"
+	cursorAccountRememberState(convProtected, &agentv1.ConversationStateStructure{
+		Mode:  agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		Turns: [][]byte{[]byte("completed-turn-1")},
+	})
+	cursorAccountRememberState(convProtected, &agentv1.ConversationStateStructure{
+		Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		RootPromptMessagesJson: [][]byte{sysID, infoID},
+	})
+	if loaded := cursorAccountLoadState(convProtected); loaded == nil || len(loaded.GetTurns()) != 1 {
+		t.Fatalf("completed checkpoint was overwritten by pre-turn bootstrap stub: %+v", loaded)
+	}
 }

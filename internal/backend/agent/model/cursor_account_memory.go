@@ -110,9 +110,12 @@ func cursorAccountServerMessageKind(msg *agentv1.AgentServerMessage) string {
 	}
 }
 
-// HasCursorAccountState reports whether an upstream Cursor checkpoint exists for conversationID.
+// HasCursorAccountState reports whether a non-empty upstream Cursor checkpoint
+// exists for conversationID. Header-only pre-turn bootstrap stubs (0 turns and
+// only system/<user_info> blobs) do not count as saved conversation memory.
 func HasCursorAccountState(conversationID string) bool {
-	return cursorAccountLoadState(conversationID) != nil
+	state := cursorAccountLoadState(conversationID)
+	return cursorAccountStateHasConversation(state)
 }
 
 // CursorAccountUsedTokens returns the upstream token count stored in the saved Cursor checkpoint.
@@ -148,6 +151,13 @@ func cursorAccountRememberState(conversationID string, state *agentv1.Conversati
 		return
 	}
 	sanitizeCursorAccountState(cloned)
+	// Cursor emits an initial header-only checkpoint ([system, <user_info>],
+	// turns=0) at the start of a turn before any user/assistant exchange is
+	// committed. Never persist that empty bootstrap stub or let it overwrite a
+	// completed checkpoint if the stream is canceled or interrupted early.
+	if !cursorAccountStateHasConversation(cloned) {
+		return
+	}
 	cursorAgentMemory.mu.Lock()
 	cursorAgentMemory.states[conversationID] = cloned
 	cursorAgentMemory.mu.Unlock()
@@ -163,6 +173,62 @@ func cursorAccountRememberState(conversationID string, state *agentv1.Conversati
 		return
 	}
 	_ = os.WriteFile(path, raw, 0o600)
+}
+
+// cursorAccountStateHasConversation reports whether state actually records at
+// least one turn, summary, or non-scaffolding conversation message rather than
+// only the pre-turn [system, <user_info>] bootstrap header.
+func cursorAccountStateHasConversation(state *agentv1.ConversationStateStructure) bool {
+	if state == nil {
+		return false
+	}
+	if len(state.GetTurns()) > 0 ||
+		len(state.GetSummary()) > 0 ||
+		len(state.GetSummaryArchive()) > 0 ||
+		len(state.GetSummaryArchives()) > 0 ||
+		len(state.GetRecentUserMessageIds()) > 0 ||
+		state.GetRecentUserMessageIdsOlderTurnCount() > 0 {
+		return true
+	}
+	for _, id := range state.GetRootPromptMessagesJson() {
+		if len(id) == 0 {
+			continue
+		}
+		data, ok := cursorAccountBlob(id)
+		if !ok || len(data) == 0 {
+			// Unknown/unbacked root ID (such as a unit-test fixture): treat as non-empty.
+			return true
+		}
+		role, empty, isUserInfo, isSummary, parsed := inspectCursorRootMessageBlob(data)
+		if !parsed {
+			return true
+		}
+		if empty {
+			continue
+		}
+		if isSummary {
+			return true
+		}
+		switch role {
+		case "system":
+			continue
+		case "user":
+			if !isUserInfo {
+				return true
+			}
+		case "assistant", "tool":
+			return true
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// cursorAccountStateCoversHistory reports whether state is a non-empty
+// checkpoint rather than a pre-turn [system, <user_info>] bootstrap stub.
+func cursorAccountStateCoversHistory(state *agentv1.ConversationStateStructure, _ []*agentv1.ConversationHistoryMessage) bool {
+	return cursorAccountStateHasConversation(state)
 }
 
 type cursorRootBlobMeta struct {
@@ -289,7 +355,7 @@ func inspectCursorRootMessageBlob(data []byte) (role string, empty bool, isUserI
 		if trimmedText == "" {
 			return role, true, false, false, true
 		}
-		isUserInfo = strings.HasPrefix(trimmedText, "<user_info>")
+		isUserInfo = isCursorBootstrapScaffoldingText(trimmedText)
 		isSummary = role == "user" && strings.HasPrefix(trimmedText, "<summary>")
 		return role, false, isUserInfo, isSummary, true
 	}
@@ -304,12 +370,22 @@ func inspectCursorRootMessageBlob(data []byte) (role string, empty bool, isUserI
 		}
 		if json.Unmarshal(parts[0], &firstPart) == nil {
 			trimmedText := strings.TrimSpace(firstPart.Text)
-			isUserInfo = strings.HasPrefix(trimmedText, "<user_info>")
+			isUserInfo = isCursorBootstrapScaffoldingText(trimmedText)
 			isSummary = role == "user" && strings.HasPrefix(trimmedText, "<summary>")
 		}
 		return role, false, isUserInfo, isSummary, true
 	}
 	return role, false, false, false, true
+}
+
+func isCursorBootstrapScaffoldingText(trimmedText string) bool {
+	if strings.HasPrefix(trimmedText, "<user_info>") {
+		return true
+	}
+	if strings.HasPrefix(trimmedText, "<system_reminder>") && !strings.Contains(trimmedText, "<user_query>") {
+		return true
+	}
+	return false
 }
 
 func cursorAccountLoadState(conversationID string) *agentv1.ConversationStateStructure {
