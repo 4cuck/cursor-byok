@@ -10,6 +10,7 @@ import (
 
 	"cursor/gen/agentv1"
 	execbridge "cursor/internal/backend/agent/bridge/exec"
+	interaction "cursor/internal/backend/agent/bridge/interaction"
 	runtimecore "cursor/internal/backend/agent/core"
 )
 
@@ -638,7 +639,7 @@ func buildStartedToolCall(invocation runtimecore.ToolInvocation) *agentv1.ToolCa
 		}
 	case "AskQuestion":
 		var args agentv1.AskQuestionArgs
-		_ = json.Unmarshal(invocation.ArgsJSON, &args)
+		_ = interaction.UnmarshalProtoJSONArgs(invocation.ArgsJSON, &args)
 		return &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_AskQuestionToolCall{
 				AskQuestionToolCall: &agentv1.AskQuestionToolCall{Args: &args},
@@ -646,7 +647,12 @@ func buildStartedToolCall(invocation runtimecore.ToolInvocation) *agentv1.ToolCa
 		}
 	case "WebSearch":
 		var args agentv1.WebSearchArgs
-		_ = json.Unmarshal(invocation.ArgsJSON, &args)
+		_ = interaction.UnmarshalProtoJSONArgs(invocation.ArgsJSON, &args)
+		if strings.TrimSpace(args.GetSearchTerm()) == "" {
+			if decoded, err := runtimecore.DecodeArgsMap(invocation.ArgsJSON); err == nil {
+				args.SearchTerm = strings.TrimSpace(runtimecore.ReadStringArg(decoded, "search_term", "searchTerm", "query"))
+			}
+		}
 		return &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_WebSearchToolCall{
 				WebSearchToolCall: &agentv1.WebSearchToolCall{Args: &args},
@@ -654,7 +660,7 @@ func buildStartedToolCall(invocation runtimecore.ToolInvocation) *agentv1.ToolCa
 		}
 	case "WebFetch":
 		var args agentv1.WebFetchArgs
-		_ = json.Unmarshal(invocation.ArgsJSON, &args)
+		_ = interaction.UnmarshalProtoJSONArgs(invocation.ArgsJSON, &args)
 		return &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_WebFetchToolCall{
 				WebFetchToolCall: &agentv1.WebFetchToolCall{Args: &args},
@@ -680,7 +686,7 @@ func buildStartedToolCall(invocation runtimecore.ToolInvocation) *agentv1.ToolCa
 		}
 	case "SwitchMode":
 		var args agentv1.SwitchModeArgs
-		_ = json.Unmarshal(invocation.ArgsJSON, &args)
+		_ = interaction.UnmarshalProtoJSONArgs(invocation.ArgsJSON, &args)
 		args.ToolCallId = invocation.CallID
 		return &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_SwitchModeToolCall{

@@ -2,9 +2,9 @@
 package interaction
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -86,7 +86,7 @@ func (bridge *Bridge) ApplyInteractionResponse(msg *agentv1.InteractionResponse,
 	switch pending.InteractionKind {
 	case "ask_question":
 		var args agentv1.AskQuestionArgs
-		_ = json.Unmarshal(pending.ArgsJSON, &args)
+		_ = UnmarshalProtoJSONArgs(pending.ArgsJSON, &args)
 		result.ToolResultPayload = summarizeAskQuestionResponse(msg.GetAskQuestionInteractionResponse())
 		result.ToolCall = &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_AskQuestionToolCall{
@@ -115,7 +115,14 @@ func (bridge *Bridge) ApplyInteractionResponse(msg *agentv1.InteractionResponse,
 		return result, nil
 	case "web_search":
 		var args agentv1.WebSearchArgs
-		_ = json.Unmarshal(pending.ArgsJSON, &args)
+		_ = UnmarshalProtoJSONArgs(pending.ArgsJSON, &args)
+		if strings.TrimSpace(args.GetSearchTerm()) == "" {
+			if decoded, err := runtimecore.DecodeArgsMap(pending.ArgsJSON); err == nil {
+				if term := strings.TrimSpace(runtimecore.ReadStringArg(decoded, "search_term", "searchTerm", "query")); term != "" {
+					args.SearchTerm = term
+				}
+			}
+		}
 		webSearchResult, payload := bridge.applyWebSearchResponse(msg.GetWebSearchRequestResponse(), &args)
 		result.ToolResultPayload = payload
 		result.ToolCall = &agentv1.ToolCall{
@@ -129,7 +136,7 @@ func (bridge *Bridge) ApplyInteractionResponse(msg *agentv1.InteractionResponse,
 		return result, nil
 	case "web_fetch":
 		var args agentv1.WebFetchArgs
-		_ = json.Unmarshal(pending.ArgsJSON, &args)
+		_ = UnmarshalProtoJSONArgs(pending.ArgsJSON, &args)
 		webFetchResult, payload := bridge.applyWebFetchResponse(msg.GetWebFetchRequestResponse(), &args)
 		result.ToolResultPayload = payload
 		result.ToolCall = &agentv1.ToolCall{
@@ -143,7 +150,7 @@ func (bridge *Bridge) ApplyInteractionResponse(msg *agentv1.InteractionResponse,
 		return result, nil
 	case "switch_mode":
 		var args agentv1.SwitchModeArgs
-		_ = json.Unmarshal(pending.ArgsJSON, &args)
+		_ = UnmarshalProtoJSONArgs(pending.ArgsJSON, &args)
 		switchModeResult := buildSwitchModeResult(msg.GetSwitchModeRequestResponse(), &args)
 		result.ToolResultPayload = summarizeSwitchModeResponse(switchModeResult)
 		result.ToolCall = &agentv1.ToolCall{
@@ -156,14 +163,13 @@ func (bridge *Bridge) ApplyInteractionResponse(msg *agentv1.InteractionResponse,
 		}
 		return result, nil
 	case "pr_management":
-		var args agentv1.PrManagementArgs
-		_ = json.Unmarshal(pending.ArgsJSON, &args)
+		args := unmarshalPrManagementArgs(pending.ArgsJSON)
 		prResult := msg.GetPrManagementResult()
 		result.ToolResultPayload = summarizePrManagementResult(prResult)
 		result.ToolCall = &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_PrManagementToolCall{
 				PrManagementToolCall: &agentv1.PrManagementToolCall{
-					Args:   &args,
+					Args:   args,
 					Result: prResult,
 				},
 			},
@@ -182,6 +188,3 @@ func (bridge *Bridge) nextMessageID() uint32 {
 	}
 	return current
 }
-
-
-

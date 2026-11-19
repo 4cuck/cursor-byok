@@ -16,7 +16,9 @@ func DecodeCreatePlanArgsJSON(raw []byte) (*agentv1.CreatePlanArgs, error) {
 	}
 
 	var direct agentv1.CreatePlanArgs
-	if err := json.Unmarshal(raw, &direct); err == nil {
+	// encoding/json 只认生成标签里的蛇形字段。Cursor 账户的 protojson 用 isProject / createdAt，
+	// 直接成功返回会把这些字段丢掉，所以带驼峰别名时继续走下面的兼容解析。
+	if err := json.Unmarshal(raw, &direct); err == nil && !createPlanPayloadUsesProtoJSONNames(raw) {
 		return &direct, nil
 	}
 
@@ -107,6 +109,43 @@ func decodeCreatePlanTodoItems(value any) ([]*agentv1.TodoItem, error) {
 		})
 	}
 	return todos, nil
+}
+
+func createPlanPayloadUsesProtoJSONNames(raw []byte) bool {
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	return createPlanJSONHasKey(payload, "isProject", "createdAt", "updatedAt")
+}
+
+func createPlanJSONHasKey(value any, keys ...string) bool {
+	wanted := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		wanted[key] = struct{}{}
+	}
+	var walk func(any) bool
+	walk = func(node any) bool {
+		switch item := node.(type) {
+		case map[string]any:
+			for key, child := range item {
+				if _, ok := wanted[key]; ok {
+					return true
+				}
+				if walk(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range item {
+				if walk(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(value)
 }
 
 func createPlanValueByAlias(payload map[string]any, aliases ...string) any {

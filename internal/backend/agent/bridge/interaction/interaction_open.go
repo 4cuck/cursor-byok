@@ -13,7 +13,7 @@ import (
 // openAskQuestion 构造 AskQuestion 交互查询。
 func (bridge *Bridge) openAskQuestion(toolCall runtimecore.ToolInvocation) (*agentv1.AgentServerMessage, runtimecore.PendingInteraction, error) {
 	var args agentv1.AskQuestionArgs
-	if err := json.Unmarshal(toolCall.ArgsJSON, &args); err != nil {
+	if err := UnmarshalProtoJSONArgs(toolCall.ArgsJSON, &args); err != nil {
 		return nil, runtimecore.PendingInteraction{}, fmt.Errorf("decode AskQuestion args failed: %w", err)
 	}
 	messageID := bridge.nextMessageID()
@@ -73,7 +73,7 @@ func (bridge *Bridge) openWebSearch(toolCall runtimecore.ToolInvocation) (*agent
 		return nil, runtimecore.PendingInteraction{}, fmt.Errorf("decode WebSearch args failed: %w", err)
 	}
 	// Claude Code 习惯的 query 作为 search_term 的别名兼容，逐个回退。
-	searchTerm := strings.TrimSpace(runtimecore.ReadStringArg(args, "search_term", "query"))
+	searchTerm := strings.TrimSpace(runtimecore.ReadStringArg(args, "search_term", "searchTerm", "query"))
 	messageID := bridge.nextMessageID()
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_InteractionQuery{
@@ -137,7 +137,7 @@ func (bridge *Bridge) openWebFetch(toolCall runtimecore.ToolInvocation) (*agentv
 // openSwitchMode 构造 SwitchMode 交互查询。
 func (bridge *Bridge) openSwitchMode(toolCall runtimecore.ToolInvocation) (*agentv1.AgentServerMessage, runtimecore.PendingInteraction, error) {
 	var args agentv1.SwitchModeArgs
-	if err := json.Unmarshal(toolCall.ArgsJSON, &args); err != nil {
+	if err := UnmarshalProtoJSONArgs(toolCall.ArgsJSON, &args); err != nil {
 		return nil, runtimecore.PendingInteraction{}, fmt.Errorf("decode SwitchMode args failed: %w", err)
 	}
 	if err := validateSwitchModeTargetID(args.GetTargetModeId()); err != nil {
