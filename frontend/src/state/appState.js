@@ -134,6 +134,7 @@ import {
   setMainWindowCloseAction,
   closeApplication as closeApplicationNative,
   saveUserConfig,
+  syncCursorAccountModelsRpc,
   startProxyService,
   stopProxyService,
   testModelAdapter,
@@ -1486,7 +1487,48 @@ export async function syncBalanceConfigToSameURL(baseURL, balancePatch) {
     : result;
 }
 
+function isCursorAccountModelAdapter(adapter) {
+  return String(adapter?.source || "").trim().toLowerCase() === "cursor_account";
+}
+
+// Cursor model specs are large enough that saving the whole adapter list through
+// the desktop bridge fails with "unexpected end of JSON input". Deletes of those
+// models stay in Go and send only the ids.
+async function deleteCursorAccountAdaptersByID(adapters) {
+  const ids = (Array.isArray(adapters) ? adapters : [])
+    .map((adapter) => String(adapter?.id || "").trim())
+    .filter(Boolean);
+  if (ids.length === 0) return { ok: true, error: "", removed: 0 };
+  try {
+    const result = await syncCursorAccountModelsRpc({ mode: "remove", adapterIds: ids });
+    await reloadUserConfig({ modelAdaptersOnly: true }).catch(() => {});
+    return { ok: true, error: "", removed: Number(result?.removed) || 0 };
+  } catch (error) {
+    return { ok: false, error: toUserErrorWithCause(error) };
+  }
+}
+
+async function deleteCursorAccountAdaptersByIdentity(identity) {
+  const groupName = String(identity?.groupName || "").trim();
+  try {
+    const result = await syncCursorAccountModelsRpc({
+      mode: "remove",
+      groupName,
+      accountId: groupName ? "" : "*",
+    });
+    await reloadUserConfig({ modelAdaptersOnly: true }).catch(() => {});
+    return { ok: true, error: "", removed: Number(result?.removed) || 0 };
+  } catch (error) {
+    return { ok: false, error: toUserErrorWithCause(error) };
+  }
+}
+
 export async function deleteModelAdapterAt(index) {
+  const visible = Array.isArray(appState.modelAdapters) ? appState.modelAdapters : [];
+  if (isCursorAccountModelAdapter(visible[index])) {
+    return deleteCursorAccountAdaptersByID([visible[index]]);
+  }
+
   const currentConfig = await loadPersistedUserConfig();
   const nextAdapters = normalizeModelAdapters(currentConfig.modelAdapters);
 
@@ -1495,6 +1537,10 @@ export async function deleteModelAdapterAt(index) {
       ok: false,
       error: "模型配置不存在，无法删除",
     };
+  }
+
+  if (isCursorAccountModelAdapter(nextAdapters[index])) {
+    return deleteCursorAccountAdaptersByID([nextAdapters[index]]);
   }
 
   nextAdapters.splice(index, 1);
@@ -1513,10 +1559,16 @@ export async function deleteModelAdapterAt(index) {
 export async function deleteModelAdaptersBatch(targets) {
   const list = Array.isArray(targets) ? targets : [];
   if (list.length === 0) return { ok: true, error: "", removed: 0 };
+  const cursorTargets = list.filter((adapter) => isCursorAccountModelAdapter(adapter));
+  const otherTargets = list.filter((adapter) => !isCursorAccountModelAdapter(adapter));
+  if (cursorTargets.length > 0) {
+    const removed = await deleteCursorAccountAdaptersByID(cursorTargets);
+    if (!removed.ok || otherTargets.length === 0) return removed;
+  }
   const currentConfig = await loadPersistedUserConfig();
   const existingAdapters = normalizeModelAdapters(currentConfig.modelAdapters);
   const removeKeys = new Set(
-    list.map((adapter) => buildModelAdapterIdentityKey(normalizeModelAdapter(adapter))),
+    otherTargets.map((adapter) => buildModelAdapterIdentityKey(normalizeModelAdapter(adapter))),
   );
   const nextAdapters = existingAdapters.filter(
     (adapter) => !removeKeys.has(buildModelAdapterIdentityKey(adapter)),
@@ -1539,7 +1591,6 @@ export async function deleteModelAdaptersBatch(targets) {
  * mode: 'name' | 'connection' | 'legacy'
  */
 export async function deleteModelAdaptersBySupplier(baseURLOrIdentity, groupName) {
-  const currentConfig = await loadPersistedUserConfig();
   let identity;
   if (baseURLOrIdentity && typeof baseURLOrIdentity === "object" && !Array.isArray(baseURLOrIdentity)) {
     identity = {
@@ -1557,6 +1608,11 @@ export async function deleteModelAdaptersBySupplier(baseURLOrIdentity, groupName
     };
   }
 
+  if (String(identity.source || "").trim().toLowerCase() === "cursor_account") {
+    return deleteCursorAccountAdaptersByIdentity(identity);
+  }
+
+  const currentConfig = await loadPersistedUserConfig();
   const remaining = normalizeModelAdapters(currentConfig.modelAdapters).filter(
     (adapter) => !adapterMatchesSupplierIdentity(adapter, identity),
   );

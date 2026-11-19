@@ -266,6 +266,10 @@ func NewProxyService(proxy *mitm.ProxyServer, certManager *certs.Manager, caCert
 		service.backendHost = host
 		host.SetRoutingMetricsSnapshot(service.routingMetrics)
 	}
+	if service.cursorAccount != nil {
+		currentID := service.cursorAccount.CurrentAccountID()
+		service.collapseSharedCursorAccountModels(currentID, service.cursorAccountEmailByID(currentID))
+	}
 	return service
 }
 

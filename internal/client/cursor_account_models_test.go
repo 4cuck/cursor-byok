@@ -6,7 +6,6 @@ import (
 
 	"cursor/gen/aiserverv1"
 	serverconfig "cursor/internal/backend/server/config"
-	"cursor/internal/cursoraccount"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -154,10 +153,6 @@ func TestPruneCursorParameterDefinitionsPreservesLabelsAndHotkeysWhileStrippingT
 }
 
 func TestMergeSyncedCursorAccountAdaptersSupportsMergeReplaceAndOrphanCleanup(t *testing.T) {
-	known := map[string]cursoraccount.CursorAccountSummary{
-		"acct-1": {ID: "acct-1", Email: "one@example.com", IsCurrent: true},
-		"acct-2": {ID: "acct-2", Email: "two@example.com"},
-	}
 	fableSpec := `{"supportsMaxMode":true,"supportsNonMaxMode":true,"contextTokenLimit":300000,"contextTokenLimitForMaxMode":1000000,"contextWindows":[{"tokens":300000,"value":"300k","default":true},{"tokens":1000000,"value":"1m","maxMode":true}]}`
 	catalog := []CursorAccountModel{
 		{Name: "claude-fable-5-2", DisplayName: "Claude Fable 5.2", DefaultOn: true, PickerSpec: fableSpec, ContextWindowTokens: 300_000},
@@ -169,37 +164,78 @@ func TestMergeSyncedCursorAccountAdaptersSupportsMergeReplaceAndOrphanCleanup(t 
 		{ID: "tp:gpt-5", Source: "third_party", DisplayName: "GPT-5", ModelID: "gpt-5"},
 		{ID: "cursor_account9:old-model", Source: "cursor_account", SupplierID: "cursor_account9", GroupName: "cursor_account9", CursorAccountID: "deleted-acct", ModelID: "old-model", DisplayName: "Old"},
 	}
-	afterAcct1, slot1, added1, _, removed1 := mergeSyncedCursorAccountAdapters(initial, catalog, "acct-1", "one@example.com", known, false)
-	if slot1 != "cursor_account1" || added1 != 2 || removed1 != 1 {
-		t.Fatalf("acct-1 sync = slot=%s added=%d removed=%d adapters=%+v", slot1, added1, removed1, afterAcct1)
+	afterAcct1, slot1, added1, _, removed1 := mergeSyncedCursorAccountAdapters(initial, catalog, "acct-1", "one@example.com")
+	if slot1 != "cursor_account" || added1 != 2 || removed1 != 1 || len(afterAcct1) != 3 {
+		t.Fatalf("acct-1 sync = slot=%s added=%d removed=%d len=%d adapters=%+v", slot1, added1, removed1, len(afterAcct1), afterAcct1)
 	}
 
-	// User customizes Claude Fable 5.2 to 1M Max window on acct-1.
+	// User customizes Claude Fable 5.2 to 1M Max window on the shared list.
 	for i := range afterAcct1 {
 		if afterAcct1[i].ModelID == "claude-fable-5-2" {
 			afterAcct1[i].ContextWindowTokens = 1_000_000
 		}
 	}
 
-	// Sync acct-2 in default merge mode: acct-1 adapters stay intact, acct-2 gets cursor_account2.
-	afterAcct2, slot2, added2, _, removed2 := mergeSyncedCursorAccountAdapters(afterAcct1, catalog, "acct-2", "two@example.com", known, false)
-	if slot2 != "cursor_account2" || added2 != 2 || removed2 != 0 || len(afterAcct2) != 5 {
-		t.Fatalf("acct-2 merge sync = slot=%s added=%d removed=%d len=%d", slot2, added2, removed2, len(afterAcct2))
+	// Syncing a second account refreshes the same cursor_account list. It does not
+	// create cursor_account2 or a second copy of each model.
+	afterAcct2, slot2, added2, updated2, removed2 := mergeSyncedCursorAccountAdapters(afterAcct1, catalog, "acct-2", "two@example.com")
+	if slot2 != "cursor_account" || added2 != 0 || updated2 != 2 || removed2 != 0 || len(afterAcct2) != 3 {
+		t.Fatalf("acct-2 sync = slot=%s added=%d updated=%d removed=%d len=%d", slot2, added2, updated2, removed2, len(afterAcct2))
 	}
-
-	// Sync acct-2 in replace mode: collapses onto cursor_account1 IDs, reassigns owner to acct-2, AND preserves user's 1M context window!
-	replaced, slotReplace, _, _, _ := mergeSyncedCursorAccountAdapters(afterAcct2, catalog, "acct-2", "two@example.com", known, true)
-	if slotReplace != "cursor_account1" || len(replaced) != 3 {
-		t.Fatalf("replace sync = slot=%s len=%d adapters=%+v", slotReplace, len(replaced), replaced)
-	}
-	for _, item := range replaced {
-		if item.Source == "cursor_account" {
-			if item.CursorAccountID != "acct-2" {
-				t.Fatalf("expected cursorAccountID acct-2 after replace, got %q", item.CursorAccountID)
-			}
-			if item.ModelID == "claude-fable-5-2" && item.ContextWindowTokens != 1_000_000 {
-				t.Fatalf("replace lost user's chosen 1M context window: %d", item.ContextWindowTokens)
-			}
+	for _, item := range afterAcct2 {
+		if item.Source != "cursor_account" {
+			continue
 		}
+		if item.GroupName != "cursor_account" || item.SupplierID != "cursor_account" || item.ID != "cursor_account:"+item.ModelID {
+			t.Fatalf("shared slot adapter = %+v", item)
+		}
+		if item.CursorAccountID != "acct-2" {
+			t.Fatalf("expected cursorAccountID acct-2, got %q", item.CursorAccountID)
+		}
+		if item.ModelID == "claude-fable-5-2" && item.ContextWindowTokens != 1_000_000 {
+			t.Fatalf("sync lost user's chosen 1M context window: %d", item.ContextWindowTokens)
+		}
+	}
+}
+
+func TestCollapseCursorAccountCatalogDedupesPerAccountCopies(t *testing.T) {
+	existing := []serverconfig.ModelAdapterConfig{
+		{ID: "tp:gpt-5", Source: "third_party", DisplayName: "GPT-5", ModelID: "gpt-5"},
+		{ID: "cursor_account1:claude-fable-5-2", Source: "cursor_account", SupplierID: "cursor_account1", GroupName: "cursor_account1", CursorAccountID: "acct-1", ModelID: "claude-fable-5-2", DisplayName: "Claude Fable 5.2", ContextWindowTokens: 1_000_000},
+		{ID: "cursor_account2:claude-fable-5-2", Source: "cursor_account", SupplierID: "cursor_account2", GroupName: "cursor_account2", CursorAccountID: "acct-2", ModelID: "claude-fable-5-2", DisplayName: "Claude Fable 5.2", ContextWindowTokens: 300_000},
+		{ID: "cursor_account2:gemini-4-carbon", Source: "cursor_account", SupplierID: "cursor_account2", GroupName: "cursor_account2", CursorAccountID: "acct-2", ModelID: "gemini-4-carbon", DisplayName: "Gemini 4 Carbon"},
+	}
+	next, removed, changed := collapseCursorAccountCatalog(existing, "acct-1", "one@example.com")
+	if !changed || removed != 1 || len(next) != 3 {
+		t.Fatalf("collapse = removed=%d changed=%v len=%d adapters=%+v", removed, changed, len(next), next)
+	}
+	if next[0].ModelID != "gpt-5" {
+		t.Fatalf("third-party model moved: %+v", next[0])
+	}
+	if next[1].ID != "cursor_account:claude-fable-5-2" || next[1].CursorAccountID != "acct-1" || next[1].ContextWindowTokens != 1_000_000 {
+		t.Fatalf("fable = %+v, want acct-1's 1M window", next[1])
+	}
+	if next[2].ID != "cursor_account:gemini-4-carbon" || next[2].GroupName != "cursor_account" {
+		t.Fatalf("gemini = %+v", next[2])
+	}
+	again, removedAgain, changedAgain := collapseCursorAccountCatalog(next, "acct-1", "one@example.com")
+	if changedAgain || removedAgain != 0 || len(again) != len(next) {
+		t.Fatalf("second collapse = removed=%d changed=%v len=%d", removedAgain, changedAgain, len(again))
+	}
+}
+
+func TestFilterCursorAccountAdaptersRemovesByIDWithoutTouchingOtherModels(t *testing.T) {
+	existing := []serverconfig.ModelAdapterConfig{
+		{ID: "tp:gpt-5", Source: "third_party", ModelID: "gpt-5"},
+		{ID: "cursor_account:claude-fable-5-2", Source: "cursor_account", GroupName: "cursor_account", SupplierID: "cursor_account", ModelID: "claude-fable-5-2"},
+		{ID: "cursor_account:gemini-4-carbon", Source: "cursor_account", GroupName: "cursor_account", SupplierID: "cursor_account", ModelID: "gemini-4-carbon"},
+	}
+	kept, removed := filterCursorAccountAdapters(existing, "", "", []string{"cursor_account:claude-fable-5-2"}, nil)
+	if removed != 1 || len(kept) != 2 || kept[0].ID != "tp:gpt-5" || kept[1].ModelID != "gemini-4-carbon" {
+		t.Fatalf("delete by id = removed=%d kept=%+v", removed, kept)
+	}
+	all, removedAll := filterCursorAccountAdapters(existing, "*", "", nil, nil)
+	if removedAll != 2 || len(all) != 1 || all[0].Source != "third_party" {
+		t.Fatalf("delete all cursor models = removed=%d kept=%+v", removedAll, all)
 	}
 }

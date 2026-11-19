@@ -120,10 +120,14 @@ func (s *ProxyService) SetCurrentCursorAccount(accountID string) (cursoraccount.
 		return cursoraccount.CursorAccountSummary{}, fmt.Errorf("account id is empty")
 	}
 	summary, err := s.cursorAccount.SetCurrent(accountID)
-	if err == nil {
-		s.triggerProviderBalanceSyncAfterAccountChange()
+	if err != nil {
+		return summary, err
 	}
-	return summary, err
+	// Point the single cursor_account model list at this account. Duplicate
+	// per-account copies from an older "Sync all" are folded in at the same time.
+	s.collapseSharedCursorAccountModels(summary.ID, summary.Email)
+	s.triggerProviderBalanceSyncAfterAccountChange()
+	return summary, nil
 }
 
 func (s *ProxyService) UpdateCursorAccountTags(accountID string, tags []string) (cursoraccount.CursorAccountSummary, error) {

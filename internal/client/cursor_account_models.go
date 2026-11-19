@@ -37,6 +37,12 @@ const (
 	CursorSyncModeReplace = "replace"
 	CursorSyncModeAll     = "all"
 	CursorSyncModeRemove  = "remove"
+
+	// sharedCursorAccountLabel is the only model-list group for Cursor accounts.
+	// Saved accounts stay as credentials; "Set as current" points this one list
+	// at the account that should serve it. Quota failover still walks the rest
+	// of the saved account pool, so each account does not need its own copy.
+	sharedCursorAccountLabel = "cursor_account"
 )
 
 // CursorAccountModel is one model exposed by the signed-in Cursor account.
@@ -64,10 +70,14 @@ type CursorAccountModelCatalog struct {
 type CursorAccountModelSyncRequest struct {
 	// AccountID selects which saved Cursor account to sync; empty means current.
 	AccountID string `json:"accountId,omitempty"`
-	// Mode is "merge" (default: per-account slot), "replace" (single shared slot
-	// reassigned to this account), "all" (sync every unlocked saved account), or
-	// "remove" (delete synced models for AccountID, or "*" for all Cursor models).
+	// Mode is "merge" (refresh the shared cursor_account list), "replace" (same
+	// list, owned by this account), "all" (refresh that list from the current
+	// account), or "remove".
 	Mode string `json:"mode,omitempty"`
+	// AdapterIDs, with Mode "remove", deletes only those cursor_account adapters.
+	AdapterIDs []string `json:"adapterIds,omitempty"`
+	// GroupName, with Mode "remove", deletes one cursor_account supplier group.
+	GroupName string `json:"groupName,omitempty"`
 }
 
 // CursorAccountModelSyncResult reports the outcome of a backend-native sync.
@@ -166,11 +176,18 @@ func (s *ProxyService) SyncCursorAccountModels(req CursorAccountModelSyncRequest
 	}
 
 	if mode == CursorSyncModeRemove {
-		return s.removeCursorAccountAdapters(accountID, knownAccounts)
+		return s.removeCursorAccountAdapters(accountID, strings.TrimSpace(req.GroupName), req.AdapterIDs, knownAccounts)
 	}
 
+	// "Sync all" used to copy the full catalog onto every account. The model
+	// list is shared, so this refreshes that one list from the current account.
 	if mode == CursorSyncModeAll {
-		return s.syncAllCursorAccountAdapters(accounts, knownAccounts)
+		if currentSummary != nil {
+			accountID = currentSummary.ID
+		} else if accountID == "" && len(accounts) > 0 {
+			accountID = accounts[0].ID
+		}
+		mode = CursorSyncModeMerge
 	}
 
 	if accountID == "" {
@@ -202,6 +219,18 @@ func (s *ProxyService) SyncCursorAccountModels(req CursorAccountModelSyncRequest
 	if email == "" {
 		email = strings.TrimSpace(catalog.Email)
 	}
+	ownerID := accountID
+	ownerEmail := email
+	// The shared list follows the current account. Syncing some other account
+	// only refreshes model names and specs. "Set as current" is what switches
+	// which account serves the list. Replace mode is the explicit exception:
+	// that account becomes the owner immediately.
+	if mode != CursorSyncModeReplace && currentSummary != nil && strings.TrimSpace(currentSummary.ID) != "" {
+		ownerID = currentSummary.ID
+		if strings.TrimSpace(currentSummary.Email) != "" {
+			ownerEmail = strings.TrimSpace(currentSummary.Email)
+		}
+	}
 
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
@@ -210,14 +239,11 @@ func (s *ProxyService) SyncCursorAccountModels(req CursorAccountModelSyncRequest
 	if err != nil {
 		return CursorAccountModelSyncResult{}, fmt.Errorf("config_save_failed: load config: %w", err)
 	}
-	replaceAll := mode == CursorSyncModeReplace
 	nextAdapters, ownerLabel, added, updated, removed := mergeSyncedCursorAccountAdapters(
 		cfg.ModelAdapters,
 		catalog.Models,
-		accountID,
-		email,
-		knownAccounts,
-		replaceAll,
+		ownerID,
+		ownerEmail,
 	)
 
 	if added == 0 && updated == 0 && removed == 0 {
@@ -248,46 +274,12 @@ func (s *ProxyService) SyncCursorAccountModels(req CursorAccountModelSyncRequest
 	}, nil
 }
 
-func (s *ProxyService) syncAllCursorAccountAdapters(
-	accounts []cursoraccount.CursorAccountSummary,
+func (s *ProxyService) removeCursorAccountAdapters(
+	accountID string,
+	groupName string,
+	adapterIDs []string,
 	knownAccounts map[string]cursoraccount.CursorAccountSummary,
 ) (CursorAccountModelSyncResult, error) {
-	if len(accounts) == 0 {
-		return CursorAccountModelSyncResult{}, errors.New("cursor_account_sign_in_required: no saved Cursor accounts to sync")
-	}
-	now := time.Now()
-	type fetchedAccountCatalog struct {
-		summary cursoraccount.CursorAccountSummary
-		catalog CursorAccountModelCatalog
-	}
-	fetched := make([]fetchedAccountCatalog, 0, len(accounts))
-	var firstErr error
-	for _, acc := range accounts {
-		if acc.IsLocked(now) {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), cursorModelsTimeout)
-		cat, err := s.fetchCursorAccountCatalogWithContext(ctx, acc.ID)
-		cancel()
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			logger.Warnf("sync all cursor accounts: skipping account=%s err=%v", acc.ID, err)
-			continue
-		}
-		if len(cat.Models) == 0 {
-			continue
-		}
-		fetched = append(fetched, fetchedAccountCatalog{summary: acc, catalog: cat})
-	}
-	if len(fetched) == 0 {
-		if firstErr != nil {
-			return CursorAccountModelSyncResult{}, firstErr
-		}
-		return CursorAccountModelSyncResult{}, errors.New("cursor_model_catalog_failed: no unlocked Cursor accounts returned models")
-	}
-
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 
@@ -295,68 +287,43 @@ func (s *ProxyService) syncAllCursorAccountAdapters(
 	if err != nil {
 		return CursorAccountModelSyncResult{}, fmt.Errorf("config_save_failed: load config: %w", err)
 	}
-	working := cfg.ModelAdapters
-	totalAdded, totalUpdated, totalRemoved, totalModels := 0, 0, 0, 0
-	lastLabel := ""
-	for _, item := range fetched {
-		email := strings.TrimSpace(item.summary.Email)
-		if email == "" {
-			email = strings.TrimSpace(item.catalog.Email)
-		}
-		var label string
-		var added, updated, removed int
-		working, label, added, updated, removed = mergeSyncedCursorAccountAdapters(
-			working,
-			item.catalog.Models,
-			item.summary.ID,
-			email,
-			knownAccounts,
-			false,
-		)
-		lastLabel = label
-		totalAdded += added
-		totalUpdated += updated
-		totalRemoved += removed
-		totalModels += len(item.catalog.Models)
+	kept, removed := filterCursorAccountAdapters(cfg.ModelAdapters, accountID, groupName, adapterIDs, knownAccounts)
+	if removed == 0 {
+		return CursorAccountModelSyncResult{AccountID: accountID, OwnerLabel: sharedCursorAccountLabel, Unchanged: true}, nil
 	}
-
-	if totalAdded == 0 && totalUpdated == 0 && totalRemoved == 0 {
-		return CursorAccountModelSyncResult{
-			OwnerLabel:     lastLabel,
-			Total:          totalModels,
-			AccountsSynced: len(fetched),
-			Unchanged:      true,
-		}, nil
-	}
-	cfg.ModelAdapters = working
+	cfg.ModelAdapters = kept
 	if err := s.persistSyncedModelAdaptersLocked(cfg); err != nil {
 		return CursorAccountModelSyncResult{}, err
 	}
 	return CursorAccountModelSyncResult{
-		OwnerLabel:     lastLabel,
-		Total:          totalModels,
-		Added:          totalAdded,
-		Updated:        totalUpdated,
-		Removed:        totalRemoved,
-		AccountsSynced: len(fetched),
-		Unchanged:      false,
+		AccountID:  accountID,
+		OwnerLabel: sharedCursorAccountLabel,
+		Removed:    removed,
+		Unchanged:  false,
 	}, nil
 }
 
-func (s *ProxyService) removeCursorAccountAdapters(
+// filterCursorAccountAdapters drops cursor_account adapters without sending the
+// remaining config back through the desktop bridge. adapter IDs win, then a
+// supplier group name, then the account id ("*" or empty removes every Cursor
+// model). Third-party adapters are always kept.
+func filterCursorAccountAdapters(
+	existing []serverconfig.ModelAdapterConfig,
 	accountID string,
+	groupName string,
+	adapterIDs []string,
 	knownAccounts map[string]cursoraccount.CursorAccountSummary,
-) (CursorAccountModelSyncResult, error) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	cfg, err := s.LoadUserConfig()
-	if err != nil {
-		return CursorAccountModelSyncResult{}, fmt.Errorf("config_save_failed: load config: %w", err)
+) (kept []serverconfig.ModelAdapterConfig, removed int) {
+	accountID = strings.TrimSpace(accountID)
+	groupName = strings.TrimSpace(groupName)
+	idSet := make(map[string]struct{}, len(adapterIDs))
+	for _, id := range adapterIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			idSet[trimmed] = struct{}{}
+		}
 	}
-	kept := make([]serverconfig.ModelAdapterConfig, 0, len(cfg.ModelAdapters))
-	removed := 0
-	for _, adapter := range cfg.ModelAdapters {
+	kept = make([]serverconfig.ModelAdapterConfig, 0, len(existing))
+	for _, adapter := range existing {
 		if legacyruntime.NormalizeModelSource(adapter.Source) != legacyruntime.ModelSourceCursorAccount {
 			kept = append(kept, adapter)
 			continue
@@ -364,6 +331,10 @@ func (s *ProxyService) removeCursorAccountAdapters(
 		owner := strings.TrimSpace(adapter.CursorAccountID)
 		drop := false
 		switch {
+		case len(idSet) > 0:
+			_, drop = idSet[strings.TrimSpace(adapter.ID)]
+		case groupName != "":
+			drop = strings.TrimSpace(adapter.GroupName) == groupName || strings.TrimSpace(adapter.SupplierID) == groupName
 		case accountID == "*" || accountID == "":
 			drop = true
 		case owner == accountID:
@@ -379,18 +350,7 @@ func (s *ProxyService) removeCursorAccountAdapters(
 		}
 		kept = append(kept, adapter)
 	}
-	if removed == 0 {
-		return CursorAccountModelSyncResult{AccountID: accountID, Unchanged: true}, nil
-	}
-	cfg.ModelAdapters = kept
-	if err := s.persistSyncedModelAdaptersLocked(cfg); err != nil {
-		return CursorAccountModelSyncResult{}, err
-	}
-	return CursorAccountModelSyncResult{
-		AccountID: accountID,
-		Removed:   removed,
-		Unchanged: false,
-	}, nil
+	return kept, removed
 }
 
 func (s *ProxyService) persistSyncedModelAdaptersLocked(cfg UserConfig) error {
@@ -499,14 +459,16 @@ func (s *ProxyService) reconcileCursorAccountAdaptersAfterDelete(deletedIDs []st
 		}
 		existingReplacementModels[modelKey] = struct{}{}
 		adapter.CursorAccountID = replacementID
-		slot := resolveCursorSlotLabel(adapter.SupplierID, adapter.GroupName)
-		if slot == "" {
-			slot = "cursor_account1"
+		modelName := strings.TrimSpace(adapter.ModelID)
+		if modelName != "" {
+			adapter.ID = sharedCursorAccountLabel + ":" + modelName
 		}
+		adapter.GroupName = sharedCursorAccountLabel
+		adapter.SupplierID = sharedCursorAccountLabel
 		if replacementEmail != "" {
-			adapter.TooltipData = replacementEmail + " · " + slot
+			adapter.TooltipData = replacementEmail + " · " + sharedCursorAccountLabel
 		} else {
-			adapter.TooltipData = slot
+			adapter.TooltipData = sharedCursorAccountLabel
 		}
 		next = append(next, adapter)
 	}
@@ -524,14 +486,14 @@ func mergeSyncedCursorAccountAdapters(
 	models []CursorAccountModel,
 	accountID string,
 	email string,
-	knownAccounts map[string]cursoraccount.CursorAccountSummary,
-	replaceAll bool,
 ) (next []serverconfig.ModelAdapterConfig, ownerLabel string, added int, updated int, removed int) {
 	accountID = strings.TrimSpace(accountID)
 	email = strings.TrimSpace(email)
+	ownerLabel = sharedCursorAccountLabel
 
 	// Carry over user-customized per-model fields (chosen context window, effort,
 	// fast mode, disabled state, pricing) when updating or reassigning models.
+	// Copies under cursor_account1 / cursor_account2 collapse onto the same model.
 	previousByModel := make(map[string]serverconfig.ModelAdapterConfig, len(existing))
 	for _, item := range existing {
 		if legacyruntime.NormalizeModelSource(item.Source) != legacyruntime.ModelSourceCursorAccount {
@@ -546,50 +508,21 @@ func mergeSyncedCursorAccountAdapters(
 		}
 	}
 
-	isOrphanedCursorAdapter := func(item serverconfig.ModelAdapterConfig) bool {
-		owner := strings.TrimSpace(item.CursorAccountID)
-		if owner == "" {
-			// Legacy shared cursor_account entry with no owning account ID.
-			return true
-		}
-		if len(knownAccounts) > 0 {
-			if _, ok := knownAccounts[owner]; !ok {
-				return true
-			}
-		}
-		return false
-	}
-
-	if replaceAll {
-		ownerLabel = "cursor_account1"
-		for _, item := range existing {
-			if legacyruntime.NormalizeModelSource(item.Source) != legacyruntime.ModelSourceCursorAccount {
-				continue
-			}
-			if slot := resolveCursorSlotLabel(item.SupplierID, item.GroupName); slot != "" {
-				ownerLabel = slot
-				break
-			}
-		}
-	} else {
-		ownerLabel = pickCursorAccountOwnerSlot(existing, accountID, knownAccounts)
-	}
-
 	desired := make([]serverconfig.ModelAdapterConfig, 0, len(models))
-	desiredByID := make(map[string]serverconfig.ModelAdapterConfig, len(models))
+	desiredByModel := make(map[string]serverconfig.ModelAdapterConfig, len(models))
 	desiredOrder := make([]string, 0, len(models))
 	for _, model := range models {
 		name := strings.TrimSpace(model.Name)
 		if name == "" {
 			continue
 		}
+		key := strings.ToLower(name)
+		if _, dup := desiredByModel[key]; dup {
+			continue
+		}
 		displayName := strings.TrimSpace(model.DisplayName)
 		if displayName == "" {
 			displayName = name
-		}
-		id := ownerLabel + ":" + name
-		if _, dup := desiredByID[id]; dup {
-			continue
 		}
 		note := ownerLabel
 		if email != "" {
@@ -608,7 +541,7 @@ func mergeSyncedCursorAccountAdapters(
 			fastMode        bool
 			disabled        bool
 		)
-		if prev, ok := previousByModel[strings.ToLower(name)]; ok {
+		if prev, ok := previousByModel[key]; ok {
 			// Preserve user-selected window if Cursor offers it on this model.
 			windowTokens = modelcontext.ResolveCursorAccountTokens(name, spec, prev.ContextWindowTokens)
 			reasoningEffort = strings.TrimSpace(prev.ReasoningEffort)
@@ -621,7 +554,7 @@ func mergeSyncedCursorAccountAdapters(
 		}
 
 		built := serverconfig.ModelAdapterConfig{
-			ID:                  id,
+			ID:                  ownerLabel + ":" + name,
 			Source:              legacyruntime.ModelSourceCursorAccount,
 			CredentialScope:     legacyruntime.CredentialScopeCursorAccount,
 			DisplayName:         displayName,
@@ -640,47 +573,191 @@ func mergeSyncedCursorAccountAdapters(
 			Disabled:            disabled,
 		}
 		desired = append(desired, built)
-		desiredByID[id] = built
-		desiredOrder = append(desiredOrder, id)
+		desiredByModel[key] = built
+		desiredOrder = append(desiredOrder, key)
+	}
+
+	cursorCopies := 0
+	for _, item := range existing {
+		if legacyruntime.NormalizeModelSource(item.Source) != legacyruntime.ModelSourceCursorAccount {
+			continue
+		}
+		if strings.TrimSpace(item.ModelID) == "" {
+			continue
+		}
+		cursorCopies++
 	}
 
 	next = make([]serverconfig.ModelAdapterConfig, 0, len(existing)+len(desired))
-	emitted := make(map[string]struct{}, len(desired))
-
+	placed := false
 	for _, item := range existing {
 		if legacyruntime.NormalizeModelSource(item.Source) != legacyruntime.ModelSourceCursorAccount {
 			next = append(next, item)
 			continue
 		}
-		itemID := strings.TrimSpace(item.ID)
-		owner := strings.TrimSpace(item.CursorAccountID)
-		sameAccount := owner == accountID
-
-		if replaceAll || sameAccount || isOrphanedCursorAdapter(item) {
-			if replacement, keep := desiredByID[itemID]; keep {
-				emitted[itemID] = struct{}{}
-				if !cursorAdapterEqual(item, replacement) {
-					updated++
-				}
-				next = append(next, replacement)
-				continue
-			}
-			removed++
+		if placed {
 			continue
 		}
-
-		// Keep healthy adapters owned by other saved Cursor accounts untouched.
-		next = append(next, item)
+		next = append(next, desired...)
+		placed = true
+	}
+	if !placed {
+		next = append(next, desired...)
 	}
 
-	for _, id := range desiredOrder {
-		if _, already := emitted[id]; already {
+	keptModels := 0
+	for _, key := range desiredOrder {
+		prev, existed := previousByModel[key]
+		if !existed {
+			added++
 			continue
 		}
-		next = append(next, desiredByID[id])
-		added++
+		keptModels++
+		if !cursorAdapterEqual(prev, desiredByModel[key]) {
+			updated++
+		}
+	}
+	// Each duplicate slot copy is a row the shared list no longer keeps.
+	removed = cursorCopies - keptModels
+	if removed < 0 {
+		removed = 0
 	}
 	return next, ownerLabel, added, updated, removed
+}
+
+// collapseCursorAccountCatalog folds cursor_account1 / cursor_account2 copies
+// into one cursor_account list owned by accountID. An empty accountID keeps
+// whichever copy is already selected for that model.
+func collapseCursorAccountCatalog(existing []serverconfig.ModelAdapterConfig, accountID, email string) (next []serverconfig.ModelAdapterConfig, removed int, changed bool) {
+	accountID = strings.TrimSpace(accountID)
+	email = strings.TrimSpace(email)
+	type picked struct {
+		item serverconfig.ModelAdapterConfig
+	}
+	best := make(map[string]picked, len(existing))
+	order := make([]string, 0, len(existing))
+	cursorCopies := 0
+	for _, item := range existing {
+		if legacyruntime.NormalizeModelSource(item.Source) != legacyruntime.ModelSourceCursorAccount {
+			continue
+		}
+		cursorCopies++
+		key := strings.ToLower(strings.TrimSpace(item.ModelID))
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(item.ID))
+		}
+		if key == "" {
+			continue
+		}
+		prev, ok := best[key]
+		if !ok {
+			best[key] = picked{item: item}
+			order = append(order, key)
+			continue
+		}
+		if preferCursorAdapter(item, prev.item, accountID) {
+			best[key] = picked{item: item}
+		}
+	}
+	collapsed := make([]serverconfig.ModelAdapterConfig, 0, len(order))
+	for _, key := range order {
+		chosen := best[key].item
+		normalized := normalizeSharedCursorAdapter(chosen, accountID, email)
+		if !cursorAdapterEqual(chosen, normalized) {
+			changed = true
+		}
+		collapsed = append(collapsed, normalized)
+	}
+	removed = cursorCopies - len(collapsed)
+	if removed > 0 {
+		changed = true
+	}
+	next = make([]serverconfig.ModelAdapterConfig, 0, len(existing))
+	placed := false
+	for _, item := range existing {
+		if legacyruntime.NormalizeModelSource(item.Source) != legacyruntime.ModelSourceCursorAccount {
+			next = append(next, item)
+			continue
+		}
+		if placed {
+			continue
+		}
+		next = append(next, collapsed...)
+		placed = true
+	}
+	return next, removed, changed
+}
+
+func preferCursorAdapter(candidate, current serverconfig.ModelAdapterConfig, accountID string) bool {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return false
+	}
+	candidateOwner := strings.TrimSpace(candidate.CursorAccountID)
+	currentOwner := strings.TrimSpace(current.CursorAccountID)
+	return candidateOwner == accountID && currentOwner != accountID
+}
+
+func normalizeSharedCursorAdapter(item serverconfig.ModelAdapterConfig, accountID, email string) serverconfig.ModelAdapterConfig {
+	modelID := strings.TrimSpace(item.ModelID)
+	if modelID != "" {
+		item.ID = sharedCursorAccountLabel + ":" + modelID
+	}
+	item.GroupName = sharedCursorAccountLabel
+	item.SupplierID = sharedCursorAccountLabel
+	item.Source = legacyruntime.ModelSourceCursorAccount
+	item.CredentialScope = legacyruntime.CredentialScopeCursorAccount
+	item.Type = legacyruntime.ModelSourceCursorAccount
+	if strings.TrimSpace(accountID) != "" {
+		item.CursorAccountID = strings.TrimSpace(accountID)
+	}
+	item.TooltipData = sharedCursorTooltip(email, item.TooltipData)
+	return item
+}
+
+func sharedCursorTooltip(email, previous string) string {
+	email = strings.TrimSpace(email)
+	base := sharedCursorAccountLabel
+	if email != "" {
+		base = email + " · " + sharedCursorAccountLabel
+	} else {
+		head, _, found := strings.Cut(previous, " · ")
+		head = strings.TrimSpace(head)
+		if found && head != "" && !strings.HasPrefix(head, sharedCursorAccountLabel) {
+			base = head + " · " + sharedCursorAccountLabel
+		}
+	}
+	if strings.Contains(previous, "(default)") {
+		return base + " (default)"
+	}
+	return base
+}
+
+// collapseSharedCursorAccountModels rewrites any per-account Cursor model copies
+// into the single cursor_account list. It persists only when something changed,
+// so a config that is already shared is left untouched.
+func (s *ProxyService) collapseSharedCursorAccountModels(accountID, email string) {
+	if s == nil {
+		return
+	}
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+
+	cfg, err := s.LoadUserConfig()
+	if err != nil {
+		logger.Warnf("collapse cursor account models: load config: %v", err)
+		return
+	}
+	next, removed, changed := collapseCursorAccountCatalog(cfg.ModelAdapters, accountID, email)
+	if !changed {
+		return
+	}
+	cfg.ModelAdapters = next
+	if err := s.persistSyncedModelAdaptersLocked(cfg); err != nil {
+		logger.Warnf("collapse cursor account models failed: %v", err)
+		return
+	}
+	logger.Infof("collapsed cursor account models into %s removed=%d", sharedCursorAccountLabel, removed)
 }
 
 func cursorAdapterEqual(a, b serverconfig.ModelAdapterConfig) bool {
@@ -698,61 +775,6 @@ func cursorAdapterEqual(a, b serverconfig.ModelAdapterConfig) bool {
 		a.Disabled == b.Disabled &&
 		strings.TrimSpace(a.CursorModelSpec) == strings.TrimSpace(b.CursorModelSpec) &&
 		reflect.DeepEqual(a.Pricing, b.Pricing)
-}
-
-func resolveCursorSlotLabel(values ...string) string {
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		rest, ok := strings.CutPrefix(trimmed, "cursor_account")
-		if !ok || rest == "" {
-			continue
-		}
-		valid := true
-		for _, r := range rest {
-			if r < '0' || r > '9' {
-				valid = false
-				break
-			}
-		}
-		if valid {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func pickCursorAccountOwnerSlot(
-	existing []serverconfig.ModelAdapterConfig,
-	accountID string,
-	knownAccounts map[string]cursoraccount.CursorAccountSummary,
-) string {
-	usedByLiveAccounts := map[string]struct{}{}
-	for _, item := range existing {
-		if legacyruntime.NormalizeModelSource(item.Source) != legacyruntime.ModelSourceCursorAccount {
-			continue
-		}
-		slot := resolveCursorSlotLabel(item.SupplierID, item.GroupName)
-		if slot == "" {
-			continue
-		}
-		owner := strings.TrimSpace(item.CursorAccountID)
-		if owner == accountID {
-			return slot
-		}
-		if owner != "" {
-			if len(knownAccounts) == 0 {
-				usedByLiveAccounts[slot] = struct{}{}
-			} else if _, alive := knownAccounts[owner]; alive {
-				usedByLiveAccounts[slot] = struct{}{}
-			}
-		}
-	}
-	for n := 1; ; n++ {
-		candidate := "cursor_account" + strconv.Itoa(n)
-		if _, busy := usedByLiveAccounts[candidate]; !busy {
-			return candidate
-		}
-	}
 }
 
 // cursorAccountAuthorizationForCatalog resolves a bearer token for the requested

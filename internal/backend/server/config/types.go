@@ -64,8 +64,9 @@ type ModelAdapterConfig struct {
 	Type            string `json:"type" yaml:"type"`
 	// SupplierID 是品牌供应商标识，仅用于模板、展示和供应商专用能力；协议仍由 Type 决定。
 	SupplierID string `json:"supplierID,omitempty" yaml:"supplierID,omitempty"`
-	// CursorAccountID 是这批模型所属的 cursor-byok 账户 id。多个 Cursor 账户
-	// 不能共用一个 cursor_account 标签，否则目录、测试和用量会混在一起。
+	// CursorAccountID 是当前负责这批模型的 cursor-byok 账户。模型列表只有一份，
+	// 分组固定为 cursor_account；切换当前账户会改这个 id。额度用尽后的故障转移
+	// 走已保存账户池，不再为每个账户复制一整份模型。
 	CursorAccountID string `json:"cursorAccountID,omitempty" yaml:"cursorAccountID,omitempty"`
 	ProtocolMode    string `json:"protocolMode,omitempty" yaml:"protocolMode,omitempty"`
 	ProtocolGroup   string `json:"protocolGroup,omitempty" yaml:"protocolGroup,omitempty"`

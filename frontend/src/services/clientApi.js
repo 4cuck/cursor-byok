@@ -691,6 +691,8 @@ export function syncCursorAccountModelsRpc(request = {}) {
   const payload = {
     accountId: String(request?.accountId || ""),
     mode: String(request?.mode || "merge"),
+    adapterIds: Array.isArray(request?.adapterIds) ? request.adapterIds.map((id) => String(id || "").trim()).filter(Boolean) : [],
+    groupName: String(request?.groupName || ""),
   };
   if (isBrowserPreview) {
     return SyncCursorAccountModels(payload);

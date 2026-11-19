@@ -98,6 +98,11 @@ function syncedSummaryFor(account) {
   return syncedStatsByAccountID.value.get(account.id) || null;
 }
 
+const syncedModelCount = computed(() => {
+  const adapters = Array.isArray(appState?.modelAdapters) ? appState.modelAdapters : [];
+  return adapters.filter((adapter) => String(adapter?.source || "").trim().toLowerCase() === "cursor_account").length;
+});
+
 // Cursor caps distinct devices per account per 24h. Once tripped, every attempt
 // fails until the window rolls over, so the card shows the cooldown instead of
 // letting the user retry blindly.
@@ -446,7 +451,9 @@ async function pollLogin(sessionId) {
 async function syncCursorAccountModels(targetAccount = null, mode = "merge") {
   try {
     let accountID = "";
-    if (mode !== "all") {
+    if (mode === "remove" && !targetAccount?.id) {
+      accountID = "*";
+    } else if (mode !== "all") {
       const listed = accounts.value.length ? accounts.value : await listCursorAccounts();
       const account = targetAccount?.id
         ? targetAccount
@@ -489,10 +496,22 @@ async function syncCursorAccountModels(targetAccount = null, mode = "merge") {
   }
 }
 
+async function handleRemoveSyncedModels() {
+  if (busy.value || syncedModelCount.value === 0) return;
+  const confirmed = await showModal({
+    title: "Remove synced models?",
+    content: `Remove all ${syncedModelCount.value} Cursor models from the model list? Saved accounts stay. Sync models again later if you want them back.`,
+    confirmText: "Remove",
+    cancelText: "Cancel",
+  });
+  if (!confirmed) return;
+  await handleSyncModels(null, "remove");
+}
+
 async function handleSyncModels(account = null, mode = "merge") {
   if (busy.value) return;
   busy.value = true;
-  syncingAccountID.value = mode === "all" ? "*" : (account?.id || "");
+  syncingAccountID.value = mode === "all" || (mode === "remove" && !account?.id) ? "*" : (account?.id || "");
   try {
     const result = await syncCursorAccountModels(account, mode);
     if (result.error) {
@@ -779,7 +798,7 @@ onBeforeUnmount(() => {
         <div class="min-w-0">
           <div class="center-row gap-2">
             <h2 class="text-base font-semibold text-white">Cursor accounts</h2>
-            <Tooltip content="Store multiple OAuth or crsr_ API-key accounts. When one account hits a model usage limit, Cursor model calls automatically fail over to your other saved accounts.">
+            <Tooltip content="Saved accounts share one cursor_account model list. Set as current chooses the account that serves it. If that account runs out of quota for a model, another saved account is used automatically.">
               <span class="icon-[mdi--information-outline] text-[15px] text-[#858585]" />
             </Tooltip>
           </div>
@@ -792,7 +811,7 @@ onBeforeUnmount(() => {
             Manages the control-plane identity, synced Cursor models, and automatic multi-account quota failover.
           </p>
           <p class="mt-1 text-xs leading-5 text-[#8f8f8f]">
-            Multiple Cursor accounts automatically back each other up when a model hits its included usage limit. Account credentials are never sent to third-party APIs.
+            Cursor models stay in one <span class="text-[#d4d4d4]">cursor_account</span> list. Set as current chooses which account serves that list. Other saved accounts are used only when the current account runs out of quota. Account credentials are never sent to third-party APIs.
           </p>
         </div>
         <div class="center-row flex-wrap gap-2">
@@ -806,13 +825,13 @@ onBeforeUnmount(() => {
             Refresh usage
           </Button>
           <Button
-            v-if="accounts.length > 1"
+            v-if="syncedModelCount > 0"
             variant="default"
             :disabled="busy"
-            @click="handleSyncModels(null, 'all')"
+            @click="handleRemoveSyncedModels"
           >
             <span v-if="syncingAccountID === '*'" class="icon-[mdi--loading] mr-1 animate-spin text-[13px]" />
-            Sync all
+            Remove models
           </Button>
           <Button v-if="props.showControlCenterLink" variant="text" @click="openControlCenter">Open control center</Button>
           <ActionMenu>
@@ -887,7 +906,7 @@ onBeforeUnmount(() => {
                     class="rounded-full border border-[#3b6ea5]/70 bg-[#182738] px-2 py-0.5 text-[10px] text-[#9ec5ef]"
                     :title="`Synced slot: ${syncedSummaryFor(account).slot}`"
                   >
-                    {{ syncedSummaryFor(account).count }} models · {{ syncedSummaryFor(account).slot }}
+                    {{ syncedSummaryFor(account).count }} models
                   </span>
                   <span
                     v-if="healthFor(account)"

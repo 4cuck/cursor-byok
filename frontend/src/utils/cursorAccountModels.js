@@ -20,24 +20,9 @@ export function cursorAccountSlotLabel(value) {
   return /^cursor_account\d+$/.test(label) ? label : "";
 }
 
-/** Stable cursor_accountN label for one signed-in account. Reuses a label already stored for that account. */
-export function cursorAccountOwnerLabel(account, accounts, existingAdapters = []) {
-  const accountID = String(account?.id || "").trim();
-  if (accountID) {
-    for (const adapter of existingAdapters || []) {
-      if (String(adapter?.cursorAccountID || "").trim() !== accountID) continue;
-      const existing = cursorAccountSlotLabel(adapter.groupName) || cursorAccountSlotLabel(adapter.supplierID);
-      if (existing) return existing;
-    }
-  }
-  const used = new Set();
-  for (const adapter of existingAdapters || []) {
-    const label = cursorAccountSlotLabel(adapter?.groupName) || cursorAccountSlotLabel(adapter?.supplierID);
-    if (label) used.add(label);
-  }
-  let slot = 1;
-  while (used.has(`${CURSOR_ACCOUNT_SUPPLIER_ID}${slot}`)) slot += 1;
-  return `${CURSOR_ACCOUNT_SUPPLIER_ID}${slot}`;
+/** Every Cursor account shares one model list. Set as current chooses which account serves it. */
+export function cursorAccountOwnerLabel() {
+  return CURSOR_ACCOUNT_SUPPLIER_ID;
 }
 
 export function isSharedCursorAccountAdapter(adapter) {
@@ -58,7 +43,9 @@ export function buildCursorAccountAdapter(model, owner = {}) {
   const name = String(model?.name || "").trim();
   if (!name) return null;
   const displayName = String(model?.displayName || name).trim() || name;
-  const ownerLabel = cursorAccountSlotLabel(owner.label) || CURSOR_ACCOUNT_SUPPLIER_ID;
+  const ownerLabel = owner.label === CURSOR_ACCOUNT_SUPPLIER_ID || cursorAccountSlotLabel(owner.label)
+    ? String(owner.label).trim()
+    : CURSOR_ACCOUNT_SUPPLIER_ID;
   const email = String(owner.email || "").trim();
   const note = email ? `${email} · ${ownerLabel}` : ownerLabel;
   return normalizeModelAdapter({

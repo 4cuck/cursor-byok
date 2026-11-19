@@ -152,6 +152,11 @@ export function adapterMatchesSupplierIdentity(adapter, identity) {
     return adapterGroup === idGroup;
   }
   if (mode === SUPPLIER_GROUP_MODE_CONNECTION) {
+    if (adapterSource === SUPPLIER_MODEL_SOURCE_CURSOR_ACCOUNT) {
+      const owner = String(adapter.supplierID || adapter.groupName || "cursor_account").trim();
+      if (!idGroup) return true;
+      return owner === idGroup || adapterGroup === idGroup;
+    }
     return adapterBase === idBase;
   }
   // legacy: baseURL + groupName
@@ -165,6 +170,9 @@ export function supplierToRouteQuery(supplier) {
     query.groupName = supplier.groupNameRaw ?? rawGroupNameFromDisplay(supplier.groupName);
   } else if (mode === SUPPLIER_GROUP_MODE_CONNECTION) {
     query.baseURL = supplier.baseURL || "";
+    if (query.source === SUPPLIER_MODEL_SOURCE_CURSOR_ACCOUNT) {
+      query.groupName = supplier.groupNameRaw ?? rawGroupNameFromDisplay(supplier.groupName);
+    }
   } else {
     query.baseURL = supplier.baseURL || "";
     query.groupName = supplier.groupNameRaw ?? rawGroupNameFromDisplay(supplier.groupName);
