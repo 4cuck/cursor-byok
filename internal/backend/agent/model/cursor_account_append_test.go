@@ -288,6 +288,8 @@ func TestCursorAccountShouldResetSavedState(t *testing.T) {
 		{name: "rate limit", err: refused("rate limit exceeded, try again later"), want: false},
 		{name: "plan access", err: errors.New("this account does not have access to claude-fable-5-2"), want: false},
 		{name: "server unavailable", err: refused(`{"error":{"code":"unavailable","message":"try again"}}`), want: false},
+		{name: "content safety refusal", err: refused("The provider refused to serve this request based on the content"), want: false},
+		{name: "invalid registry params", err: refused(`Invalid parameters for registry model: "grok-4.7"`), want: false},
 	}
 	for _, tc := range cases {
 		if got := cursorAccountShouldResetSavedState(tc.err); got != tc.want {

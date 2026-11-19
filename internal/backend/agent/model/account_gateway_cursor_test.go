@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -473,6 +474,38 @@ func TestCursorAccountFollowUpLeavesTheClosedToolRun(t *testing.T) {
 
 func cursorAccountHistoryPlain(message *agentv1.AgentClientMessage) string {
 	var builder strings.Builder
+	for _, id := range message.GetRunRequest().GetConversationState().GetRootPromptMessagesJson() {
+		raw, ok := cursorAccountBlob(id)
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		var env struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(raw, &env) != nil {
+			continue
+		}
+		var text string
+		if json.Unmarshal(env.Content, &text) == nil {
+			if isCursorBootstrapScaffoldingText(strings.TrimSpace(text)) {
+				continue
+			}
+			builder.WriteString(text)
+			continue
+		}
+		var parts []struct {
+			Type   string `json:"type"`
+			Text   string `json:"text"`
+			Result string `json:"result"`
+		}
+		if json.Unmarshal(env.Content, &parts) == nil {
+			for _, part := range parts {
+				builder.WriteString(part.Text)
+				builder.WriteString(part.Result)
+			}
+		}
+	}
 	history := message.GetRunRequest().GetAction().GetUserMessageAction().GetConversationHistory()
 	for _, item := range history.GetMessages() {
 		if user := item.GetUser(); user != nil {
@@ -1082,9 +1115,20 @@ func TestCursorAccountBootstrapStubOrBehindCheckpointFallsBackToHistory(t *testi
 			{Role: "user", Content: "what did u just say?"},
 		},
 	}, "grok-4.7")
-	history := follow.GetRunRequest().GetAction().GetUserMessageAction().GetConversationHistory().GetMessages()
-	if len(history) != 2 {
-		t.Fatalf("expected ConversationHistory fallback with 2 messages when checkpoint is an empty stub, got %d", len(history))
+	if follow.GetRunRequest().GetAction().GetUserMessageAction().GetConversationHistory() != nil {
+		t.Fatal("must not populate ignored UserMessageAction.ConversationHistory")
+	}
+	roots := follow.GetRunRequest().GetConversationState().GetRootPromptMessagesJson()
+	if len(roots) != 3 {
+		t.Fatalf("expected synthesized RootPromptMessagesJson with 3 blobs (user_info placeholder + 2 history messages), got %d", len(roots))
+	}
+	uiBlob, ok := cursorAccountBlob(roots[0])
+	if !ok || !strings.Contains(string(uiBlob), "<user_info>") || !strings.Contains(string(uiBlob), `"requestContextCompleteness"`) {
+		t.Fatalf("root[0] is not a user_info recovery placeholder: ok=%v data=%q", ok, string(uiBlob))
+	}
+	historyPlain := cursorAccountHistoryPlain(follow)
+	if !strings.Contains(historyPlain, "say bananana 5 times") || !strings.Contains(historyPlain, "bananana bananana") {
+		t.Fatalf("synthesized root prompt blobs lost history: %q", historyPlain)
 	}
 
 	// Also verify an in-memory completed checkpoint is never clobbered by a new turn's pre-turn bootstrap stub.
@@ -1334,4 +1378,232 @@ func TestCursorAccountSplitTurnIncludesBackgroundDelegationNoticeInNewTurn(t *te
 		t.Fatalf("expected background subagent completion and agent_id in user message text, got %q", text)
 	}
 }
+
+func TestCursorAccountTurnSnapshotAndRestoreAcrossModelSwitchRetry(t *testing.T) {
+	homeDir, err := os.MkdirTemp("", "cursor-byok-home-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(homeDir) })
+	t.Setenv("CURSOR_BYOK_HOME", homeDir)
+
+	const convID = "conv-turn-snapshot-restore"
+	t.Cleanup(func() { ClearCursorAccountStateAndSnapshots(convID) })
+
+	// Turn 1 completed with a 434k-token checkpoint.
+	turn1State := &agentv1.ConversationStateStructure{
+		Mode:  agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		Turns: [][]byte{bytes.Repeat([]byte{0x11}, 32)},
+		TokenDetails: &agentv1.ConversationTokenDetails{
+			UsedTokens: 434_532,
+			MaxTokens:  1_000_000,
+		},
+	}
+	cursorAccountRememberState(convID, turn1State)
+
+	// Turn 2 starts: snapshot pre-turn-2 checkpoint.
+	SnapshotCursorAccountStateBeforeTurn(convID, 2)
+
+	// Turn 2 streams a partial/dirty checkpoint before failing on Gemini 4.
+	dirtyTurn2State := &agentv1.ConversationStateStructure{
+		Mode:  agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		Turns: [][]byte{bytes.Repeat([]byte{0x11}, 32), bytes.Repeat([]byte{0x22}, 32)},
+		TokenDetails: &agentv1.ConversationTokenDetails{
+			UsedTokens: 435_000,
+			MaxTokens:  1_000_000,
+		},
+	}
+	cursorAccountRememberState(convID, dirtyTurn2State)
+	// Repeated Snapshot before turn 2 must NOT clobber the original pre-turn-2 snapshot.
+	SnapshotCursorAccountStateBeforeTurn(convID, 2)
+
+	// User switches to Grok 4.7 and retries Turn 2 (rewind target_turn=2).
+	if !RestoreCursorAccountStateBeforeTurn(convID, 2) {
+		t.Fatal("expected RestoreCursorAccountStateBeforeTurn(2) to restore Turn 1 checkpoint")
+	}
+	if got := CursorAccountUsedTokens(convID); got != 434_532 {
+		t.Fatalf("restored UsedTokens = %d, want 434532", got)
+	}
+	if got := len(cursorAccountLoadState(convID).GetTurns()); got != 1 {
+		t.Fatalf("restored turns = %d, want 1", got)
+	}
+
+	// Simulate Grok 4.7 aborted after mutating state, then user switches to Claude Opus 5.5 and retries Turn 2 again.
+	cursorAccountRememberState(convID, &agentv1.ConversationStateStructure{
+		Mode:  agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		Turns: [][]byte{bytes.Repeat([]byte{0x99}, 32)},
+		TokenDetails: &agentv1.ConversationTokenDetails{
+			UsedTokens: 22_400,
+			MaxTokens:  1_000_000,
+		},
+	})
+	if !RestoreCursorAccountStateBeforeTurn(convID, 2) {
+		t.Fatal("expected second RestoreCursorAccountStateBeforeTurn(2) to still restore pre-turn-2 checkpoint")
+	}
+	if got := CursorAccountUsedTokens(convID); got != 434_532 {
+		t.Fatalf("second restored UsedTokens = %d, want 434532", got)
+	}
+
+	// Verify disk persistence across in-memory eviction.
+	cursorAgentMemory.mu.Lock()
+	delete(cursorAgentMemory.states, convID)
+	delete(cursorAgentMemory.turnStates, convID)
+	cursorAgentMemory.mu.Unlock()
+	if !RestoreCursorAccountStateBeforeTurn(convID, 2) {
+		t.Fatal("expected disk-persisted pre-turn-2 snapshot to restore after memory eviction")
+	}
+	if got := CursorAccountUsedTokens(convID); got != 434_532 {
+		t.Fatalf("disk-restored UsedTokens = %d, want 434532", got)
+	}
+
+	// Rewinding to Turn 1 (no prior snapshot) clears active state and discards future turn snapshots.
+	if RestoreCursorAccountStateBeforeTurn(convID, 1) {
+		t.Fatal("RestoreCursorAccountStateBeforeTurn(1) should return false when no pre-turn-1 snapshot exists")
+	}
+	if HasCursorAccountState(convID) {
+		t.Fatal("active checkpoint should be cleared when rewind target has no snapshot")
+	}
+	if RestoreCursorAccountStateBeforeTurn(convID, 2) {
+		t.Fatal("future snapshot before-turn-2 should have been discarded when rewinding to Turn 1")
+	}
+}
+
+func TestCursorAccountSynthesizesRootPromptBlobsWithToolCallsAndSummary(t *testing.T) {
+	homeDir, err := os.MkdirTemp("", "cursor-byok-home-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(homeDir) })
+	t.Setenv("CURSOR_BYOK_HOME", homeDir)
+
+	const convID = "conv-synth-tools-summary"
+	summary := "<conversation_summary>\n" + strings.Repeat("Important prior project context. ", 900) + "\n</conversation_summary>"
+	run := cursorAccountRunMessageFor(StreamRequest{
+		ConversationID:              convID,
+		ResolvedContextWindowTokens: 4_000, // budget = 6_000 bytes (smaller than summary alone -> test larger below)
+		Messages: []Message{
+			{Role: "system", Content: "local system prompt"},
+			{Role: "user", Content: "<user_info>\nOS: win32\n</user_info>"},
+			{Role: "user", Content: summary},
+			{Role: "user", Content: strings.Repeat("old filler turn ", 200)},
+			{Role: "assistant", Content: "old filler reply"},
+			// Adjacent parallel tool calls (as emitted by projector.go) + out-of-order results
+			{Role: "assistant", Content: "Checking both files.", ToolCalls: []ToolCallDescriptor{{
+				ID: "call-1", Type: "function", Function: ToolCallFunctionShape{Name: "Read", Arguments: `{"path":"/root/a.js"}`},
+			}}},
+			{Role: "assistant", ToolCalls: []ToolCallDescriptor{{
+				ID: "call-2", Type: "function", Function: ToolCallFunctionShape{Name: "Read", Arguments: `{"path":"/root/b.js"}`},
+			}}},
+			{Role: "tool", Name: "Read", ToolCallID: "call-2", Content: "contents of b"},
+			{Role: "tool", Name: "Read", ToolCallID: "call-1", Content: "contents of a"},
+			// Interrupted dangling tool call without a result must be dropped cleanly
+			{Role: "assistant", ToolCalls: []ToolCallDescriptor{{
+				ID: "call-dangling", Type: "function", Function: ToolCallFunctionShape{Name: "Shell", Arguments: `{"command":"sleep 99"}`},
+			}}},
+			{Role: "user", Content: "continue"},
+		},
+	}, "grok-4.7", convID, len(summary)+2500)
+
+	if run.GetRunRequest().GetAction().GetUserMessageAction().GetConversationHistory() != nil {
+		t.Fatal("must not populate ignored UserMessageAction.ConversationHistory")
+	}
+	roots := run.GetRunRequest().GetConversationState().GetRootPromptMessagesJson()
+	if len(roots) < 5 {
+		t.Fatalf("expected user_info placeholder + summary + merged assistant + 2 tool results, got %d roots", len(roots))
+	}
+	// Verify every synthesized blob is retrievable via KV GetBlob.
+	var decoded []string
+	for idx, id := range roots {
+		reply := cursorAccountKVReply(&agentv1.KvServerMessage{
+			Id:      uint32(idx + 1),
+			Message: &agentv1.KvServerMessage_GetBlobArgs{GetBlobArgs: &agentv1.GetBlobArgs{BlobId: id}},
+		})
+		blob := reply.GetKvClientMessage().GetGetBlobResult().GetBlobData()
+		if len(blob) == 0 {
+			t.Fatalf("root[%d] missing from KV blob store", idx)
+		}
+		decoded = append(decoded, string(blob))
+	}
+	if !strings.Contains(decoded[0], "<user_info>") {
+		t.Fatalf("root[0] = %q, want user_info recovery placeholder", decoded[0])
+	}
+	if !strings.Contains(decoded[1], "<conversation_summary>") {
+		t.Fatalf("root[1] = %q, want preserved compaction summary", decoded[1])
+	}
+	joined := strings.Join(decoded[1:], "\n")
+	if strings.Contains(joined, "old filler turn") {
+		t.Fatal("expected old filler turn to be trimmed to fit budget while keeping summary and newest tool turn")
+	}
+	if strings.Contains(joined, "call-dangling") {
+		t.Fatal("dangling unanswered tool call should have been stripped")
+	}
+	// Merged assistant message should contain both call-1 and call-2 with parsed JSON object args.
+	foundMerged := false
+	for _, item := range decoded[2:] {
+		if strings.Contains(item, `"type":"tool-call"`) &&
+			strings.Contains(item, `"toolCallId":"call-1"`) &&
+			strings.Contains(item, `"toolCallId":"call-2"`) &&
+			strings.Contains(item, `"args":{"path":"/root/a.js"}`) {
+			foundMerged = true
+			break
+		}
+	}
+	if !foundMerged {
+		t.Fatalf("merged assistant tool-call blob not found in decoded blobs: %s", joined)
+	}
+	if !strings.Contains(joined, `"type":"tool-result"`) || !strings.Contains(joined, "contents of a") || !strings.Contains(joined, "contents of b") {
+		t.Fatalf("tool results missing from synthesized blobs: %s", joined)
+	}
+}
+
+func TestReadCursorAccountStreamResetsSilentTimeoutOnKVActivity(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	go func() {
+		defer writer.Close()
+		// Emit 4 KV GetBlob frames spaced 50ms apart with a 90ms silentTimeout:
+		// total 200ms > 90ms, which must NOT trigger a false silent timeout because KV frames are active.
+		for i := uint32(1); i <= 4; i++ {
+			time.Sleep(50 * time.Millisecond)
+			writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+				Message: &agentv1.AgentServerMessage_KvServerMessage{
+					KvServerMessage: &agentv1.KvServerMessage{
+						Id:      i,
+						Message: &agentv1.KvServerMessage_GetBlobArgs{GetBlobArgs: &agentv1.GetBlobArgs{BlobId: bytes.Repeat([]byte{byte(i)}, 32)}},
+					},
+				},
+			})
+		}
+		time.Sleep(30 * time.Millisecond)
+		writeCursorAgentText(writer, "restored ok")
+		writeCursorAgentTurnEnded(writer)
+	}()
+	var got string
+	err := readCursorAccountStream(
+		context.Background(),
+		func(context.Context, int64, []byte) error { return nil },
+		"req-kv-silent",
+		"conv-kv-silent",
+		"grok-4.7",
+		"cursor_account1",
+		90*time.Millisecond,
+		reader,
+		nil,
+		nil,
+		nil,
+		func(event ModelEvent) error {
+			if event.Kind == ModelEventKindTextDelta {
+				got += event.Text
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("readCursorAccountStream failed despite active KV frames: %v", err)
+	}
+	if got != "restored ok" {
+		t.Fatalf("got = %q, want %q", got, "restored ok")
+	}
+}
+
 

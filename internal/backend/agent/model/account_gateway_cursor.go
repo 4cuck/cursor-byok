@@ -385,6 +385,8 @@ func cursorAccountShouldResetSavedState(err error) bool {
 		"quota",
 		"unavailable",
 		"overloaded",
+		"invalid parameters for registry model",
+		"refused to serve this request based on the content",
 	} {
 		if strings.Contains(text, marker) {
 			return false
@@ -691,6 +693,7 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			}
 			cursorAccountNoteFrame(cursorAccountServerMessageKind(msg))
 			if kv := msg.GetKvServerMessage(); kv != nil {
+				armSilent()
 				if err := appendFrame(ctx, nextSeq(), mustCursorProto(cursorAccountKVReply(kv))); err != nil {
 					if sawTurnEnded {
 						return finishTurn()
@@ -1033,21 +1036,37 @@ func cursorAccountRunMessageFor(req StreamRequest, modelID, stateConversationID 
 		mode = agentv1.AgentMode_AGENT_MODE_AGENT
 	}
 	conversationID := cursorAccountUpstreamConversationID(req)
-	var history []*agentv1.ConversationHistoryMessage
+	var historyMsgs []Message
 	var text string
 	if cursorAccountSideCall(req) {
-		history, text = cursorAccountSideCallTurn(req.Messages)
+		historyMsgs, text = cursorAccountSideCallTurnMessages(req.Messages)
 	} else {
-		history, text = cursorAccountTurn(req.Messages)
+		historyMsgs, text = cursorAccountTurnMessages(req.Messages)
 	}
 	state := cursorAccountLoadState(stateConversationID)
-	remembered := cursorAccountStateCoversHistory(state, history)
+	remembered := cursorAccountStateHasConversation(state)
 	if !remembered {
 		if state != nil && stateConversationID != "" {
-			logger.Infof("cursor account discarding incomplete or stale checkpoint for conversation=%s; replaying history (%d items)", stateConversationID, len(history))
+			logger.Infof("cursor account discarding incomplete or stale checkpoint for conversation=%s; replaying history (%d items)", stateConversationID, len(historyMsgs))
 			ClearCursorAccountState(stateConversationID)
 		}
 		state = &agentv1.ConversationStateStructure{Mode: mode.Enum()}
+		// Cursor's cloud agent server (agentn) ignores UserMessageAction.conversation_history
+		// on external RunSSE calls and only restores prior messages from
+		// ConversationStateStructure.root_prompt_messages_json via KV GetBlob.
+		// Synthesize a valid root_prompt_messages_json list backed by KV blobs
+		// whenever no saved upstream checkpoint is available (e.g. after rewind,
+		// compaction, model switch from third-party BYOK, or checkpoint rejection).
+		if len(historyMsgs) > 0 {
+			effectiveBudget := historyBudget
+			if effectiveBudget <= 0 && req.ResolvedContextWindowTokens > 0 {
+				effectiveBudget = cursorAccountHistoryBudget(req.ResolvedContextWindowTokens)
+			}
+			if rootIDs, keptCount, keptBytes := cursorAccountSynthesizeRootPromptMessages(historyMsgs, effectiveBudget); len(rootIDs) > 0 {
+				state.RootPromptMessagesJson = rootIDs
+				logger.Infof("cursor account synthesized checkpoint from history conversation=%s blobs=%d bytes=%d budget=%d", stateConversationID, keptCount, keptBytes, effectiveBudget)
+			}
+		}
 	} else if state.Mode == nil {
 		state.Mode = mode.Enum()
 	}
@@ -1063,11 +1082,6 @@ func cursorAccountRunMessageFor(req StreamRequest, modelID, stateConversationID 
 	action := &agentv1.UserMessageAction{
 		UserMessage:    userMsg,
 		RequestContext: cursorAccountRequestContext(req),
-	}
-	// A saved checkpoint is the conversation. The IDE follow-up sends that
-	// state plus the new user message, not a second copy of the transcript.
-	if !remembered && len(history) > 0 {
-		action.ConversationHistory = &agentv1.ConversationHistory{Messages: cursorAccountBoundHistory(history, historyBudget)}
 	}
 	return &agentv1.AgentClientMessage{
 		Message: &agentv1.AgentClientMessage_RunRequest{
@@ -1210,6 +1224,370 @@ func cursorAccountHistoryBudget(windowTokens int) int {
 	return tokens * 3
 }
 
+type cursorAccountRootBlob struct {
+	role      string
+	isSummary bool
+	id        []byte
+	data      []byte
+}
+
+func isCursorAccountSummaryText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "<conversation_summary>") ||
+		strings.HasPrefix(trimmed, "[Previous conversation summary]") ||
+		strings.HasPrefix(trimmed, "<summary>")
+}
+
+func cursorAccountMarshalJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+func cursorAccountUserInfoPlaceholderBlob() cursorAccountRootBlob {
+	data, err := cursorAccountMarshalJSON(map[string]any{
+		"role":    "user",
+		"content": "<user_info>\n</user_info>",
+		"providerOptions": map[string]any{
+			"cursor": map[string]any{
+				"requestContextCompleteness": map[string]any{
+					"rules":           false,
+					"env":             false,
+					"repositoryInfo":  false,
+					"customSubagents": false,
+					"agentSkills":     false,
+					"gitRepos":        false,
+					"gitStatus":       false,
+					"mcp":             false,
+					"mcpFileSystem":   false,
+				},
+				"userInfoSummarizationEpoch": 0,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(data)
+	return cursorAccountRootBlob{
+		role: "user",
+		id:   append([]byte(nil), sum[:]...),
+		data: data,
+	}
+}
+
+func cursorAccountToolCallArgsObject(raw string) map[string]any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed != "" {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &obj); err == nil && obj != nil {
+			return obj
+		}
+	}
+	return map[string]any{}
+}
+
+func cursorAccountMessagePlainText(message Message) string {
+	if strings.TrimSpace(message.Content) != "" {
+		return message.Content
+	}
+	if len(message.ContentParts) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, part := range message.ContentParts {
+		kind := strings.ToLower(strings.TrimSpace(part.Type))
+		if kind != "" && kind != "text" {
+			continue
+		}
+		if text := strings.TrimSpace(part.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func cursorAccountOrphanToolAsUserMessage(message Message) (Message, bool) {
+	output := strings.TrimSpace(cursorAccountToolText(message))
+	if output == "" {
+		return Message{}, false
+	}
+	name := strings.TrimSpace(message.Name)
+	if name == "" {
+		name = "tool"
+	}
+	return Message{
+		Role:    "user",
+		Content: fmt.Sprintf("[Previous %s tool output]\n%s", name, output),
+	}, true
+}
+
+// sanitizeCursorAccountHistoryMessages normalizes compiled transcript messages
+// into valid assistant(tool-call) -> tool(tool-result) sequences for Cursor's
+// root_prompt_messages_json store. Router skips sanitizeProviderMessages for
+// Cursor account models, so parallel tool calls stored as adjacent assistant
+// entries must be merged and dangling/orphan tool entries repaired here.
+func sanitizeCursorAccountHistoryMessages(messages []Message) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	nonEmpty := make([]Message, 0, len(messages))
+	for _, message := range messages {
+		if strings.EqualFold(strings.TrimSpace(message.Role), "assistant") &&
+			len(message.ToolCalls) == 0 &&
+			strings.TrimSpace(cursorAccountMessagePlainText(message)) == "" {
+			continue
+		}
+		nonEmpty = append(nonEmpty, message)
+	}
+	merged := mergeAdjacentAssistantToolCallMessages(nonEmpty)
+	out := make([]Message, 0, len(merged))
+	for index := 0; index < len(merged); index++ {
+		message := cloneProviderMessage(merged[index])
+		if strings.EqualFold(strings.TrimSpace(message.Role), "assistant") && len(message.ToolCalls) > 0 {
+			end := index + 1
+			responded := make(map[string]struct{}, len(message.ToolCalls))
+			for end < len(merged) && cursorAccountIsToolMessage(merged[end]) {
+				if id := strings.TrimSpace(merged[end].ToolCallID); id != "" {
+					responded[id] = struct{}{}
+				}
+				end++
+			}
+			keptCalls := make([]ToolCallDescriptor, 0, len(message.ToolCalls))
+			allowedIDs := make(map[string]struct{}, len(message.ToolCalls))
+			for _, call := range message.ToolCalls {
+				id := strings.TrimSpace(call.ID)
+				name := strings.TrimSpace(call.Function.Name)
+				if id == "" || name == "" {
+					continue
+				}
+				if _, ok := responded[id]; !ok {
+					continue
+				}
+				keptCalls = append(keptCalls, call)
+				allowedIDs[id] = struct{}{}
+			}
+			if len(keptCalls) > 0 {
+				message.ToolCalls = keptCalls
+				out = append(out, message)
+				for toolIndex := index + 1; toolIndex < end; toolIndex++ {
+					toolMsg := cloneProviderMessage(merged[toolIndex])
+					if _, ok := allowedIDs[strings.TrimSpace(toolMsg.ToolCallID)]; ok {
+						out = append(out, toolMsg)
+					} else if note, ok := cursorAccountOrphanToolAsUserMessage(toolMsg); ok {
+						out = append(out, note)
+					}
+				}
+			} else {
+				if strings.TrimSpace(cursorAccountMessagePlainText(message)) != "" {
+					message.ToolCalls = nil
+					out = append(out, message)
+				}
+				for toolIndex := index + 1; toolIndex < end; toolIndex++ {
+					if note, ok := cursorAccountOrphanToolAsUserMessage(merged[toolIndex]); ok {
+						out = append(out, note)
+					}
+				}
+			}
+			index = end - 1
+			continue
+		}
+		if cursorAccountIsToolMessage(message) {
+			if note, ok := cursorAccountOrphanToolAsUserMessage(message); ok {
+				out = append(out, note)
+			}
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+func cursorAccountRootBlobForMessage(message Message) (cursorAccountRootBlob, bool) {
+	role := strings.ToLower(strings.TrimSpace(message.Role))
+	var payload map[string]any
+	var blobRole string
+	var isSummary bool
+	switch {
+	case role == "assistant":
+		blobRole = "assistant"
+		text := strings.TrimSpace(cursorAccountMessagePlainText(message))
+		if len(message.ToolCalls) == 0 {
+			if text == "" {
+				return cursorAccountRootBlob{}, false
+			}
+			payload = map[string]any{
+				"role":    "assistant",
+				"content": text,
+			}
+		} else {
+			parts := make([]map[string]any, 0, len(message.ToolCalls)+1)
+			if text != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": text})
+			}
+			for _, call := range message.ToolCalls {
+				callID := strings.TrimSpace(call.ID)
+				toolName := strings.TrimSpace(call.Function.Name)
+				if callID == "" || toolName == "" {
+					continue
+				}
+				parts = append(parts, map[string]any{
+					"type":       "tool-call",
+					"toolCallId": callID,
+					"toolName":   toolName,
+					"args":       cursorAccountToolCallArgsObject(call.Function.Arguments),
+				})
+			}
+			if len(parts) == 0 {
+				return cursorAccountRootBlob{}, false
+			}
+			payload = map[string]any{
+				"role":    "assistant",
+				"content": parts,
+			}
+		}
+	case cursorAccountIsToolMessage(message):
+		callID := strings.TrimSpace(message.ToolCallID)
+		if callID == "" {
+			return cursorAccountRootBlob{}, false
+		}
+		blobRole = "tool"
+		toolName := strings.TrimSpace(message.Name)
+		if toolName == "" {
+			toolName = "tool"
+		}
+		payload = map[string]any{
+			"role": "tool",
+			"content": []map[string]any{{
+				"type":       "tool-result",
+				"toolCallId": callID,
+				"toolName":   toolName,
+				"result":     cursorAccountToolText(message),
+			}},
+		}
+	default:
+		text := strings.TrimSpace(cursorAccountMessagePlainText(message))
+		if text == "" {
+			return cursorAccountRootBlob{}, false
+		}
+		blobRole = "user"
+		isSummary = isCursorAccountSummaryText(text)
+		payload = map[string]any{
+			"role": "user",
+			"content": []map[string]any{{
+				"type": "text",
+				"text": text,
+			}},
+		}
+	}
+	data, err := cursorAccountMarshalJSON(payload)
+	if err != nil {
+		return cursorAccountRootBlob{}, false
+	}
+	sum := sha256.Sum256(data)
+	return cursorAccountRootBlob{
+		role:      blobRole,
+		isSummary: isSummary,
+		id:        append([]byte(nil), sum[:]...),
+		data:      data,
+	}, true
+}
+
+// cursorAccountBoundRootBlobs keeps the newest root prompt blobs that fit in
+// budget bytes while preserving the latest compaction summary if present and
+// dropping leading detached tool results whose tool call was cut off. A budget
+// of 0 keeps everything.
+func cursorAccountBoundRootBlobs(blobs []cursorAccountRootBlob, budget int) []cursorAccountRootBlob {
+	if budget <= 0 || len(blobs) == 0 {
+		return blobs
+	}
+	total := 0
+	for _, blob := range blobs {
+		total += len(blob.data)
+	}
+	if total <= budget {
+		return blobs
+	}
+	summaryIdx := -1
+	for i := len(blobs) - 1; i >= 0; i-- {
+		if blobs[i].isSummary {
+			summaryIdx = i
+			break
+		}
+	}
+	if summaryIdx >= 0 && len(blobs[summaryIdx].data) <= budget {
+		tail := blobs[summaryIdx+1:]
+		remaining := budget - len(blobs[summaryIdx].data)
+		start := len(tail)
+		used := 0
+		for start > 0 {
+			size := len(tail[start-1].data)
+			if used+size > remaining {
+				break
+			}
+			used += size
+			start--
+		}
+		for start < len(tail) && tail[start].role == "tool" {
+			start++
+		}
+		kept := make([]cursorAccountRootBlob, 0, 1+len(tail)-start)
+		kept = append(kept, blobs[summaryIdx])
+		kept = append(kept, tail[start:]...)
+		logger.Infof("cursor account synthesized history bounded to %d of %d messages with summary preserved (budget=%d bytes)", len(kept), len(blobs), budget)
+		return kept
+	}
+	start := len(blobs)
+	used := 0
+	for start > 0 {
+		size := len(blobs[start-1].data)
+		if used+size > budget {
+			break
+		}
+		used += size
+		start--
+	}
+	for start < len(blobs) && blobs[start].role == "tool" {
+		start++
+	}
+	if start > 0 {
+		logger.Infof("cursor account synthesized history bounded to the newest %d of %d messages (budget=%d bytes)", len(blobs)-start, len(blobs), budget)
+	}
+	return blobs[start:]
+}
+
+func cursorAccountSynthesizeRootPromptMessages(messages []Message, budget int) ([][]byte, int, int) {
+	sanitized := sanitizeCursorAccountHistoryMessages(messages)
+	if len(sanitized) == 0 {
+		return nil, 0, 0
+	}
+	blobs := make([]cursorAccountRootBlob, 0, len(sanitized))
+	for _, message := range sanitized {
+		if blob, ok := cursorAccountRootBlobForMessage(message); ok {
+			blobs = append(blobs, blob)
+		}
+	}
+	kept := cursorAccountBoundRootBlobs(blobs, budget)
+	if len(kept) == 0 {
+		return nil, 0, 0
+	}
+	placeholder := cursorAccountUserInfoPlaceholderBlob()
+	cursorAccountRememberBlob(placeholder.id, placeholder.data)
+	rootIDs := make([][]byte, 0, len(kept)+1)
+	rootIDs = append(rootIDs, placeholder.id)
+	keptBytes := 0
+	for _, blob := range kept {
+		cursorAccountRememberBlob(blob.id, blob.data)
+		rootIDs = append(rootIDs, blob.id)
+		keptBytes += len(blob.data)
+	}
+	return rootIDs, len(kept), keptBytes
+}
+
 // cursorAccountBoundHistory keeps the newest messages that fit in budget
 // bytes, then drops tool results whose call was cut off. A budget of 0 keeps
 // everything.
@@ -1270,20 +1648,19 @@ func cursorAccountFollowsToolResult(messages []Message) bool {
 	return false
 }
 
-// cursorAccountTurn splits a provider transcript the way the IDE's
-// UserMessageAction does: the newest user text is the action, and earlier
-// turns go in conversation_history. The agent server does not keep those
-// turns when the run is opened with only the latest sentence.
-func cursorAccountTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
-	return cursorAccountSplitTurn(cursorAccountPromptMessages(messages))
+// cursorAccountTurnMessages splits a provider transcript into prior history
+// messages (replayed via ConversationStateStructure.root_prompt_messages_json
+// when no saved checkpoint exists) and the newest user action text.
+func cursorAccountTurnMessages(messages []Message) ([]Message, string) {
+	return cursorAccountSplitTurnMessages(cursorAccountPromptMessages(messages))
 }
 
-// cursorAccountSideCallTurn keeps a side call's own instructions and payload.
+// cursorAccountSideCallTurnMessages keeps a side call's own instructions and payload.
 // Cursor's agent server writes the system prompt and refuses
 // custom_system_prompt for these accounts, so the caller's system text rides
 // in front of the user message. The scaffolding filter is skipped: a
 // compaction transcript can contain those tags and still be the payload.
-func cursorAccountSideCallTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
+func cursorAccountSideCallTurnMessages(messages []Message) ([]Message, string) {
 	var instructions []string
 	rest := make([]Message, 0, len(messages))
 	for _, message := range messages {
@@ -1295,14 +1672,14 @@ func cursorAccountSideCallTurn(messages []Message) ([]*agentv1.ConversationHisto
 			instructions = append(instructions, text)
 		}
 	}
-	history, text := cursorAccountSplitTurn(rest)
+	history, text := cursorAccountSplitTurnMessages(rest)
 	if len(instructions) == 0 {
 		return history, text
 	}
 	return history, "<instructions>\n" + strings.Join(instructions, "\n\n") + "\n</instructions>\n\n" + text
 }
 
-func cursorAccountSplitTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
+func cursorAccountSplitTurnMessages(messages []Message) ([]Message, string) {
 	if len(messages) == 0 {
 		return nil, "Continue."
 	}
@@ -1321,12 +1698,7 @@ func cursorAccountSplitTurn(messages []Message) ([]*agentv1.ConversationHistoryM
 			backgroundDelegationNotices = append(backgroundDelegationNotices, notice)
 		}
 	}
-	history := make([]*agentv1.ConversationHistoryMessage, 0, historyEnd)
-	for _, message := range messages[:historyEnd] {
-		if item := cursorAccountHistoryMessage(message); item != nil {
-			history = append(history, item)
-		}
-	}
+	history := append([]Message(nil), messages[:historyEnd]...)
 	if split == len(messages) {
 		if len(backgroundDelegationNotices) > 0 {
 			return history, strings.Join(backgroundDelegationNotices, "\n\n") + "\n\nContinue."
@@ -1339,6 +1711,32 @@ func cursorAccountSplitTurn(messages []Message) ([]*agentv1.ConversationHistoryM
 	}
 	if len(backgroundDelegationNotices) > 0 {
 		text = strings.Join(backgroundDelegationNotices, "\n\n") + "\n\n" + text
+	}
+	return history, text
+}
+
+func cursorAccountTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
+	return cursorAccountSplitTurn(cursorAccountPromptMessages(messages))
+}
+
+func cursorAccountSideCallTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
+	historyMsgs, text := cursorAccountSideCallTurnMessages(messages)
+	history := make([]*agentv1.ConversationHistoryMessage, 0, len(historyMsgs))
+	for _, message := range historyMsgs {
+		if item := cursorAccountHistoryMessage(message); item != nil {
+			history = append(history, item)
+		}
+	}
+	return history, text
+}
+
+func cursorAccountSplitTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
+	historyMsgs, text := cursorAccountSplitTurnMessages(messages)
+	history := make([]*agentv1.ConversationHistoryMessage, 0, len(historyMsgs))
+	for _, message := range historyMsgs {
+		if item := cursorAccountHistoryMessage(message); item != nil {
+			history = append(history, item)
+		}
 	}
 	return history, text
 }
@@ -1439,11 +1837,11 @@ func cursorAccountScaffoldingMessage(message Message) bool {
 	if role == "assistant" || role == "tool" {
 		return false
 	}
-	text := strings.TrimSpace(message.Content)
+	text := strings.TrimSpace(cursorAccountMessagePlainText(message))
 	if text == "" {
 		return false
 	}
-	if isCursorAccountBackgroundDelegationMessage(text) {
+	if isCursorAccountBackgroundDelegationMessage(text) || isCursorAccountSummaryText(text) {
 		return false
 	}
 	for _, tag := range []string{
@@ -1474,7 +1872,7 @@ func cursorAccountIsToolMessage(message Message) bool {
 
 func cursorAccountMessageText(message Message) string {
 	if !cursorAccountIsToolMessage(message) {
-		return message.Content
+		return cursorAccountMessagePlainText(message)
 	}
 	return cursorAccountToolText(message)
 }

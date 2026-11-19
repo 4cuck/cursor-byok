@@ -71,7 +71,7 @@ func (service *Service) recoverFromContextOverflow(stream *ActiveStream, convers
 	compiled = guardCompiledConversationForProvider(compiled)
 
 	if service.cursorAccountModel(modelID) {
-		modeladapter.ClearCursorAccountState(conversationID)
+		modeladapter.ClearCursorAccountStateAndSnapshots(conversationID)
 	}
 	var plan *compactionPlan
 	if service.cursorAccountModel(modelID) {

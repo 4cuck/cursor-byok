@@ -1154,6 +1154,12 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	if err := service.flushAssistantText(stream, conversationID, turnSeq, requestID, accumulatedText, accumulatedReasoning, accumulatedReasoningSignature, accumulatedReasoningSignatureSource, accumulatedReasoningItemID, accumulatedReasoningStatus, accumulatedReasoningSummary, !hadToolInvocation); err != nil {
 		return service.failStreamIfNonTerminal(stream, "unknown", err)
 	}
+	if !service.cursorAccountModel(activeStreamModelID(stream)) && modeladapter.HasCursorAccountState(conversationID) {
+		// A non-Cursor-account turn just committed to canonical history, so any
+		// saved upstream Cursor checkpoint no longer covers this turn. Clear it
+		// so a later switch back to a Cursor account model replays full history.
+		modeladapter.ClearCursorAccountStateAndSnapshots(conversationID)
+	}
 	if err := service.recordTurnUsageSnapshot(stream, conversationID, turnSeq, requestID, modelCallID, "completed", usage, "", false); err != nil {
 		return service.failStreamIfNonTerminal(stream, "usage_persistence_error", err)
 	}

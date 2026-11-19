@@ -96,8 +96,14 @@ func cursorAccountMarkContextComplete(ctx *agentv1.RequestContext) {
 	if ctx.GitStatusInfoComplete == nil {
 		ctx.GitStatusInfoComplete = proto.Bool(true)
 	}
+	if ctx.GitRepoInfoComplete == nil {
+		ctx.GitRepoInfoComplete = proto.Bool(true)
+	}
 	if ctx.CustomSubagentsInfoComplete == nil {
 		ctx.CustomSubagentsInfoComplete = proto.Bool(true)
+	}
+	if ctx.McpFileSystemInfoComplete == nil {
+		ctx.McpFileSystemInfoComplete = proto.Bool(true)
 	}
 }
 

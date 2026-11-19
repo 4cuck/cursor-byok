@@ -262,13 +262,16 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_skipped", rewindDecision)
 	}
 	if rewindDecision.Apply {
-		modeladapter.ClearCursorAccountState(intent.ConversationID)
+		restored := modeladapter.RestoreCursorAccountStateBeforeTurn(intent.ConversationID, rewindDecision.TargetTurnSeq)
+		logger.Infof("forwarder rewind cursor account checkpoint conversation_id=%s target_turn=%d restored=%t", strings.TrimSpace(intent.ConversationID), rewindDecision.TargetTurnSeq, restored)
 		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_detected", rewindDecision)
 		turnSeq = rewindDecision.TargetTurnSeq
 		initialEntries, err = buildRunEntries(intent, effectiveMode, turnSeq)
 		if err != nil {
 			return err
 		}
+	} else if !intent.Prewarm {
+		modeladapter.SnapshotCursorAccountStateBeforeTurn(intent.ConversationID, turnSeq)
 	}
 	// 上一回合被新消息顶掉后仍在后台跑完的委派任务，在新回合开头补一条模型可见回放。
 	// 落在回合最前面而不是运行中回合的中段，避免把 user 消息插进 tool_call/tool_result 之间。

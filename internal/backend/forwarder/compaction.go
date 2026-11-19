@@ -749,7 +749,7 @@ func (service *Service) applyCompactionPlan(stream *ActiveStream, conversationID
 		return validationErr
 	}
 	replacementEntries := append([]HistoryEntry(nil), candidateConversation.Entries...)
-	modeladapter.ClearCursorAccountState(conversationID)
+	modeladapter.ClearCursorAccountStateAndSnapshots(conversationID)
 	if service.store != nil {
 		// 持久化互斥必须先于 ReplaceEntries 获取并覆盖到 baseline 重置：
 		// 若防抖回调此刻在飞（已快照旧 pending、正写压缩前文件），不等待它结束

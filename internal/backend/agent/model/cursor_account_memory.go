@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -22,14 +24,18 @@ import (
 // stores that state and every KV blob, and the next run sends the checkpoint
 // back as conversation_state with only the new user message.
 type cursorAccountMemory struct {
-	mu     sync.Mutex
-	states map[string]*agentv1.ConversationStateStructure
-	blobs  map[string][]byte
+	mu         sync.Mutex
+	states     map[string]*agentv1.ConversationStateStructure
+	turnStates map[string]map[int64]*agentv1.ConversationStateStructure
+	blobs      map[string][]byte
 }
 
+const cursorAccountMaxTurnSnapshots = 20
+
 var cursorAgentMemory = &cursorAccountMemory{
-	states: map[string]*agentv1.ConversationStateStructure{},
-	blobs:  map[string][]byte{},
+	states:     map[string]*agentv1.ConversationStateStructure{},
+	turnStates: map[string]map[int64]*agentv1.ConversationStateStructure{},
+	blobs:      map[string][]byte{},
 }
 
 var cursorAccountFrameNames []string
@@ -148,6 +154,231 @@ func ClearCursorAccountState(conversationID string) {
 	cursorAgentMemory.mu.Unlock()
 	if path := cursorAccountStatePath(conversationID); path != "" {
 		_ = os.Remove(path)
+	}
+}
+
+// ClearCursorAccountStateAndSnapshots deletes both the active upstream Cursor
+// checkpoint and all per-turn pre-turn snapshots for conversationID. Used when
+// canonical history is rewritten (such as compaction) so a future rewind cannot
+// restore a pre-compaction upstream checkpoint.
+func ClearCursorAccountStateAndSnapshots(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	ClearCursorAccountState(conversationID)
+	cursorAgentMemory.mu.Lock()
+	delete(cursorAgentMemory.turnStates, conversationID)
+	cursorAgentMemory.mu.Unlock()
+	if dir := cursorAccountTurnStatesDir(conversationID); dir != "" {
+		_ = os.RemoveAll(dir)
+	}
+}
+
+// SnapshotCursorAccountStateBeforeTurn records the current valid upstream
+// Cursor checkpoint right before turnSeq begins. If a snapshot for turnSeq
+// already exists, it is preserved so repeated retries or model switches on the
+// same failed/aborted turn always keep the original pre-turn checkpoint.
+func SnapshotCursorAccountStateBeforeTurn(conversationID string, turnSeq int64) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" || turnSeq <= 0 {
+		return
+	}
+	if existing := cursorAccountLoadTurnState(conversationID, turnSeq); cursorAccountStateHasConversation(existing) {
+		return
+	}
+	state := cursorAccountLoadState(conversationID)
+	if !cursorAccountStateHasConversation(state) {
+		return
+	}
+	cloned, _ := proto.Clone(state).(*agentv1.ConversationStateStructure)
+	if cloned == nil {
+		return
+	}
+	sanitizeCursorAccountState(cloned)
+	if !cursorAccountStateHasConversation(cloned) {
+		return
+	}
+	cursorAgentMemory.mu.Lock()
+	byTurn := cursorAgentMemory.turnStates[conversationID]
+	if byTurn == nil {
+		byTurn = map[int64]*agentv1.ConversationStateStructure{}
+		cursorAgentMemory.turnStates[conversationID] = byTurn
+	}
+	byTurn[turnSeq] = cloned
+	cursorAgentMemory.mu.Unlock()
+
+	if path := cursorAccountTurnStatePath(conversationID, turnSeq); path != "" {
+		if raw, err := proto.Marshal(cloned); err == nil {
+			if os.MkdirAll(filepath.Dir(path), 0o755) == nil {
+				_ = os.WriteFile(path, raw, 0o600)
+			}
+		}
+	}
+	pruneCursorAccountTurnStates(conversationID, cursorAccountMaxTurnSnapshots)
+}
+
+// RestoreCursorAccountStateBeforeTurn rewinds the upstream Cursor checkpoint
+// to the state recorded right before targetTurnSeq (matching Cursor IDE's
+// per-bubble checkpoint restore on retry/edit/model switch). Future turn
+// snapshots (> targetTurnSeq) are discarded. If a valid snapshot for
+// targetTurnSeq exists, it becomes the active checkpoint (and the snapshot is
+// kept for subsequent retries) and true is returned. Otherwise the active
+// checkpoint is cleared and false is returned so the next Cursor call rebuilds
+// RootPromptMessagesJson from canonical conversation history.
+func RestoreCursorAccountStateBeforeTurn(conversationID string, targetTurnSeq int64) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	deleteCursorAccountTurnStatesAfter(conversationID, targetTurnSeq)
+	if targetTurnSeq > 0 {
+		if snapshot := cursorAccountLoadTurnState(conversationID, targetTurnSeq); cursorAccountStateHasConversation(snapshot) {
+			cursorAccountRememberState(conversationID, snapshot)
+			return true
+		}
+	}
+	deleteCursorAccountTurnState(conversationID, targetTurnSeq)
+	ClearCursorAccountState(conversationID)
+	return false
+}
+
+func cursorAccountLoadTurnState(conversationID string, turnSeq int64) *agentv1.ConversationStateStructure {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" || turnSeq <= 0 {
+		return nil
+	}
+	cursorAgentMemory.mu.Lock()
+	if byTurn := cursorAgentMemory.turnStates[conversationID]; byTurn != nil {
+		if state := byTurn[turnSeq]; state != nil {
+			cloned, _ := proto.Clone(state).(*agentv1.ConversationStateStructure)
+			cursorAgentMemory.mu.Unlock()
+			sanitizeCursorAccountState(cloned)
+			return cloned
+		}
+	}
+	cursorAgentMemory.mu.Unlock()
+	path := cursorAccountTurnStatePath(conversationID, turnSeq)
+	if path == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	state := &agentv1.ConversationStateStructure{}
+	if err := proto.Unmarshal(raw, state); err != nil {
+		return nil
+	}
+	sanitizeCursorAccountState(state)
+	if !cursorAccountStateHasConversation(state) {
+		return nil
+	}
+	cloned, _ := proto.Clone(state).(*agentv1.ConversationStateStructure)
+	if cloned == nil {
+		return state
+	}
+	cursorAgentMemory.mu.Lock()
+	byTurn := cursorAgentMemory.turnStates[conversationID]
+	if byTurn == nil {
+		byTurn = map[int64]*agentv1.ConversationStateStructure{}
+		cursorAgentMemory.turnStates[conversationID] = byTurn
+	}
+	byTurn[turnSeq] = cloned
+	cursorAgentMemory.mu.Unlock()
+	out, _ := proto.Clone(cloned).(*agentv1.ConversationStateStructure)
+	if out == nil {
+		return cloned
+	}
+	return out
+}
+
+func deleteCursorAccountTurnState(conversationID string, turnSeq int64) {
+	if conversationID == "" || turnSeq <= 0 {
+		return
+	}
+	cursorAgentMemory.mu.Lock()
+	if byTurn := cursorAgentMemory.turnStates[conversationID]; byTurn != nil {
+		delete(byTurn, turnSeq)
+		if len(byTurn) == 0 {
+			delete(cursorAgentMemory.turnStates, conversationID)
+		}
+	}
+	cursorAgentMemory.mu.Unlock()
+	if path := cursorAccountTurnStatePath(conversationID, turnSeq); path != "" {
+		_ = os.Remove(path)
+	}
+}
+
+func deleteCursorAccountTurnStatesAfter(conversationID string, targetTurnSeq int64) {
+	if conversationID == "" {
+		return
+	}
+	cursorAgentMemory.mu.Lock()
+	if byTurn := cursorAgentMemory.turnStates[conversationID]; byTurn != nil {
+		for turn := range byTurn {
+			if turn > targetTurnSeq {
+				delete(byTurn, turn)
+			}
+		}
+		if len(byTurn) == 0 {
+			delete(cursorAgentMemory.turnStates, conversationID)
+		}
+	}
+	cursorAgentMemory.mu.Unlock()
+	dir := cursorAccountTurnStatesDir(conversationID)
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if turn, ok := parseCursorAccountTurnStateFilename(entry.Name()); ok && turn > targetTurnSeq {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+}
+
+func pruneCursorAccountTurnStates(conversationID string, maxKeep int) {
+	if conversationID == "" || maxKeep <= 0 {
+		return
+	}
+	turnsSet := map[int64]struct{}{}
+	cursorAgentMemory.mu.Lock()
+	if byTurn := cursorAgentMemory.turnStates[conversationID]; byTurn != nil {
+		for turn := range byTurn {
+			turnsSet[turn] = struct{}{}
+		}
+	}
+	cursorAgentMemory.mu.Unlock()
+	dir := cursorAccountTurnStatesDir(conversationID)
+	if dir != "" {
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				if turn, ok := parseCursorAccountTurnStateFilename(entry.Name()); ok {
+					turnsSet[turn] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(turnsSet) <= maxKeep {
+		return
+	}
+	turns := make([]int64, 0, len(turnsSet))
+	for turn := range turnsSet {
+		turns = append(turns, turn)
+	}
+	sort.Slice(turns, func(i, j int) bool { return turns[i] < turns[j] })
+	for _, turn := range turns[:len(turns)-maxKeep] {
+		deleteCursorAccountTurnState(conversationID, turn)
 	}
 }
 
@@ -561,6 +792,37 @@ func cursorAccountStatePath(conversationID string) string {
 		return ""
 	}
 	return filepath.Join(root, conversationID, "cursor-agent-state.bin")
+}
+
+func cursorAccountTurnStatesDir(conversationID string) string {
+	root := strings.TrimSpace(appdata.HistoryRootPath())
+	if root == "" || strings.TrimSpace(conversationID) == "" {
+		return ""
+	}
+	return filepath.Join(root, conversationID, "cursor-agent-turn-states")
+}
+
+func cursorAccountTurnStatePath(conversationID string, turnSeq int64) string {
+	dir := cursorAccountTurnStatesDir(conversationID)
+	if dir == "" || turnSeq <= 0 {
+		return ""
+	}
+	return filepath.Join(dir, fmt.Sprintf("before-turn-%d.bin", turnSeq))
+}
+
+func parseCursorAccountTurnStateFilename(name string) (int64, bool) {
+	if !strings.HasPrefix(name, "before-turn-") || !strings.HasSuffix(name, ".bin") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(name, "before-turn-"), ".bin")
+	if raw == "" {
+		return 0, false
+	}
+	turn, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || turn <= 0 {
+		return 0, false
+	}
+	return turn, true
 }
 
 func cursorAccountBlobPath(key string) string {
