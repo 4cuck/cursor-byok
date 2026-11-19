@@ -218,7 +218,7 @@ func TestDriveProviderShrinksEarlierActiveTurnToolResultsAfterHistoryProjection(
 	case <-time.After(2 * time.Second):
 		t.Fatal("provider request was not started after active-turn emergency projection")
 	}
-	budgetTokens := int64(float64(conversation.TokenDetailsMaxTokens)*contextProjectionHardRatio) - compactionAutoReserveTokens
+	budgetTokens := autoCompactionBudgetTokens(int64(conversation.TokenDetailsMaxTokens), compactionAutoReserveTokens)
 	if inputTokens := estimateCompiledPromptTokens(CompiledConversation{Messages: request.Messages, Tools: request.Tools}); inputTokens > budgetTokens {
 		t.Fatalf("provider input tokens = %d, want <= %d", inputTokens, budgetTokens)
 	}
@@ -347,10 +347,10 @@ func TestContextProjectionPressureNotTriggeredForModeratePromptWith200KWindow(t 
 	service := &Service{resolver: unresolvedChannelResolver{}}
 	conversation := &ConversationFile{TokenDetailsMaxTokens: service.resolveContextWindowTokens("channel-a")}
 	compiled := CompiledConversation{Messages: []modeladapter.Message{
-		{Role: "system", Content: strings.Repeat("system-", 20_000)},
+		{Role: "system", Content: strings.Repeat("system-", 26_000)},
 		{Role: "user", Content: "hello"},
 	}}
-	budgetTokens := int64(float64(conversation.TokenDetailsMaxTokens)*contextProjectionHardRatio) - compactionAutoReserveTokens
+	budgetTokens := autoCompactionBudgetTokens(int64(conversation.TokenDetailsMaxTokens), compactionAutoReserveTokens)
 	inputTokens := estimateCompiledPromptTokens(compiled)
 	if inputTokens > budgetTokens {
 		t.Fatalf("test setup input tokens = %d, want <= budget %d", inputTokens, budgetTokens)
@@ -360,7 +360,7 @@ func TestContextProjectionPressureNotTriggeredForModeratePromptWith200KWindow(t 
 	}
 
 	conversation.TokenDetailsMaxTokens = projectedConversationMaxTokens
-	oldBudget := int64(float64(projectedConversationMaxTokens)*contextProjectionHardRatio) - compactionAutoReserveTokens
+	oldBudget := autoCompactionBudgetTokens(int64(projectedConversationMaxTokens), compactionAutoReserveTokens)
 	if inputTokens <= oldBudget {
 		t.Fatalf("test setup input tokens = %d, want above legacy 64K budget %d", inputTokens, oldBudget)
 	}
@@ -373,16 +373,16 @@ func TestContextProjectionPressureUsesProviderUsageWhenEstimateUndercounts(t *te
 	const window = uint32(1_000_000)
 	service := &Service{resolver: fixedContextWindowResolver{tokens: int(window)}}
 	conversation := &ConversationFile{
-		TokenDetailsMaxTokens:        window,
-		TokenDetailsUsedTokens:       850_000,
-		AutoCompactionPending:        true,
-		AutoCompactionPromptTokens:   850_000,
-		AutoCompactionReserveTokens:  compactionAutoReserveTokens,
+		TokenDetailsMaxTokens:       window,
+		TokenDetailsUsedTokens:      920_000,
+		AutoCompactionPending:       true,
+		AutoCompactionPromptTokens:  920_000,
+		AutoCompactionReserveTokens: compactionAutoReserveTokens,
 	}
 	compiled := CompiledConversation{Messages: []modeladapter.Message{
 		{Role: "user", Content: "hello"},
 	}}
-	budgetTokens := int64(float64(window)*contextProjectionHardRatio) - compactionAutoReserveTokens
+	budgetTokens := autoCompactionBudgetTokens(int64(window), compactionAutoReserveTokens)
 	if estimate := estimateCompiledPromptTokens(compiled); estimate >= budgetTokens {
 		t.Fatalf("test setup estimate = %d, want below budget %d", estimate, budgetTokens)
 	}
@@ -399,9 +399,9 @@ func TestBuildAutoCompactionPlanTriggersWhenProviderUsageExceedsBudget(t *testin
 	service := NewService(t.TempDir(), fixedContextWindowResolver{tokens: int(window)})
 	conversation := contextProjectionTestConversation(t, 8)
 	conversation.TokenDetailsMaxTokens = window
-	conversation.TokenDetailsUsedTokens = 850_000
+	conversation.TokenDetailsUsedTokens = 920_000
 	conversation.AutoCompactionPending = true
-	conversation.AutoCompactionPromptTokens = 850_000
+	conversation.AutoCompactionPromptTokens = 920_000
 	conversation.AutoCompactionReserveTokens = compactionAutoReserveTokens
 	compiled := CompiledConversation{Messages: []modeladapter.Message{
 		{Role: "system", Content: "system"},
@@ -430,7 +430,7 @@ func TestBuildAutoCompactionPlanTriggersWhenLargeWindowCanonicalPressureSynced(t
 	conversation := contextProjectionTestConversation(t, 8)
 	conversation.TokenDetailsMaxTokens = window
 	conversation.AutoCompactionReserveTokens = compactionAutoReserveTokens
-	budgetTokens := int64(float64(window)*0.8) - compactionAutoReserveTokens
+	budgetTokens := autoCompactionBudgetTokens(int64(window), compactionAutoReserveTokens)
 	largeContent := strings.Repeat("汉", int(budgetTokens*3)+100)
 	canonicalCompiled := CompiledConversation{Messages: []modeladapter.Message{
 		{Role: "user", Content: largeContent},
@@ -503,5 +503,27 @@ func TestResolveStreamContextWindowTokensFollowsIDECursorWindowSelection(t *test
 	}
 	if got := service.resolveStreamContextWindowTokens("cursor_account1:claude-fable-5-2", []modeladapter.ModelParameter{{ID: "context", Value: "300k"}, {ID: "fast", Value: "true"}}, true); got != 300_000 {
 		t.Fatalf("300k + fast maxMode = %d, want 300000", got)
+	}
+}
+
+func TestCursorDefaultCompactionBudgetsMatchCursorV5e(t *testing.T) {
+	cases := []struct {
+		window       int64
+		wantAuto     int64
+		wantBlocking int64
+	}{
+		{64_000, 54_000, 59_000},
+		{128_000, 115_200, 121_600},
+		{200_000, 180_000, 190_000},
+		{256_000, 230_400, 243_200},
+		{1_000_000, 900_000, 950_000},
+	}
+	for _, tc := range cases {
+		if got := autoCompactionBudgetTokens(tc.window, compactionAutoReserveTokens); got != tc.wantAuto {
+			t.Fatalf("autoCompactionBudgetTokens(%d) = %d, want %d", tc.window, got, tc.wantAuto)
+		}
+		if got := cursorBlockingCompactionBudgetTokens(tc.window); got != tc.wantBlocking {
+			t.Fatalf("cursorBlockingCompactionBudgetTokens(%d) = %d, want %d", tc.window, got, tc.wantBlocking)
+		}
 	}
 }

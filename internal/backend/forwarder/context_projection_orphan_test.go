@@ -80,7 +80,7 @@ func TestBuildContextProjectionSummaryPlanToleratesHistoricalOrphanToolResult(t 
 	conversation.CurrentTurnSeq = 8
 	conversation.CurrentRequestID = "request-8"
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() error = %v (historical orphan tool result must not poison the conversation)", err)
 	}

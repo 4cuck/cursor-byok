@@ -177,7 +177,7 @@ func TestCompleteContextProjectionSummaryWritesOnlySidecar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read context before completion: %v", err)
 	}
-	plan, err := buildContextProjectionSummaryPlan(persisted, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(persisted, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil || plan == nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() = (%#v, %v)", plan, err)
 	}
@@ -213,7 +213,7 @@ func TestHandleContextProjectionSummaryFailureFallsBackToRecentTailSidecar(t *te
 	if err != nil {
 		t.Fatalf("SaveConversationWithEntries() error = %v", err)
 	}
-	plan, err := buildContextProjectionSummaryPlan(persisted, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(persisted, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil || plan == nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() = (%#v, %v)", plan, err)
 	}
@@ -275,7 +275,7 @@ func TestAutomaticContextProjectionSummaryTimesOutIntoRecentTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveConversationWithEntries() error = %v", err)
 	}
-	plan, err := buildContextProjectionSummaryPlan(persisted, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(persisted, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil || plan == nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() = (%#v, %v)", plan, err)
 	}
@@ -1046,7 +1046,7 @@ func TestBuildContextProjectionSummaryPlanSelectsMiddleTurns(t *testing.T) {
 	conversation.CurrentRequestID = "request-8"
 	canonicalBefore := append([]HistoryEntry(nil), conversation.Entries...)
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() error = %v", err)
 	}
@@ -1281,7 +1281,7 @@ func TestBuildContextProjectionSummaryPlanSummarizesInterruptedHistoricalToolCha
 	}
 	conversation.Entries = entries
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() error = %v", err)
 	}
@@ -1322,7 +1322,7 @@ func TestBuildContextProjectionSummaryPlanIncludesAllProviderVisibleTurnEntries(
 	}
 	conversation.Entries = entries
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() error = %v", err)
 	}
@@ -1367,7 +1367,7 @@ func TestBuildContextProjectionSummaryPlanCompressesImportedPrehistoryAsOneStruc
 	conversation.CurrentTurnSeq = 6
 	conversation.CurrentRequestID = "request-6"
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 130_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() error = %v", err)
 	}
@@ -1413,7 +1413,7 @@ func TestBuildContextProjectionSummaryPlanRejectsIncompleteImportedToolBatch(t *
 	}
 	appendEntriesInPlace(conversation, entries)
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 130_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 150_000, 160_000, 10_000)
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("buildContextProjectionSummaryPlan() = (%#v, %v), want incomplete imported tool batch error", plan, err)
 	}
@@ -1438,7 +1438,7 @@ func TestContextProjectionMergesCanonicalSummaryIntoSingleProviderSummary(t *tes
 	conversation.CurrentRequestID = "request-8"
 	canonicalBefore := append([]HistoryEntry(nil), conversation.Entries...)
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 150_000, 160_000, 10_000)
 	if err != nil || plan == nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() = (%#v, %v)", plan, err)
 	}
@@ -1501,7 +1501,7 @@ func TestBuildContextProjectionSummaryPlanFailsClosedForMalformedProviderVisible
 	}
 	conversation.Entries = entries
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", nil, 150_000, 160_000, 10_000)
 	if err == nil || !strings.Contains(err.Error(), "model_message") {
 		t.Fatalf("buildContextProjectionSummaryPlan() = (%#v, %v), want malformed model_message error", plan, err)
 	}
@@ -1522,7 +1522,7 @@ func TestBuildContextProjectionSummaryPlanExtendsExistingSummaryAcrossCompleteTu
 		t.Fatalf("newContextProjectionState() error = %v", err)
 	}
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", existing, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", existing, 150_000, 160_000, 10_000)
 	if err != nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() error = %v", err)
 	}
@@ -1624,7 +1624,7 @@ func TestBuildContextProjectionSummaryPlanRebuildsRecentTailCoveredTurns(t *test
 	existing.Mode = contextProjectionModeRecentTail
 	existing.Summary = ""
 
-	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", existing, 120_000, 160_000, 10_000)
+	plan, err := buildContextProjectionSummaryPlan(conversation, "model-a", existing, 150_000, 160_000, 10_000)
 	if err != nil {
 		t.Fatalf("buildContextProjectionSummaryPlan() error = %v", err)
 	}

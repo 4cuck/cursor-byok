@@ -17,7 +17,13 @@ import (
 )
 
 const (
+	// 对齐 Cursor IDE 3.30.14 默认摘要阈值（cursor-local-agent-runtime V5e）：
+	// - 启动自动摘要：剩余 <= 10,000 tokens 或 已用 >= 90%（unusedPercent = 0.10）
+	// - 阻塞/持久化强制压缩：剩余 <= 5,000 tokens 或 已用 >= 95%（unusedPercent = 0.05）
 	compactionAutoReserveTokens      = 10000
+	compactionAutoWindowRatio        = 0.90
+	compactionBlockingReserveTokens  = 5000
+	compactionBlockingWindowRatio    = 0.95
 	compactionTriggerRemainingTokens = 8192
 	compactionReserveFloorTokens     = 8192
 	compactionSummaryMaxChars        = 12000
@@ -147,8 +153,8 @@ func (service *Service) buildAutoCompactionPlan(stream *ActiveStream, conversati
 	if reserveTokens <= 0 {
 		reserveTokens = compactionAutoReserveTokens
 	}
-	// 使用 80% 的上下文窗口作为预算，留出安全余量防止估算偏差导致 context_length_exceeded。
-	budgetTokens := int64(float64(contextWindowSize)*0.8) - reserveTokens
+	// 对齐 Cursor 默认摘要启动阈值：min(window * 0.90, window - reserveTokens)。
+	budgetTokens := autoCompactionBudgetTokens(contextWindowSize, reserveTokens)
 	preflightExceeded := contextTokens > 0 && contextTokens > budgetTokens
 	pendingExceeded := conversation.AutoCompactionPending && contextTokens > 0 && contextTokens > budgetTokens
 	if !pendingExceeded && !preflightExceeded {
@@ -227,8 +233,51 @@ func (service *Service) contextProjectionPressureExceeded(stream *ActiveStream, 
 	if reserveTokens <= 0 {
 		reserveTokens = compactionAutoReserveTokens
 	}
-	budgetTokens := int64(float64(contextWindowSize)*contextProjectionHardRatio) - reserveTokens
+	budgetTokens := autoCompactionBudgetTokens(contextWindowSize, reserveTokens)
 	return contextTokens > 0 && contextTokens > budgetTokens
+}
+
+// autoCompactionBudgetTokens matches Cursor IDE's default start-summarization
+// threshold (uN / V5e): min(window * 0.90, window - reserveTokens), where the
+// default reserve is 10,000 tokens.
+func autoCompactionBudgetTokens(contextWindowSize, reserveTokens int64) int64 {
+	if contextWindowSize <= 0 {
+		return 0
+	}
+	if reserveTokens <= 0 {
+		reserveTokens = compactionAutoReserveTokens
+	}
+	byPercent := int64(float64(contextWindowSize) * compactionAutoWindowRatio)
+	byReserve := contextWindowSize - reserveTokens
+	budget := byPercent
+	if byReserve < budget {
+		budget = byReserve
+	}
+	if budget < 1 {
+		return 1
+	}
+	return budget
+}
+
+// cursorBlockingCompactionBudgetTokens matches Cursor IDE's default proactive
+// blocking/persist compaction threshold (hN / V5e): min(window * 0.95,
+// window - 5,000). For Cursor Account models, leaving the 90%..95% band gives
+// Cursor's cloud agent server first chance to run native summarization before
+// local fallback compaction steps in.
+func cursorBlockingCompactionBudgetTokens(contextWindowSize int64) int64 {
+	if contextWindowSize <= 0 {
+		return 0
+	}
+	byPercent := int64(float64(contextWindowSize) * compactionBlockingWindowRatio)
+	byReserve := contextWindowSize - compactionBlockingReserveTokens
+	budget := byPercent
+	if byReserve < budget {
+		budget = byReserve
+	}
+	if budget < 1 {
+		return 1
+	}
+	return budget
 }
 
 // buildForcedCompactionPlan constructs a sidecar projection after a provider reports
@@ -282,7 +331,7 @@ func (service *Service) buildForcedCompactionPlan(stream *ActiveStream, conversa
 // resolveContextPressureTokens returns the conservative token count for automatic
 // compaction decisions. Local compile estimates can undercount large histories
 // (tokenizer mismatch, omitted cache fields, sidecar projection); persisted
-// provider usage and auto-compaction markers must still trigger at the 80% budget.
+// provider usage and auto-compaction markers must still trigger at Cursor's default budget.
 // When a valid usage anchor exists, the anchored estimate replaces the raw
 // heuristic so systematic over-estimation no longer triggers compaction early.
 func resolveContextPressureTokens(conversation *ConversationFile, compiled CompiledConversation) int64 {

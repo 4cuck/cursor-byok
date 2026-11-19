@@ -175,7 +175,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		if reserveTokens <= 0 {
 			reserveTokens = compactionAutoReserveTokens
 		}
-		budgetTokens := int64(float64(contextWindowTokens)*contextProjectionHardRatio) - reserveTokens
+		budgetTokens := autoCompactionBudgetTokens(contextWindowTokens, reserveTokens)
 		projectedCompiled, stats, changedEnough := compactActiveTurnToolResultsForBudget(conversation, compiled, budgetTokens)
 		if stats.ShortenedResults > 0 || stats.OmittedResults > 0 {
 			compiled = projectedCompiled
@@ -186,7 +186,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		}
 	}
 	// 大窗口下 provider usage 反映 projected 发送体积，UI/ canonical 体量更高时需同步压力标记，
-	// 否则 sidecar 有效时 80% 自动压缩不触发。64K 等小窗口测试场景不受影响。
+	// 否则 sidecar 有效时 90% 自动压缩不触发。64K 等小窗口测试场景不受影响。
 	// Cursor 账户模型在已有上游 checkpoint 时由 Cursor 服务端原生维护摘要与上下文窗口，
 	// 本地 context.json 不参与上游发送，不能把未压缩的本地历史强加为预检压缩压力。
 	if !cursorAccountSavedState {
@@ -217,12 +217,11 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		}
 	} else if upstreamUsed := modeladapter.CursorAccountUsedTokens(conversationID); upstreamUsed > 0 {
 		contextWindowTokens := compactionContextWindowSize(conversation)
-		reserveTokens := service.resolveCompactionReserveTokens(modelID)
-		if reserveTokens <= 0 {
-			reserveTokens = compactionAutoReserveTokens
-		}
-		budgetTokens := int64(float64(contextWindowTokens)*0.8) - reserveTokens
-		if contextWindowTokens > 0 && budgetTokens > 0 && int64(upstreamUsed) > budgetTokens {
+		// 对齐 Cursor IDE 阻塞/持久化阈值（95% 或剩余 <= 5,000 tokens）：
+		// 90%..95% 区间留给 Cursor 云端优先触发原生后台/自摘要；若到 95%（或切到更小窗口模型）
+		// 仍未压缩，本地兜底强制触发摘要，避免 context_length_exceeded。
+		budgetTokens := cursorBlockingCompactionBudgetTokens(contextWindowTokens)
+		if contextWindowTokens > 0 && budgetTokens > 0 && int64(upstreamUsed) >= budgetTokens {
 			overflowErr := compactionTerminalError{
 				code: compactionOverflowTerminalCode,
 				message: fmt.Sprintf(

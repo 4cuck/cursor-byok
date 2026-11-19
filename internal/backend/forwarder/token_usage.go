@@ -178,8 +178,8 @@ func updateConversationAutoCompactionState(conversation *ConversationFile, promp
 	if reserveTokens <= 0 {
 		reserveTokens = compactionAutoReserveTokens
 	}
-	remainingTokens := contextWindowTokens - promptTokensTotal
-	if remainingTokens > reserveTokens {
+	budgetTokens := autoCompactionBudgetTokens(contextWindowTokens, reserveTokens)
+	if promptTokensTotal < budgetTokens {
 		clearConversationAutoCompactionState(conversation)
 		return
 	}

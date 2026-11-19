@@ -18,7 +18,9 @@ func TestDelegatedContextBudgetForWindow(t *testing.T) {
 		{"zero window disables proactive compaction", 0, 0},
 		{"negative window disables", -1, 0},
 		{"floor does not exceed a small worker window", 10_000, 10_000 - providerOutputSafetyTokens},
-		{"normal budget", 272_000, int64(0.8*272_000) - 10_000},
+		{"64k window uses 10k unused reserve", 64_000, 54_000},
+		{"normal budget uses 90 percent", 272_000, int64(0.90 * 272_000)},
+		{"1m window uses 90 percent", 1_000_000, 900_000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

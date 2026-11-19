@@ -15,18 +15,18 @@ const (
 	delegatedSnipThresholdBytes    = 16 * 1024
 	delegatedSnipTargetBytes       = 4 * 1024
 	delegatedCompactionBudgetFloor = int64(16_000)
-	delegatedCompactionWindowRatio = 0.8
+	delegatedCompactionWindowRatio = compactionAutoWindowRatio
 	delegatedCompactionRetryLimit  = 2
 )
 
-// delegatedContextBudgetForWindow 由上下文窗口推导 worker 压缩预算：
-// budget = 0.8*window - compactionAutoReserveTokens；下限 protected，
+// delegatedContextBudgetForWindow 由上下文窗口推导 worker 压缩预算（对齐 Cursor 默认 90% / 10K 阈值）：
+// budget = min(0.90*window, window - compactionAutoReserveTokens)；下限 protected，
 // window<=0 表示无窗口信息，返回 0（关闭主动压缩，超限自救仍可用）。
 func delegatedContextBudgetForWindow(window int64) int64 {
 	if window <= 0 {
 		return 0
 	}
-	budget := int64(delegatedCompactionWindowRatio*float64(window)) - compactionAutoReserveTokens
+	budget := autoCompactionBudgetTokens(window, compactionAutoReserveTokens)
 	if budget < delegatedCompactionBudgetFloor {
 		// The floor is a large-window quality guard, never permission to send an
 		// input that leaves no room for the provider output safety reserve.

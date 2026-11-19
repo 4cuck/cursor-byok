@@ -33,6 +33,8 @@ func (preflightOverflowCompiler) Compile(_ *ConversationFile, mode agentv1.Agent
 			{Role: "user", Content: big},
 			{Role: "user", Content: big},
 			{Role: "user", Content: big},
+			{Role: "user", Content: big},
+			{Role: "user", Content: big},
 		},
 	}, nil
 }
@@ -636,11 +638,62 @@ func TestDriveProviderCompactsCursorAccountCheckpointWhenAboveBudget(t *testing.
 		t.Fatalf("SaveConversationWithEntries() error = %v", err)
 	}
 
-	// Simulate an upstream Cursor checkpoint that has grown past the 80% budget (790,362 > 790,000).
+	// Simulate an upstream Cursor checkpoint at 85% (below Cursor's 95% blocking threshold):
+	// Cursor's cloud agent server owns summarization until 95% / 5K remaining, so local forced compaction must NOT fire early.
+	checkpointBelow := &agentv1.ConversationStateStructure{
+		Mode: agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		TokenDetails: &agentv1.ConversationTokenDetails{
+			UsedTokens: 850_000,
+			MaxTokens:  1_000_000,
+		},
+		Turns: [][]byte{[]byte("turn-1")},
+	}
+	rawBelow, err := proto.Marshal(checkpointBelow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(appdata.HistoryRootPath(), persisted.ConversationID, "cursor-agent-state.bin")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, rawBelow, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { modeladapter.ClearCursorAccountState(persisted.ConversationID) })
+
+	providerBelow := &contextProjectionRequestProvider{requests: make(chan ProviderRequest, 1)}
+	brokerBelow := NewStreamBroker()
+	serviceBelow := newServiceWithDependencies(store, NewHistoryProjector(), contextProjectionLifecycleCompiler{}, providerBelow, brokerBelow)
+	serviceBelow.resolver = cursorAccountSavedStateResolver{}
+	streamBelow, err := brokerBelow.OpenStream(
+		"request-2-below",
+		persisted.ConversationID,
+		2,
+		"cursor_account1:claude-opus-5-5",
+		"Claude Opus 5.5",
+		agentv1.AgentMode_AGENT_MODE_AGENT,
+		"continue",
+	)
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	streamBelow.CheckpointConversation = cloneConversationFile(persisted)
+	if err := serviceBelow.driveProvider(streamBelow); err != nil {
+		t.Fatalf("driveProvider(85%%) error = %v", err)
+	}
+	streamBelow.mu.Lock()
+	pendingBelow := streamBelow.PendingCompaction
+	streamBelow.mu.Unlock()
+	if pendingBelow != nil {
+		t.Fatalf("PendingCompaction = %#v, want nil at 85%% (below Cursor's 95%% blocking threshold)", pendingBelow)
+	}
+
+	// Simulate an upstream Cursor checkpoint that has reached Cursor's 95% blocking threshold (950,362 >= 950,000).
+	modeladapter.ClearCursorAccountState(persisted.ConversationID)
 	checkpoint := &agentv1.ConversationStateStructure{
 		Mode: agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
 		TokenDetails: &agentv1.ConversationTokenDetails{
-			UsedTokens: 790_362,
+			UsedTokens: 950_362,
 			MaxTokens:  1_000_000,
 		},
 		Turns: [][]byte{[]byte("turn-1")},
@@ -649,14 +702,9 @@ func TestDriveProviderCompactsCursorAccountCheckpointWhenAboveBudget(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	statePath := filepath.Join(appdata.HistoryRootPath(), persisted.ConversationID, "cursor-agent-state.bin")
-	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(statePath, rawCheckpoint, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { modeladapter.ClearCursorAccountState(persisted.ConversationID) })
 
 	provider := &contextProjectionRequestProvider{requests: make(chan ProviderRequest, 1)}
 	broker := NewStreamBroker()
@@ -685,7 +733,7 @@ func TestDriveProviderCompactsCursorAccountCheckpointWhenAboveBudget(t *testing.
 	phase := stream.Phase
 	stream.mu.Unlock()
 	if pending == nil || pending.Trigger != compactionPreflightForcedTrigger {
-		t.Fatalf("PendingCompaction = %#v, want trigger %q when upstream checkpoint exceeds 80%% budget", pending, compactionPreflightForcedTrigger)
+		t.Fatalf("PendingCompaction = %#v, want trigger %q when upstream checkpoint reaches 95%% blocking budget", pending, compactionPreflightForcedTrigger)
 	}
 	if phase != TurnPhaseCompacting {
 		t.Fatalf("stream.Phase = %q, want %q", phase, TurnPhaseCompacting)

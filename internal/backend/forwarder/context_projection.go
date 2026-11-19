@@ -22,7 +22,7 @@ const (
 	contextProjectionModeRecentTail  = "recent_tail"
 	contextProjectionStableHeadTurns = 1
 	contextProjectionRecentTailTurns = 5
-	contextProjectionHardRatio       = 0.8
+	contextProjectionHardRatio       = compactionAutoWindowRatio
 	// 近端保留区的 token 下限比例：近端保留区估算 token 低于
 	// min(hardBudget, 会话全部轮次内容量) × 该比例时，向更早方向扩大保留区，
 	// 与 recentTailTurns 轮数阈值构成「轮数 + token」双阈值近端保护。
@@ -421,7 +421,7 @@ func buildContextProjectionSummaryPlanWithRecentTail(conversation *ConversationF
 	if modelKey == "" {
 		return nil, fmt.Errorf("model key is required")
 	}
-	hardBudget := int64(float64(contextWindowTokens)*contextProjectionHardRatio) - reserveTokens
+	hardBudget := autoCompactionBudgetTokens(contextWindowTokens, reserveTokens)
 	if hardBudget < 1 {
 		hardBudget = 1
 	}
