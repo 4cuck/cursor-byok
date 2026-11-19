@@ -961,10 +961,10 @@ func serveCursorAccountToolResults(ctx context.Context, appendFrame cursorAccoun
 				}
 				return
 			}
-			if id, ok := cursorAccountShellCloseID(cloned); ok {
-				// The IDE closes a shell exec with stream_close after the exit
-				// event. Without it the upstream tool stays open and Fable sits
-				// silent until the stall timer abandons the stream.
+			if id, ok := cursorAccountTerminalExecCloseID(cloned); ok {
+				// The IDE closes a finished exec with stream_close. Without it
+				// the upstream tool stays open and the model sits silent after
+				// a Read, Grep, or background shell spawn.
 				control := &agentv1.AgentClientMessage{
 					Message: &agentv1.AgentClientMessage_ExecClientControlMessage{
 						ExecClientControlMessage: &agentv1.ExecClientControlMessage{
@@ -2020,6 +2020,32 @@ func cursorAccountUTF8Suffix(text string, limit int) string {
 		suffix = suffix[1:]
 	}
 	return suffix
+}
+
+func cursorAccountTerminalExecCloseID(message *agentv1.ExecClientMessage) (uint32, bool) {
+	if message == nil || message.GetId() == 0 {
+		return 0, false
+	}
+	if id, ok := cursorAccountShellCloseID(message); ok {
+		return id, true
+	}
+	switch {
+	case message.GetReadResult() != nil,
+		message.GetRedactedReadResult() != nil,
+		message.GetGrepResult() != nil,
+		message.GetDeleteResult() != nil,
+		message.GetLsResult() != nil,
+		message.GetDiagnosticsResult() != nil,
+		message.GetMcpResult() != nil,
+		message.GetFetchResult() != nil,
+		message.GetWriteResult() != nil,
+		message.GetBackgroundShellSpawnResult() != nil,
+		message.GetListMcpResourcesExecResult() != nil,
+		message.GetReadMcpResourceExecResult() != nil:
+		return message.GetId(), true
+	default:
+		return 0, false
+	}
 }
 
 func cursorAccountShellCloseID(message *agentv1.ExecClientMessage) (uint32, bool) {

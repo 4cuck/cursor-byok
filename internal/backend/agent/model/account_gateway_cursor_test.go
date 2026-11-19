@@ -780,6 +780,35 @@ func TestCursorAccountFillsLinuxShellWithoutLocalPaths(t *testing.T) {
 	}
 }
 
+func TestCursorAccountReadAndBackgroundSpawnCloseTheExec(t *testing.T) {
+	readID, ok := cursorAccountTerminalExecCloseID(&agentv1.ExecClientMessage{
+		Id:      4,
+		Message: &agentv1.ExecClientMessage_ReadResult{ReadResult: &agentv1.ReadResult{}},
+	})
+	if !ok || readID != 4 {
+		t.Fatalf("read close = %d ok=%v", readID, ok)
+	}
+	spawnID, ok := cursorAccountTerminalExecCloseID(&agentv1.ExecClientMessage{
+		Id: 9,
+		Message: &agentv1.ExecClientMessage_BackgroundShellSpawnResult{
+			BackgroundShellSpawnResult: &agentv1.BackgroundShellSpawnResult{},
+		},
+	})
+	if !ok || spawnID != 9 {
+		t.Fatalf("spawn close = %d ok=%v", spawnID, ok)
+	}
+	if _, ok := cursorAccountTerminalExecCloseID(&agentv1.ExecClientMessage{
+		Id: 7,
+		Message: &agentv1.ExecClientMessage_ShellStream{
+			ShellStream: &agentv1.ShellStream{
+				Event: &agentv1.ShellStream_Stdout{Stdout: &agentv1.ShellStreamStdout{Data: "partial"}},
+			},
+		},
+	}); ok {
+		t.Fatal("stdout chunk must leave the shell exec open")
+	}
+}
+
 func TestCursorAccountShellExitClosesTheExecStream(t *testing.T) {
 	var mu sync.Mutex
 	var got []*agentv1.AgentClientMessage

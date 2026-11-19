@@ -372,6 +372,43 @@ func buildShellCompletedToolCall(toolCallID string, argsJSON []byte, stdout stri
 	}
 }
 
+// applyBackgroundShellSpawn 把 IDE 的后台启动结果收成一张仍在运行的 Shell 卡片。
+// 没有 ShellResult 时客户端把这次调用画成 Skipped，模型只好去读终端文件，
+// 而上游 exec 没被关掉时读完就停住。
+func applyBackgroundShellSpawn(result ExecApplyResult, pending runtimecore.PendingExec, spawn *agentv1.BackgroundShellSpawnResult) (ExecApplyResult, error) {
+	if spawn == nil {
+		return result, nil
+	}
+	result.IsTerminal = true
+	if success := spawn.GetSuccess(); success != nil {
+		backgrounded := &agentv1.ShellStreamBackgrounded{
+			ShellId:          success.GetShellId(),
+			Command:          success.GetCommand(),
+			WorkingDirectory: success.GetWorkingDirectory(),
+			Pid:              success.Pid,
+		}
+		result.ToolCall = buildShellBackgroundedToolCall(pending.ToolCallID, pending.ArgsJSON, backgrounded)
+		result.ToolResultPayload = fmt.Sprintf("shell backgrounded: shell_id=%d pid=%d command=%s", success.GetShellId(), success.GetPid(), strings.TrimSpace(success.GetCommand()))
+		return result, nil
+	}
+	if rejected := spawn.GetRejected(); rejected != nil {
+		result.ToolCall = buildShellRejectedToolCall(pending.ToolCallID, pending.ArgsJSON, rejected)
+		result.ToolResultPayload = fmt.Sprintf("shell rejected: %s", strings.TrimSpace(rejected.GetReason()))
+		return result, nil
+	}
+	if denied := spawn.GetPermissionDenied(); denied != nil {
+		result.ToolCall = buildShellPermissionDeniedToolCall(pending.ToolCallID, pending.ArgsJSON, denied)
+		result.ToolResultPayload = fmt.Sprintf("shell permission denied: %s", strings.TrimSpace(denied.GetError()))
+		return result, nil
+	}
+	if spawnErr := spawn.GetError(); spawnErr != nil {
+		result.ToolResultPayload = fmt.Sprintf("shell background failed: %s", strings.TrimSpace(spawnErr.GetError()))
+		return result, nil
+	}
+	result.ToolResultPayload = "shell background failed"
+	return result, nil
+}
+
 // buildShellBackgroundedToolCall 构造 Shell 被转入后台时的完成态 ToolCall。
 func buildShellBackgroundedToolCall(toolCallID string, argsJSON []byte, backgrounded *agentv1.ShellStreamBackgrounded) *agentv1.ToolCall {
 	args := decodeShellArgsForResult(argsJSON)

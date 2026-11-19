@@ -190,6 +190,8 @@ func nativeExecKind(exec *agentv1.ExecServerMessage) string {
 		return "computer_use"
 	case exec.GetShellArgs() != nil || exec.GetShellStreamArgs() != nil || exec.GetMiniSweAgentBashArgs() != nil:
 		return "shell"
+	case exec.GetBackgroundShellSpawnArgs() != nil:
+		return "background_shell_spawn"
 	case exec.GetWriteShellStdinArgs() != nil:
 		return "write_shell_stdin"
 	case exec.GetForceBackgroundShellArgs() != nil:

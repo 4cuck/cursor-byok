@@ -343,6 +343,8 @@ func (bridge *Bridge) ApplyExecClientMessage(msg *agentv1.ExecClientMessage, pen
 		result.ToolCall = buildWriteShellStdinCompletedToolCall(pending.ArgsJSON, writeResult)
 		result.IsTerminal = true
 		return result, nil
+	case "background_shell_spawn":
+		return applyBackgroundShellSpawn(result, pending, msg.GetBackgroundShellSpawnResult())
 	case "force_background_shell":
 		forceResult := msg.GetForceBackgroundShellResult()
 		if forceResult == nil {
