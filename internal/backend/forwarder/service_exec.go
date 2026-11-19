@@ -195,6 +195,12 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 	if err := service.publishExecCheckpoint(stream, pending); err != nil {
 		return err
 	}
+	if isCursorAccountShellTerminal(intent.ExecClientMessage) {
+		if !deliverCursorAccountShellTerminal(stream, pending.ToolCallID, pending, intent.ExecClientMessage) {
+			return service.reconcileStream(stream)
+		}
+		return nil
+	}
 	if preface := shellStreamOutputPreface(pending, intent.ExecClientMessage); preface != nil {
 		if !deliverCursorToolResult(stream, pending.ToolCallID, preface) {
 			return service.reconcileStream(stream)

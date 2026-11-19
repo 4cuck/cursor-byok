@@ -807,6 +807,13 @@ func TestCursorAccountReadAndBackgroundSpawnCloseTheExec(t *testing.T) {
 	}); ok {
 		t.Fatal("stdout chunk must leave the shell exec open")
 	}
+	shellID, ok := cursorAccountTerminalExecCloseID(&agentv1.ExecClientMessage{
+		Id:      8,
+		Message: &agentv1.ExecClientMessage_ShellResult{ShellResult: &agentv1.ShellResult{}},
+	})
+	if !ok || shellID != 8 {
+		t.Fatalf("shell result close = %d ok=%v", shellID, ok)
+	}
 }
 
 func TestCursorAccountShellExitClosesTheExecStream(t *testing.T) {
@@ -1757,5 +1764,3 @@ func TestReadCursorAccountStreamResetsSilentTimeoutOnKVActivity(t *testing.T) {
 		t.Fatalf("got = %q, want %q", got, "restored ok")
 	}
 }
-
-

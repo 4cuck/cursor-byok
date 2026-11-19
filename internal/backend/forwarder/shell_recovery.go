@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
 	"cursor/internal/logger"
 )
@@ -197,7 +198,32 @@ func (service *Service) recoverShellWithoutTerminal(stream *ActiveStream, pendin
 	if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 		return err
 	}
+	service.deliverCapturedShellToCursorAccount(stream, pending, reason)
 	return service.reconcileStream(stream)
+}
+
+// deliverCapturedShellToCursorAccount closes the upstream shell with the output
+// already captured. reconcileStream does nothing while that provider stream is
+// still open, so without this send the model never sees the text.
+func (service *Service) deliverCapturedShellToCursorAccount(stream *ActiveStream, pending runtimecore.PendingExec, reason string) {
+	if service == nil || stream == nil {
+		return
+	}
+	accountPending := pending
+	note := "shell ended without an exit event (" + strings.TrimSpace(reason) + "); this is the output captured so far"
+	if strings.TrimSpace(accountPending.StdoutBuffer) == "" {
+		accountPending.StdoutBuffer = note
+	} else {
+		accountPending.StdoutBuffer += "\n" + note
+	}
+	exitMsg := &agentv1.ExecClientMessage{
+		Message: &agentv1.ExecClientMessage_ShellStream{
+			ShellStream: &agentv1.ShellStream{
+				Event: &agentv1.ShellStream_Exit{Exit: &agentv1.ShellStreamExit{Code: 0}},
+			},
+		},
+	}
+	_ = deliverCursorAccountShellTerminal(stream, pending.ToolCallID, accountPending, exitMsg)
 }
 
 func buildSyntheticShellResultPayload(pending runtimecore.PendingExec, reason string) string {

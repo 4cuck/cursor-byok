@@ -139,6 +139,12 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 		}
 	}
 	service.scheduleExecWatchdog(stream.RequestID, pendingExec)
+	if strings.TrimSpace(pendingExec.ExecKind) == "shell" {
+		// Native account shells skip the generic watchdog. Without this timer a
+		// shell that streamed output but never exited leaves the model on
+		// "Planning next moves" with nothing to read.
+		service.scheduleShellForegroundRecovery(stream.RequestID, pendingExec)
+	}
 	if started != nil {
 		if err := service.broker.Publish(stream.RequestID, StreamEvent{
 			Message: buildToolCallStartedMessage(invocation.CallID, invocation.ModelCallID, started),

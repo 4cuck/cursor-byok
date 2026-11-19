@@ -2039,6 +2039,7 @@ func cursorAccountTerminalExecCloseID(message *agentv1.ExecClientMessage) (uint3
 		message.GetMcpResult() != nil,
 		message.GetFetchResult() != nil,
 		message.GetWriteResult() != nil,
+		message.GetShellResult() != nil,
 		message.GetBackgroundShellSpawnResult() != nil,
 		message.GetListMcpResourcesExecResult() != nil,
 		message.GetReadMcpResourceExecResult() != nil:

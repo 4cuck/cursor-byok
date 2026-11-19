@@ -1,3 +1,12 @@
+## v1.0.50
+
+### Fixed
+
+- **A finished shell no longer leaves the turn on "Planning next moves"**:
+  - Cursor account shells now send the captured output, then close the upstream exec, so the model can read the result.
+  - Output that the IDE spilled to a file is inlined. The model is not sent that path when the text is already included.
+  - A shell that streams output but never exits is recovered and closed, instead of leaving the account stream open.
+
 ## v1.0.49
 
 ### Fixed
@@ -13,11 +22,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.49-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.49-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.49-windows-arm64-installer.exe` 或 `cursor-byok-1.0.49-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.49-windows-x32-installer.exe` 或 `cursor-byok-1.0.49-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.49-macos-arm64.dmg` 或 `cursor-byok-1.0.49-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.49-macos-x64.dmg` 或 `cursor-byok-1.0.49-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.49-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.50-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.50-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.50-windows-arm64-installer.exe` 或 `cursor-byok-1.0.50-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.50-windows-x32-installer.exe` 或 `cursor-byok-1.0.50-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.50-macos-arm64.dmg` 或 `cursor-byok-1.0.50-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.50-macos-x64.dmg` 或 `cursor-byok-1.0.50-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.50-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。
