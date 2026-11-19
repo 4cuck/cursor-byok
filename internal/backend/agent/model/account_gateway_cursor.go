@@ -260,7 +260,7 @@ func (gateway *cursorAccountGateway) streamAuthorizedOnce(ctx context.Context, r
 		appendErr <- appendFrame(ctx, 0, mustCursorProto(run))
 	}()
 
-	return readCursorAccountStream(ctx, appendFrame, requestID, stateConversationID, modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, req.CursorToolResults, cursorAccountRequestContext(req), sink)
+	return readCursorAccountStream(ctx, appendFrame, requestID, stateConversationID, modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, req.CursorToolResults, req.CursorInteractionReplies, cursorAccountRequestContext(req), sink)
 }
 
 func (gateway *cursorAccountGateway) authorize(ctx context.Context, accountID string) (string, error) {
@@ -432,7 +432,7 @@ type cursorExecSlot struct {
 	execID string
 }
 
-func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppendFunc, requestID, conversationID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, toolResults <-chan *agentv1.ExecClientMessage, requestContext *agentv1.RequestContext, sink func(ModelEvent) error) error {
+func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppendFunc, requestID, conversationID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, toolResults <-chan *agentv1.ExecClientMessage, interactionReplies <-chan *agentv1.InteractionResponse, requestContext *agentv1.RequestContext, sink func(ModelEvent) error) error {
 	cursorAccountResetFrameLog()
 	var pending []byte
 	tmp := make([]byte, 8192)
@@ -450,13 +450,18 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 	var finishInline <-chan struct{}
 	var toolContinued <-chan struct{}
 	var pendingExecs chan cursorExecSlot
-	if toolResults != nil {
-		signal := make(chan struct{}, 1)
+	if toolResults != nil || interactionReplies != nil {
 		continued := make(chan struct{}, 8)
-		finishInline = signal
 		toolContinued = continued
-		pendingExecs = make(chan cursorExecSlot, 8)
-		go serveCursorAccountToolResults(streamCtx, appendFrame, nextSeq, toolResults, pendingExecs, signal, continued)
+		if toolResults != nil {
+			signal := make(chan struct{}, 1)
+			finishInline = signal
+			pendingExecs = make(chan cursorExecSlot, 8)
+			go serveCursorAccountToolResults(streamCtx, appendFrame, nextSeq, toolResults, pendingExecs, signal, continued)
+		}
+		if interactionReplies != nil {
+			go serveCursorAccountInteractionReplies(streamCtx, appendFrame, nextSeq, interactionReplies, continued)
+		}
 	}
 	thinkingActive := false
 	var thinkingStarted time.Time
@@ -713,6 +718,45 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 				}
 				continue
 			}
+			if query := msg.GetInteractionQuery(); query != nil {
+				noteUseful()
+				name, callID, args, ok := cursorAccountInteractionTool(query)
+				if !ok {
+					logger.Infof("cursor account ignored unsupported interaction query id=%d request_id=%s", query.GetId(), requestID)
+					continue
+				}
+				if _, seen := toolSeen[callID]; seen {
+					continue
+				}
+				toolSeen[callID] = struct{}{}
+				sawToolCall = true
+				sawVisibleTextAfterLastTool = false
+				if err := finishThinking(); err != nil {
+					return err
+				}
+				raw, err := proto.Marshal(query)
+				if err != nil {
+					return err
+				}
+				if err := sink(ModelEvent{
+					Kind:       ModelEventKindToolLikeCompleted,
+					OccurredAt: time.Now().UTC(),
+					Provider:   providerLabel,
+					GroupName:  providerLabel,
+					Model:      modelID,
+					ToolCallID: callID,
+					ToolInvocation: &runtimecore.ToolInvocation{
+						CallID:            callID,
+						ToolName:          name,
+						ArgsJSON:          args,
+						NativeInteraction: raw,
+						ModelCallID:       requestID,
+					},
+				}); err != nil {
+					return err
+				}
+				continue
+			}
 			if checkpoint := msg.GetConversationCheckpointUpdate(); checkpoint != nil {
 				cursorAccountRememberState(conversationID, checkpoint)
 				if sawTurnEnded {
@@ -846,6 +890,32 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 				return finishTurn()
 			}
 			return readErr
+		}
+	}
+}
+
+func serveCursorAccountInteractionReplies(ctx context.Context, appendFrame cursorAccountAppendFunc, nextSeq func() int64, replies <-chan *agentv1.InteractionResponse, continued chan<- struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-replies:
+			if !ok || msg == nil {
+				return
+			}
+			wrapped := &agentv1.AgentClientMessage{
+				Message: &agentv1.AgentClientMessage_InteractionResponse{InteractionResponse: msg},
+			}
+			if err := appendFrame(ctx, nextSeq(), mustCursorProto(wrapped)); err != nil {
+				logger.Warnf("cursor account interaction reply was not delivered: %v", err)
+				return
+			}
+			if continued != nil {
+				select {
+				case continued <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}
 }
@@ -1994,6 +2064,85 @@ func cursorAccountContextReply(id uint32, execID string, requestContext *agentv1
 				},
 			},
 		},
+	}
+}
+
+func cursorAccountInteractionID(query *agentv1.InteractionQuery, explicit string) string {
+	if id := strings.TrimSpace(explicit); id != "" {
+		return id
+	}
+	if query == nil {
+		return "interaction"
+	}
+	return fmt.Sprintf("interaction-%d", query.GetId())
+}
+
+func cursorAccountInteractionArgs(msg proto.Message) []byte {
+	if msg == nil {
+		return []byte("{}")
+	}
+	raw, err := protojson.Marshal(msg)
+	if err != nil || len(raw) == 0 {
+		return []byte("{}")
+	}
+	return raw
+}
+
+// cursorAccountInteractionTool maps a cloud InteractionQuery onto the local tool
+// the IDE already renders. The original query is forwarded unchanged; its id is
+// the id the IDE will answer with.
+func cursorAccountInteractionTool(query *agentv1.InteractionQuery) (string, string, []byte, bool) {
+	if query == nil {
+		return "", "", nil, false
+	}
+	switch {
+	case query.GetAskQuestionInteractionQuery() != nil:
+		item := query.GetAskQuestionInteractionQuery()
+		return "AskQuestion", cursorAccountInteractionID(query, item.GetToolCallId()), cursorAccountInteractionArgs(item.GetArgs()), true
+	case query.GetCreatePlanRequestQuery() != nil:
+		item := query.GetCreatePlanRequestQuery()
+		return "CreatePlan", cursorAccountInteractionID(query, item.GetToolCallId()), cursorAccountInteractionArgs(item.GetArgs()), true
+	case query.GetSwitchModeRequestQuery() != nil:
+		item := query.GetSwitchModeRequestQuery()
+		args := item.GetArgs()
+		callID := ""
+		if args != nil {
+			callID = args.GetToolCallId()
+		}
+		callID = cursorAccountInteractionID(query, callID)
+		if args != nil && strings.TrimSpace(args.GetToolCallId()) == "" {
+			args.ToolCallId = callID
+		}
+		return "SwitchMode", callID, cursorAccountInteractionArgs(args), true
+	case query.GetWebSearchRequestQuery() != nil:
+		item := query.GetWebSearchRequestQuery()
+		callID := ""
+		if item.GetArgs() != nil {
+			callID = item.GetArgs().GetToolCallId()
+		}
+		return "WebSearch", cursorAccountInteractionID(query, callID), cursorAccountInteractionArgs(item.GetArgs()), true
+	case query.GetWebFetchRequestQuery() != nil:
+		item := query.GetWebFetchRequestQuery()
+		callID := ""
+		if item.GetArgs() != nil {
+			callID = item.GetArgs().GetToolCallId()
+		}
+		return "WebFetch", cursorAccountInteractionID(query, callID), cursorAccountInteractionArgs(item.GetArgs()), true
+	case query.GetGenerateImageRequestQuery() != nil:
+		return "GenerateImage", cursorAccountInteractionID(query, ""), cursorAccountInteractionArgs(query.GetGenerateImageRequestQuery().GetArgs()), true
+	case query.GetMcpAuthRequestQuery() != nil:
+		return "McpAuth", cursorAccountInteractionID(query, ""), cursorAccountInteractionArgs(query.GetMcpAuthRequestQuery().GetArgs()), true
+	case query.GetConnectScmRequestQuery() != nil:
+		return "ConnectScm", cursorAccountInteractionID(query, ""), cursorAccountInteractionArgs(query.GetConnectScmRequestQuery().GetArgs()), true
+	case query.GetPrManagementRequestQuery() != nil:
+		item := query.GetPrManagementRequestQuery()
+		callID := ""
+		if item.GetArgs() != nil {
+			callID = item.GetArgs().GetToolCallId()
+		}
+		return "PrManagement", cursorAccountInteractionID(query, callID), cursorAccountInteractionArgs(item.GetArgs()), true
+	default:
+		return "", "", nil, false
 	}
 }
 

@@ -140,6 +140,9 @@ type PendingInteraction struct {
 	ReasoningSignatureSource string
 	// InteractionKind 描述交互类型，例如 ask_question、create_plan。
 	InteractionKind string
+	// NativeCursor 表示这条交互来自仍打开的 Cursor 账户 RunSSE。答案必须用上游
+	// query id 写回那条流，而不是再开一次本地 provider pass。
+	NativeCursor bool
 	// OpenedAt 表示交互请求发出的时间。
 	OpenedAt time.Time
 	// ArtifactPath 保存该 interaction 对应的原始桥接工件路径。
@@ -186,4 +189,7 @@ type ToolInvocation struct {
 	ModelCallID string
 	// NativeExec 是 Cursor 账户上游原始 exec。转发时不再按本地工具 schema 重编码。
 	NativeExec []byte
+	// NativeInteraction 是 Cursor 账户上游原始 InteractionQuery（AskQuestion、
+	// CreatePlan、SwitchMode 等）。IDE 直接渲染这张卡片，答案写回同一条 RunSSE。
+	NativeInteraction []byte
 }

@@ -172,6 +172,8 @@ type ActiveStream struct {
 	ModelParameters []modeladapter.ModelParameter
 	// CursorToolResults 在 Cursor 账户回合内把工具结果送回仍打开的上游流。
 	CursorToolResults chan *agentv1.ExecClientMessage
+	// CursorInteractionReplies 把交互卡片的答案写回仍打开的 Cursor 账户 RunSSE。
+	CursorInteractionReplies chan *agentv1.InteractionResponse
 	// CursorInlineToolTurn 表示本次 provider pass 已把工具结果写回同一条上游流。
 	CursorInlineToolTurn         bool
 	cursorToolWaiting            bool
@@ -473,6 +475,8 @@ type ProviderRequest struct {
 	ProviderStreamIdleTimeout time.Duration
 	// CursorToolResults 仅 Cursor 账户回合使用，用来把工具结果写回同一条 RunSSE。
 	CursorToolResults chan *agentv1.ExecClientMessage
+	// CursorInteractionReplies 仅 Cursor 账户回合使用，用来把交互答案写回同一条 RunSSE。
+	CursorInteractionReplies chan *agentv1.InteractionResponse
 	// CursorRequestContext 是本回合 IDE 上报的执行环境，转交给 Cursor 账户网关。
 	CursorRequestContext *agentv1.RequestContext
 }

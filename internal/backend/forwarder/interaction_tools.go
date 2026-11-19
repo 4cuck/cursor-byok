@@ -13,6 +13,9 @@ import (
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
 	"cursor/internal/logger"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // handleAsyncAskQuestionCompletion 处理客户端的 AsyncAskQuestionCompletionAction：
@@ -61,6 +64,135 @@ func (service *Service) handleAsyncAskQuestionCompletion(stream *ActiveStream, r
 // 客户端弹窗丢失/被关闭但未回 interaction 结果时，回合不能永久停在 awaiting_user，
 // 超时后合成 timeout 工具结果收口并让模型继续。
 const defaultInteractionTimeout = 15 * time.Minute
+
+func (service *Service) dispatchNativeCursorInteraction(stream *ActiveStream, invocation runtimecore.ToolInvocation) error {
+	if service == nil || stream == nil || service.broker == nil {
+		return fmt.Errorf("active stream is required")
+	}
+	query := &agentv1.InteractionQuery{}
+	if err := proto.Unmarshal(invocation.NativeInteraction, query); err != nil {
+		return fmt.Errorf("decode cursor interaction query: %w", err)
+	}
+	kind := interactionKindForTool(invocation.ToolName)
+	if kind == "" {
+		kind = "ask_question"
+	}
+	pending := runtimecore.PendingInteraction{
+		InteractionID:    fmt.Sprintf("%d", query.GetId()),
+		ToolCallID:       strings.TrimSpace(invocation.CallID),
+		ArgsJSON:         append([]byte(nil), invocation.ArgsJSON...),
+		InteractionKind:  kind,
+		NativeCursor:     true,
+		ModelCallID:      invocation.ModelCallID,
+		ReasoningContent: invocation.ReasoningContent,
+		OpenedAt:         time.Now().UTC(),
+	}
+	serverMessage := &agentv1.AgentServerMessage{
+		Message: &agentv1.AgentServerMessage_InteractionQuery{InteractionQuery: query},
+	}
+	started := buildStartedToolCall(invocation)
+	if started != nil && checkpointConversationInitialized(stream) {
+		if payload, err := protojson.Marshal(started); err == nil {
+			_, _ = service.appendConversationEntries(stream, stream.ConversationID, []HistoryEntry{
+				newToolCallEntryWithProviderMetadata(stream.TurnSeq, stream.RequestID, invocation.CallID, invocation.ToolName, invocation.ReasoningContent, invocation.ReasoningSignature, invocation.ReasoningSignatureSource, invocation.ReasoningProviderItemID, invocation.ReasoningProviderStatus, invocation.ReasoningProviderSummary, invocation.ProviderItemID, invocation.ProviderCallID, invocation.ProviderStatus, payload),
+			})
+		}
+	}
+	stream.mu.Lock()
+	if stream.PendingInteractions == nil {
+		stream.PendingInteractions = map[string]runtimecore.PendingInteraction{}
+	}
+	pending.ProviderPass = stream.ProviderPassCount
+	stream.PendingInteractions[pending.InteractionID] = pending
+	stream.UpdatedAt = time.Now().UTC()
+	stream.mu.Unlock()
+	logger.Infof("forwarder cursor interaction request_id=%s tool=%s call_id=%s interaction_id=%s", strings.TrimSpace(stream.RequestID), strings.TrimSpace(invocation.ToolName), pending.ToolCallID, pending.InteractionID)
+	if err := service.broker.Publish(stream.RequestID, StreamEvent{Message: serverMessage}); err != nil {
+		stream.mu.Lock()
+		delete(stream.PendingInteractions, pending.InteractionID)
+		stream.mu.Unlock()
+		return err
+	}
+	service.scheduleStreamTimer(
+		stream,
+		providerTimerKey(streamTimerInteractionTimeout, pending.InteractionID),
+		defaultInteractionTimeout,
+		streamTimerInteractionTimeout,
+		pending.InteractionID,
+		0,
+		"等待用户输入超时",
+	)
+	return nil
+}
+
+func interactionKindForTool(name string) string {
+	switch strings.TrimSpace(name) {
+	case "AskQuestion":
+		return "ask_question"
+	case "CreatePlan":
+		return "create_plan"
+	case "SwitchMode":
+		return "switch_mode"
+	case "WebSearch":
+		return "web_search"
+	case "WebFetch":
+		return "web_fetch"
+	case "PrManagement":
+		return "pr_management"
+	default:
+		return ""
+	}
+}
+
+func rejectedCursorInteraction(pending runtimecore.PendingInteraction, reason string) *agentv1.InteractionResponse {
+	id, err := strconv.ParseUint(strings.TrimSpace(pending.InteractionID), 10, 32)
+	if err != nil {
+		return nil
+	}
+	queryID := uint32(id)
+	reason = strings.TrimSpace(reason)
+	switch strings.TrimSpace(pending.InteractionKind) {
+	case "ask_question":
+		return &agentv1.InteractionResponse{
+			Id: queryID,
+			Result: &agentv1.InteractionResponse_AskQuestionInteractionResponse{
+				AskQuestionInteractionResponse: &agentv1.AskQuestionInteractionResponse{
+					Result: &agentv1.AskQuestionResult{
+						Result: &agentv1.AskQuestionResult_Rejected{
+							Rejected: &agentv1.AskQuestionRejected{Reason: reason},
+						},
+					},
+				},
+			},
+		}
+	case "switch_mode":
+		return &agentv1.InteractionResponse{
+			Id: queryID,
+			Result: &agentv1.InteractionResponse_SwitchModeRequestResponse{
+				SwitchModeRequestResponse: &agentv1.SwitchModeRequestResponse{
+					Result: &agentv1.SwitchModeRequestResponse_Rejected_{
+						Rejected: &agentv1.SwitchModeRequestResponse_Rejected{Reason: reason},
+					},
+				},
+			},
+		}
+	case "create_plan":
+		return &agentv1.InteractionResponse{
+			Id: queryID,
+			Result: &agentv1.InteractionResponse_CreatePlanRequestResponse{
+				CreatePlanRequestResponse: &agentv1.CreatePlanRequestResponse{
+					Result: &agentv1.CreatePlanResult{
+						Result: &agentv1.CreatePlanResult_Error{
+							Error: &agentv1.CreatePlanError{Error: reason},
+						},
+					},
+				},
+			},
+		}
+	default:
+		return nil
+	}
+}
 
 func (service *Service) handleInteractionToolInvocation(stream *ActiveStream, invocation runtimecore.ToolInvocation) error {
 	if service == nil || stream == nil {
@@ -177,6 +309,9 @@ func (service *Service) handleInteractionResult(intent InboundIntent) error {
 	}
 	if err := service.publishCheckpoint(intent.RequestID, stream.ConversationID); err != nil {
 		return err
+	}
+	if pending.NativeCursor && deliverCursorInteractionResult(stream, intent.InteractionResponse) {
+		return nil
 	}
 	if !shouldAutoResumeAfterInteraction(pending) {
 		rememberPendingProviderCompletion(stream, pendingTurnCompletion{
@@ -795,6 +930,11 @@ func (service *Service) recoverStaleInteractionWithoutResponse(stream *ActiveStr
 	}
 	if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 		return err
+	}
+	if pending.NativeCursor {
+		if response := rejectedCursorInteraction(pending, reason); response != nil && deliverCursorInteractionResult(stream, response) {
+			return nil
+		}
 	}
 	if !shouldAutoResumeAfterInteraction(pending) {
 		rememberPendingProviderCompletion(stream, pendingTurnCompletion{

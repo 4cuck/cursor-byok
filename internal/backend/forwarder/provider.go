@@ -261,6 +261,7 @@ func (gateway *DefaultProviderGateway) StartStream(ctx context.Context, req Prov
 		ModelParameters:           cloneModelParameters(req.ModelParameters),
 		MaxMode:                   req.MaxMode,
 		CursorToolResults:         req.CursorToolResults,
+		CursorInteractionReplies:  req.CursorInteractionReplies,
 		CursorRequestContext:      req.CursorRequestContext,
 		Messages:                  req.Messages,
 		StableMessageCount:        req.StableMessageCount,

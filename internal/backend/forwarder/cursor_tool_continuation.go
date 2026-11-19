@@ -59,6 +59,24 @@ func deliverCursorToolResult(stream *ActiveStream, toolCallID string, msg *agent
 	}
 }
 
+func deliverCursorInteractionResult(stream *ActiveStream, msg *agentv1.InteractionResponse) bool {
+	if stream == nil || msg == nil {
+		return false
+	}
+	stream.mu.Lock()
+	ch := stream.CursorInteractionReplies
+	stream.mu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
 func (service *Service) continueCursorToolOrReconcile(stream *ActiveStream, toolCallID string, msg *agentv1.ExecClientMessage) error {
 	if deliverCursorToolResult(stream, toolCallID, msg) {
 		return nil

@@ -62,7 +62,7 @@ func TestReadCursorAccountStreamReportsMissingAccessWhenSilent(t *testing.T) {
 	t.Cleanup(func() { _ = writer.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := readCursorAccountStream(ctx, staticCursorAccountAppender("Bearer test", "req"), "req", "conv", "claude-fable-5", "cursor_account1", 40*time.Millisecond, reader, nil, nil, nil, func(ModelEvent) error {
+	err := readCursorAccountStream(ctx, staticCursorAccountAppender("Bearer test", "req"), "req", "conv", "claude-fable-5", "cursor_account1", 40*time.Millisecond, reader, nil, nil, nil, nil, func(ModelEvent) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not have access to claude-fable-5") {
@@ -116,7 +116,7 @@ func TestReadCursorAccountStreamKeepsGzippedCheckpoint(t *testing.T) {
 	}
 	frame := cursorAccountFrame(compressed.Bytes())
 	frame[0] = 0x01
-	err = readCursorAccountStream(context.Background(), staticCursorAccountAppender("Bearer test", "req"), "req", conversationID, "claude-fable-5-2-low-fast", "cursor_account1", 0, bytes.NewReader(frame), nil, nil, nil, func(ModelEvent) error {
+	err = readCursorAccountStream(context.Background(), staticCursorAccountAppender("Bearer test", "req"), "req", conversationID, "claude-fable-5-2-low-fast", "cursor_account1", 0, bytes.NewReader(frame), nil, nil, nil, nil, func(ModelEvent) error {
 		return nil
 	})
 	if err != nil {
@@ -224,7 +224,7 @@ func TestReadCursorAccountStreamKeepsModelTextThatMentionsAccess(t *testing.T) {
 		})
 	}()
 	var text string
-	err := readCursorAccountStream(context.Background(), staticCursorAccountAppender("Bearer test", "req"), "req", "conv", "claude-fable-5-2", "cursor_account1", 0, reader, nil, nil, nil, func(event ModelEvent) error {
+	err := readCursorAccountStream(context.Background(), staticCursorAccountAppender("Bearer test", "req"), "req", "conv", "claude-fable-5-2", "cursor_account1", 0, reader, nil, nil, nil, nil, func(event ModelEvent) error {
 		if event.Kind == ModelEventKindTextDelta {
 			text += event.Text
 		}
@@ -919,6 +919,85 @@ func parameterPairs(model *agentv1.RequestedModel) []string {
 	return pairs
 }
 
+func TestReadCursorAccountStreamReturnsAskQuestionAnswerOnTheSameStream(t *testing.T) {
+	query := &agentv1.InteractionQuery{
+		Id: 7,
+		Query: &agentv1.InteractionQuery_AskQuestionInteractionQuery{
+			AskQuestionInteractionQuery: &agentv1.AskQuestionInteractionQuery{
+				ToolCallId: "ask-1",
+				Args: &agentv1.AskQuestionArgs{
+					Title: "Confirm",
+					Questions: []*agentv1.AskQuestionArgs_Question{{
+						Id:     "q1",
+						Prompt: "Ship it?",
+					}},
+				},
+			},
+		},
+	}
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	answered := make(chan struct{})
+	go func() {
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionQuery{InteractionQuery: query},
+		})
+		<-answered
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionUpdate{
+				InteractionUpdate: &agentv1.InteractionUpdate{
+					Message: &agentv1.InteractionUpdate_TurnEnded{TurnEnded: &agentv1.TurnEndedUpdate{}},
+				},
+			},
+		})
+		_ = writer.Close()
+	}()
+	replies := make(chan *agentv1.InteractionResponse, 1)
+	delivered := make(chan *agentv1.AgentClientMessage, 1)
+	var toolName, callID string
+	err := readCursorAccountStream(context.Background(), func(_ context.Context, _ int64, payload []byte) error {
+		msg := &agentv1.AgentClientMessage{}
+		if proto.Unmarshal(payload, msg) == nil && msg.GetInteractionResponse() != nil {
+			delivered <- msg
+		}
+		return nil
+	}, "req-ask", "conv-ask", "grok-4.7", "cursor_account1", 0, reader, nil, nil, replies, nil, func(event ModelEvent) error {
+		if event.Kind != ModelEventKindToolLikeCompleted || event.ToolInvocation == nil {
+			return nil
+		}
+		toolName = event.ToolInvocation.ToolName
+		callID = event.ToolInvocation.CallID
+		replies <- &agentv1.InteractionResponse{
+			Id: 7,
+			Result: &agentv1.InteractionResponse_AskQuestionInteractionResponse{
+				AskQuestionInteractionResponse: &agentv1.AskQuestionInteractionResponse{
+					Result: &agentv1.AskQuestionResult{
+						Result: &agentv1.AskQuestionResult_Success{
+							Success: &agentv1.AskQuestionSuccess{},
+						},
+					},
+				},
+			},
+		}
+		close(answered)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toolName != "AskQuestion" || callID != "ask-1" {
+		t.Fatalf("tool = %s %s, want AskQuestion ask-1", toolName, callID)
+	}
+	select {
+	case replied := <-delivered:
+		if replied.GetInteractionResponse().GetId() != 7 {
+			t.Fatalf("upstream interaction reply id = %d", replied.GetInteractionResponse().GetId())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("interaction answer was not written back to the cursor stream")
+	}
+}
+
 func writeCursorAgentFrame(w io.Writer, msg proto.Message) {
 	payload, err := proto.Marshal(msg)
 	if err != nil {
@@ -1048,7 +1127,7 @@ func TestReadCursorAccountStreamDrainsPostTurnEndedKVAndTerminalCheckpoint(t *te
 
 	var gotText string
 	var finished bool
-	err := readCursorAccountStream(context.Background(), appendFn, "req", conversationID, "grok-4.7", "cursor_account1", 0, reader, nil, nil, nil, func(event ModelEvent) error {
+	err := readCursorAccountStream(context.Background(), appendFn, "req", conversationID, "grok-4.7", "cursor_account1", 0, reader, nil, nil, nil, nil, func(event ModelEvent) error {
 		if event.Kind == ModelEventKindTextDelta {
 			gotText += event.Text
 		}
@@ -1588,6 +1667,7 @@ func TestReadCursorAccountStreamResetsSilentTimeoutOnKVActivity(t *testing.T) {
 		"cursor_account1",
 		90*time.Millisecond,
 		reader,
+		nil,
 		nil,
 		nil,
 		nil,

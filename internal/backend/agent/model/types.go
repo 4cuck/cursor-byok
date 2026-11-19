@@ -155,6 +155,9 @@ type StreamRequest struct {
 	// CursorToolResults 把客户端工具结果送回仍打开的 Cursor 账户 RunSSE。
 	// 空通道表示沿用旧行为：第一个用户工具结束本次上游流。
 	CursorToolResults <-chan *agentv1.ExecClientMessage
+	// CursorInteractionReplies 把 AskQuestion / CreatePlan / SwitchMode 的答案
+	// 写回仍打开的 Cursor 账户 RunSSE。
+	CursorInteractionReplies <-chan *agentv1.InteractionResponse
 	// CursorRequestContext 是 IDE 带来的执行环境。Cursor 账户回合把它交给
 	// 云端 agent，云端据此生成系统提示词。空环境会被当成没有工作区的 Windows。
 	CursorRequestContext *agentv1.RequestContext

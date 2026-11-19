@@ -387,8 +387,10 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	providerRequest.ModelParameters = modelParameters
 	if service.cursorAccountModel(modelID) {
 		results := make(chan *agentv1.ExecClientMessage, 32)
+		replies := make(chan *agentv1.InteractionResponse, 8)
 		stream.mu.Lock()
 		stream.CursorToolResults = results
+		stream.CursorInteractionReplies = replies
 		stream.CursorInlineToolTurn = false
 		stream.cursorToolWaiting = false
 		stream.cursorToolDelivered = false
@@ -397,6 +399,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		terminalsFolder := stream.TerminalsFolder
 		stream.mu.Unlock()
 		providerRequest.CursorToolResults = results
+		providerRequest.CursorInteractionReplies = replies
 		providerRequest.CursorRequestContext = cursorAccountForwardContext(conversation, workspacePaths, terminalsFolder)
 	}
 	service.debug.LogProvider(context.Background(), requestID, conversationID, "provider_request_prepared", map[string]any{

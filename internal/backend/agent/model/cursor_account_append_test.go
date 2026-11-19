@@ -328,7 +328,7 @@ func TestCursorAccountKVBlobWriteLeavesCheckpointRoots(t *testing.T) {
 		writeCursorAgentTurnEnded(writer)
 	}()
 	noAppend := func(context.Context, int64, []byte) error { return nil }
-	if err := readCursorAccountStream(context.Background(), noAppend, "req", conversationID, "claude-4.5-sonnet", "cursor_account1", 0, reader, nil, nil, nil, func(ModelEvent) error { return nil }); err != nil {
+	if err := readCursorAccountStream(context.Background(), noAppend, "req", conversationID, "claude-4.5-sonnet", "cursor_account1", 0, reader, nil, nil, nil, nil, func(ModelEvent) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	roots := cursorAccountLoadState(conversationID).GetRootPromptMessagesJson()

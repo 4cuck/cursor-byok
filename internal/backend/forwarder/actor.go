@@ -1034,6 +1034,7 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	inlineCursorTools := stream.CursorInlineToolTurn
 	stream.CursorInlineToolTurn = false
 	stream.CursorToolResults = nil
+	stream.CursorInteractionReplies = nil
 	stream.nativeExecSlots = nil
 	stream.cursorToolWaiting = false
 	stream.cursorToolDelivered = false

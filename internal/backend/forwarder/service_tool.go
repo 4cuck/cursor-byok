@@ -102,6 +102,9 @@ func (service *Service) handleToolInvocation(stream *ActiveStream, invocation ru
 		delegationSupervision = config.SupervisionEnabled
 		delegationGroups = len(config.Groups)
 	}
+	if len(invocation.NativeInteraction) > 0 {
+		return service.dispatchNativeCursorInteraction(stream, invocation)
+	}
 	logger.Infof("forwarder tool invocation request_id=%s conversation_id=%s mode=%s tool=%s call_id=%s model_call_id=%s provider_pass=%d multitask_coordinator=%t delegation_enabled=%t supervision_enabled=%t delegation_groups=%d",
 		strings.TrimSpace(stream.RequestID), strings.TrimSpace(stream.ConversationID), mode.String(), trimmedToolName, strings.TrimSpace(invocation.CallID), strings.TrimSpace(invocation.ModelCallID), providerPass, service != nil && service.multitaskDelegation != nil, delegationEnabled, delegationSupervision, delegationGroups)
 	if service != nil && service.debug != nil {
