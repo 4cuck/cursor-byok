@@ -945,6 +945,7 @@ func serveCursorAccountToolResults(ctx context.Context, appendFrame cursorAccoun
 				default:
 				}
 			}
+			cursorAccountCapUpstreamExec(cloned)
 			wrapped := &agentv1.AgentClientMessage{
 				Message: &agentv1.AgentClientMessage_ExecClientMessage{ExecClientMessage: cloned},
 			}
@@ -1948,7 +1949,11 @@ func cursorAccountMessageText(message Message) string {
 }
 
 func cursorAccountToolText(message Message) string {
-	if strings.EqualFold(strings.TrimSpace(message.Name), "Shell") {
+	name := strings.TrimSpace(message.Name)
+	// Shell listings and Read results (a terminal log is a Read of the terminal
+	// file) both leave Fable silent on the next turn once the raw text passes
+	// Cursor's 10_000-byte listing cap. The UI still has the full file.
+	if strings.EqualFold(name, "Shell") || strings.EqualFold(name, "Read") {
 		return CursorAccountShellOutput(message.Content)
 	}
 	return cursorAccountTruncateMiddle(message.Content, cursorAccountToolTextLimit)
@@ -1957,6 +1962,28 @@ func cursorAccountToolText(message Message) string {
 // CursorAccountShellOutput is the shell text the installed Cursor client puts
 // in front of the model. The terminal UI keeps the full output. The model sees
 // at most 10_000 bytes, split into the head and tail once it grows past that.
+// cursorAccountCapUpstreamExec shortens a Read result before it is appended
+// on the open Cursor account stream. The local tool card keeps the full file.
+func cursorAccountCapUpstreamExec(msg *agentv1.ExecClientMessage) {
+	if msg == nil {
+		return
+	}
+	capReadSuccess(msg.GetReadResult().GetSuccess())
+	capReadSuccess(msg.GetRedactedReadResult().GetSuccess())
+}
+
+func capReadSuccess(success *agentv1.ReadSuccess) {
+	if success == nil {
+		return
+	}
+	content := success.GetContent()
+	if content == "" || len(content) <= cursorShellOutputLimit {
+		return
+	}
+	success.Truncated = true
+	success.Output = &agentv1.ReadSuccess_Content{Content: CursorAccountShellOutput(content)}
+}
+
 func CursorAccountShellOutput(text string) string {
 	if len(text) <= cursorShellOutputLimit {
 		return text
