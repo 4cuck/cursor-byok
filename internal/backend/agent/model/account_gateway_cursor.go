@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -183,6 +184,20 @@ func (output *cursorAccountOutput) emit(event ModelEvent) error {
 	return output.sink(event)
 }
 
+var errCursorAccountEmptyEndOfImage = errors.New("cursor model returned only end_of_image token")
+
+func sanitizeCursorAccountTextDelta(text string) string {
+	if text == "" {
+		return ""
+	}
+	if !strings.Contains(text, "<end_of_image>") && !strings.Contains(text, "<start_of_image>") {
+		return text
+	}
+	cleaned := strings.ReplaceAll(text, "<end_of_image>", "")
+	cleaned = strings.ReplaceAll(cleaned, "<start_of_image>", "")
+	return cleaned
+}
+
 // streamAuthorizedForAccount runs one turn. When Cursor refuses a saved
 // checkpoint before any output, the checkpoint is dropped and the turn is
 // sent again with the newest transcript as history. Without that, every
@@ -191,6 +206,15 @@ func (gateway *cursorAccountGateway) streamAuthorizedForAccount(ctx context.Cont
 	stateConversationID := cursorAccountStateConversationID(req)
 	usedSavedState := stateConversationID != "" && HasCursorAccountState(stateConversationID)
 	err := gateway.streamAuthorizedOnce(ctx, req, accountID, authorization, stateConversationID, 0, output.emit)
+	if errors.Is(err, errCursorAccountEmptyEndOfImage) && !output.forwarded && ctx.Err() == nil {
+		logger.Warnf("cursor account model emitted only <end_of_image> for conversation=%s; retrying turn", stateConversationID)
+		err = gateway.streamAuthorizedOnce(ctx, req, accountID, authorization, stateConversationID, 0, output.emit)
+		if errors.Is(err, errCursorAccountEmptyEndOfImage) && usedSavedState && !output.forwarded && ctx.Err() == nil {
+			logger.Warnf("cursor account model repeated <end_of_image> with saved checkpoint for conversation=%s; clearing checkpoint and retrying with bounded history", stateConversationID)
+			ClearCursorAccountState(stateConversationID)
+			return gateway.streamAuthorizedOnce(ctx, req, accountID, authorization, stateConversationID, cursorAccountHistoryBudget(req.ResolvedContextWindowTokens), output.emit)
+		}
+	}
 	if err == nil || !usedSavedState || output.forwarded || ctx.Err() != nil || !cursorAccountShouldResetSavedState(err) {
 		return err
 	}
@@ -438,6 +462,10 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 	var inputTokens, outputTokens, cacheRead, cacheWrite, reasoningTokens int64
 	usagePresent := false
 	finishReason := "stop"
+	sawEndOfImageToken := false
+	sawVisibleTextAfterLastTool := false
+	sawToolCall := false
+	sawThinking := false
 
 	finishThinking := func() error {
 		if !thinkingActive {
@@ -460,6 +488,16 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 	finishTurn := func() error {
 		if err := finishThinking(); err != nil {
 			return err
+		}
+		if finishReason == "stop" && sawEndOfImageToken && !sawVisibleTextAfterLastTool {
+			switch {
+			case sawToolCall:
+				finishReason = "tool_calls"
+			case sawThinking:
+				finishReason = "incomplete"
+			default:
+				return errCursorAccountEmptyEndOfImage
+			}
 		}
 		return sink(ModelEvent{
 			Kind:             ModelEventKindTurnFinished,
@@ -702,6 +740,8 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 					continue
 				}
 				toolSeen[callID] = struct{}{}
+				sawToolCall = true
+				sawVisibleTextAfterLastTool = false
 				if err := finishThinking(); err != nil {
 					return err
 				}
@@ -738,21 +778,34 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			if update == nil {
 				continue
 			}
-			if text := update.GetTextDelta(); text != nil && text.GetText() != "" {
+			if update.GetSummaryStarted() != nil || update.GetSummary() != nil || update.GetSummaryCompleted() != nil {
 				noteUseful()
+			}
+			if text := update.GetTextDelta(); text != nil && text.GetText() != "" {
+				rawText := text.GetText()
+				if strings.Contains(rawText, "<end_of_image>") || strings.Contains(rawText, "<start_of_image>") {
+					sawEndOfImageToken = true
+				}
+				cleanedText := sanitizeCursorAccountTextDelta(rawText)
+				if strings.TrimSpace(cleanedText) == "" {
+					continue
+				}
+				noteUseful()
+				sawVisibleTextAfterLastTool = true
 				if err := sink(ModelEvent{
 					Kind:       ModelEventKindTextDelta,
 					OccurredAt: time.Now().UTC(),
 					Provider:   providerLabel,
 					GroupName:  providerLabel,
 					Model:      modelID,
-					Text:       text.GetText(),
+					Text:       cleanedText,
 				}); err != nil {
 					return err
 				}
 			}
 			if thinking := update.GetThinkingDelta(); thinking != nil && thinking.GetText() != "" {
 				noteUseful()
+				sawThinking = true
 				if !thinkingActive {
 					thinkingActive = true
 					thinkingStarted = time.Now()
@@ -998,12 +1051,17 @@ func cursorAccountRunMessageFor(req StreamRequest, modelID, stateConversationID 
 	} else if state.Mode == nil {
 		state.Mode = mode.Enum()
 	}
+	userMsg := &agentv1.UserMessage{
+		Text:      text,
+		MessageId: uuid.NewString(),
+		Mode:      mode,
+	}
+	selectedContext, preFetchedBlobs := cursorAccountSelectedImagesForTurn(req.Messages)
+	if selectedContext != nil {
+		userMsg.SelectedContext = selectedContext
+	}
 	action := &agentv1.UserMessageAction{
-		UserMessage: &agentv1.UserMessage{
-			Text:      text,
-			MessageId: uuid.NewString(),
-			Mode:      mode,
-		},
+		UserMessage:    userMsg,
 		RequestContext: cursorAccountRequestContext(req),
 	}
 	// A saved checkpoint is the conversation. The IDE follow-up sends that
@@ -1018,11 +1076,59 @@ func cursorAccountRunMessageFor(req StreamRequest, modelID, stateConversationID 
 				Action: &agentv1.ConversationAction{
 					Action: &agentv1.ConversationAction_UserMessageAction{UserMessageAction: action},
 				},
-				RequestedModel: cursorAccountRequestedModel(modelID, req.ThinkingEffort, req.FastMode, req.MaxMode, req.ModelParameters, req.CursorModelSpec, req.ResolvedContextWindowTokens),
-				ConversationId: proto.String(conversationID),
+				RequestedModel:  cursorAccountRequestedModel(modelID, req.ThinkingEffort, req.FastMode, req.MaxMode, req.ModelParameters, req.CursorModelSpec, req.ResolvedContextWindowTokens),
+				ConversationId:  proto.String(conversationID),
+				PreFetchedBlobs: preFetchedBlobs,
 			},
 		},
 	}
+}
+
+func cursorAccountSelectedImagesForTurn(messages []Message) (*agentv1.SelectedContext, []*agentv1.PreFetchedBlob) {
+	if len(messages) == 0 {
+		return nil, nil
+	}
+	var images []*agentv1.SelectedImage
+	var blobs []*agentv1.PreFetchedBlob
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if cursorAccountIsToolMessage(msg) || strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "system") {
+			continue
+		}
+		for _, part := range msg.ContentParts {
+			if !strings.EqualFold(strings.TrimSpace(part.Type), "image") || part.Image == nil || len(part.Image.Data) == 0 {
+				continue
+			}
+			sum := sha256.Sum256(part.Image.Data)
+			blobID := sum[:]
+			mimeType := strings.TrimSpace(part.Image.MIMEType)
+			if mimeType == "" {
+				mimeType = "image/png"
+			}
+			images = append(images, &agentv1.SelectedImage{
+				Uuid:     uuid.NewString(),
+				Path:     strings.TrimSpace(part.Image.Path),
+				MimeType: mimeType,
+				DataOrBlobId: &agentv1.SelectedImage_Data{
+					Data: append([]byte(nil), part.Image.Data...),
+				},
+			})
+			blobs = append(blobs, &agentv1.PreFetchedBlob{
+				Id:    append([]byte(nil), blobID...),
+				Value: append([]byte(nil), part.Image.Data...),
+			})
+		}
+		if len(images) > 0 {
+			break
+		}
+	}
+	if len(images) == 0 {
+		return nil, nil
+	}
+	return &agentv1.SelectedContext{SelectedImages: images}, blobs
 }
 
 // cursorAccountToolTextLimit caps one non-shell tool result inside the flattened
@@ -1205,20 +1311,45 @@ func cursorAccountSplitTurn(messages []Message) ([]*agentv1.ConversationHistoryM
 	if !cursorAccountIsToolMessage(last) && !strings.EqualFold(strings.TrimSpace(last.Role), "assistant") {
 		split = len(messages) - 1
 	}
-	history := make([]*agentv1.ConversationHistoryMessage, 0, split)
-	for _, message := range messages[:split] {
+	historyEnd := split
+	var backgroundDelegationNotices []string
+	for historyEnd > 0 && isCursorAccountBackgroundDelegationMessage(messages[historyEnd-1].Content) {
+		historyEnd--
+	}
+	for i := historyEnd; i < split; i++ {
+		if notice := strings.TrimSpace(messages[i].Content); notice != "" {
+			backgroundDelegationNotices = append(backgroundDelegationNotices, notice)
+		}
+	}
+	history := make([]*agentv1.ConversationHistoryMessage, 0, historyEnd)
+	for _, message := range messages[:historyEnd] {
 		if item := cursorAccountHistoryMessage(message); item != nil {
 			history = append(history, item)
 		}
 	}
 	if split == len(messages) {
+		if len(backgroundDelegationNotices) > 0 {
+			return history, strings.Join(backgroundDelegationNotices, "\n\n") + "\n\nContinue."
+		}
 		return history, "Continue."
 	}
 	text := strings.TrimSpace(cursorAccountMessageText(messages[split]))
 	if text == "" {
 		text = "Continue."
 	}
+	if len(backgroundDelegationNotices) > 0 {
+		text = strings.Join(backgroundDelegationNotices, "\n\n") + "\n\n" + text
+	}
 	return history, text
+}
+
+func isCursorAccountBackgroundDelegationMessage(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	return strings.Contains(trimmed, "此前转入后台继续运行的委派任务已结束") ||
+		strings.Contains(trimmed, "subagent agent_id=")
 }
 
 func cursorAccountHistoryMessage(message Message) *agentv1.ConversationHistoryMessage {
@@ -1310,6 +1441,9 @@ func cursorAccountScaffoldingMessage(message Message) bool {
 	}
 	text := strings.TrimSpace(message.Content)
 	if text == "" {
+		return false
+	}
+	if isCursorAccountBackgroundDelegationMessage(text) {
 		return false
 	}
 	for _, tag := range []string{

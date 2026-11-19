@@ -22,11 +22,14 @@ type NativeModelParameter struct {
 }
 
 type NativeSubagentParent struct {
-	ModelID        string
-	ThinkingEffort string
-	Fast           bool
-	Parameters     []NativeModelParameter
-	Overrides      map[string]runtimecore.SubagentModelOverrideSelection
+	ModelID            string
+	ThinkingEffort     string
+	Fast               bool
+	Parameters         []NativeModelParameter
+	Overrides          map[string]runtimecore.SubagentModelOverrideSelection
+	ConversationID     string
+	RootConversationID string
+	ToolCallID         string
 }
 
 // RewriteNativeSubagentModel applies the parent Task model selection to a
@@ -38,6 +41,17 @@ func RewriteNativeSubagentModel(exec *agentv1.ExecServerMessage, parent NativeSu
 	args := exec.GetSubagentArgs()
 	if exec == nil || args == nil {
 		return nil
+	}
+	if parentConvID := strings.TrimSpace(parent.ConversationID); parentConvID != "" {
+		args.ParentConversationId = &parentConvID
+		rootConvID := strings.TrimSpace(parent.RootConversationID)
+		if rootConvID == "" {
+			rootConvID = parentConvID
+		}
+		args.RootParentConversationId = &rootConvID
+	}
+	if strings.TrimSpace(args.GetToolCallId()) == "" && strings.TrimSpace(parent.ToolCallID) != "" {
+		args.ToolCallId = strings.TrimSpace(parent.ToolCallID)
 	}
 	subagentType := strings.TrimSpace(args.GetSubagentType())
 	current := strings.TrimSpace(args.GetModelId())

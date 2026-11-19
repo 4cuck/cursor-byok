@@ -162,7 +162,14 @@ func summarizeSubagentResult(result *agentv1.SubagentResult) string {
 		}
 		return "subagent returned empty response"
 	case *agentv1.SubagentResult_Error:
-		return item.Error.GetError()
+		errText := strings.TrimSpace(item.Error.GetError())
+		if agentID := strings.TrimSpace(item.Error.GetAgentId()); agentID != "" && !strings.Contains(errText, agentID) {
+			if errText == "" {
+				errText = "subagent stopped"
+			}
+			errText = fmt.Sprintf("%s (agent_id=%s)", errText, agentID)
+		}
+		return errText
 	default:
 		return "unknown subagent result"
 	}

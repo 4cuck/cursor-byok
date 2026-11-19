@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/logger"
 	legacyruntime "cursor/internal/runtime"
 )
@@ -69,7 +70,15 @@ func (service *Service) recoverFromContextOverflow(stream *ActiveStream, convers
 	}
 	compiled = guardCompiledConversationForProvider(compiled)
 
-	plan, err := service.buildForcedCompactionPlan(stream, conversation, compiled)
+	if service.cursorAccountModel(modelID) {
+		modeladapter.ClearCursorAccountState(conversationID)
+	}
+	var plan *compactionPlan
+	if service.cursorAccountModel(modelID) {
+		plan, err = service.buildForcedPreflightCompactionPlan(stream, conversation, compiled)
+	} else {
+		plan, err = service.buildForcedCompactionPlan(stream, conversation, compiled)
+	}
 	if err != nil {
 		return false, err
 	}

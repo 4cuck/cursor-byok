@@ -125,6 +125,27 @@ func (service *Service) rewriteCheckpointTokenDetailsForClient(stream *ActiveStr
 			projectionActive,
 		),
 	)
+	if service != nil && stream != nil && conversation != nil &&
+		service.cursorAccountModel(activeStreamModelID(stream)) &&
+		modeladapter.HasCursorAccountState(conversation.ConversationID) {
+		if upstreamDetails := modeladapter.CursorAccountTokenDetails(conversation.ConversationID); upstreamDetails != nil && upstreamDetails.GetBreakdown() != nil && len(upstreamDetails.GetBreakdown().GetCategories()) > 0 {
+			breakdown := upstreamDetails.GetBreakdown()
+			breakdown.MaxTokens = state.TokenDetails.MaxTokens
+			if state.TokenDetails.UsedTokens > 0 {
+				breakdown.TotalUsedTokens = state.TokenDetails.UsedTokens
+			}
+			state.TokenDetails.Breakdown = breakdown
+			if upstreamDetails.GetPromptContextUsageTree() != nil {
+				state.TokenDetails.PromptContextUsageTree = upstreamDetails.GetPromptContextUsageTree()
+			}
+			return
+		}
+		state.TokenDetails.Breakdown = scalePromptTokenBreakdownToUsedTokens(
+			estimateCheckpointPromptTokenBreakdown(compiled, hasCompiled, state.TokenDetails.UsedTokens, state.TokenDetails.MaxTokens),
+			state.TokenDetails.UsedTokens,
+		)
+		return
+	}
 	state.TokenDetails.Breakdown = estimateCheckpointPromptTokenBreakdown(compiled, hasCompiled, state.TokenDetails.UsedTokens, state.TokenDetails.MaxTokens)
 }
 

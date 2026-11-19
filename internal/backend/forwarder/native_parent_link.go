@@ -30,6 +30,7 @@ type childParentLink struct {
 	ParentRequestID     string
 	RootParentRequestID string
 	ParentToolCallID    string
+	ChildConversationID string
 	RecordedAt          time.Time
 }
 
@@ -138,7 +139,39 @@ func (service *Service) applyChildParentLink(conversation *ConversationFile, req
 	if !ok {
 		return false
 	}
+	service.recordChildConversationOnLink(requestID, strings.TrimSpace(conversation.ConversationID), link)
 	return service.applyResolvedChildParentLink(conversation, link)
+}
+
+func (service *Service) recordChildConversationOnLink(requestID, childConversationID string, link childParentLink) {
+	if service == nil || childConversationID == "" {
+		return
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID != "" {
+		service.childParentLinkMu.Lock()
+		if existing, ok := service.childParentLinks[requestID]; ok {
+			existing.ChildConversationID = childConversationID
+			service.childParentLinks[requestID] = existing
+		}
+		service.childParentLinkMu.Unlock()
+	}
+	parentRequestID := strings.TrimSpace(link.ParentRequestID)
+	parentToolCallID := strings.TrimSpace(link.ParentToolCallID)
+	if parentRequestID == "" && parentToolCallID == "" {
+		return
+	}
+	service.delegationRuntimeMu.Lock()
+	for _, item := range service.nativeDelegations {
+		if item == nil {
+			continue
+		}
+		if (parentRequestID == "" || strings.TrimSpace(item.ParentRequestID) == parentRequestID) &&
+			(parentToolCallID == "" || strings.TrimSpace(item.ToolCallID) == parentToolCallID) {
+			item.ChildConversationID = childConversationID
+		}
+	}
+	service.delegationRuntimeMu.Unlock()
 }
 
 func (service *Service) applyResolvedChildParentLink(conversation *ConversationFile, link childParentLink) bool {
@@ -188,6 +221,9 @@ func (service *Service) backfillChildParentLink(requestID string, link childPare
 	conversationID := strings.TrimSpace(stream.ConversationID)
 	checkpoint := stream.CheckpointConversation
 	stream.mu.Unlock()
+	if conversationID != "" {
+		service.recordChildConversationOnLink(requestID, conversationID, link)
+	}
 	if checkpoint != nil {
 		stream.mu.Lock()
 		service.applyResolvedChildParentLink(checkpoint, link)
@@ -249,30 +285,100 @@ func (service *Service) childConversationIDForNativeDelegation(item *nativeDeleg
 	if service == nil || item == nil {
 		return ""
 	}
+	if id := strings.TrimSpace(item.ChildConversationID); id != "" {
+		return id
+	}
 	parentRequestID := strings.TrimSpace(item.ParentRequestID)
 	parentToolCallID := strings.TrimSpace(item.ToolCallID)
 	if parentRequestID == "" || parentToolCallID == "" {
 		return ""
 	}
-	childRequestID := ""
+	var childRequestIDs []string
+	var resolvedChildConvID string
 	service.childParentLinkMu.Lock()
 	for requestID, link := range service.childParentLinks {
 		if strings.TrimSpace(link.ParentRequestID) == parentRequestID && strings.TrimSpace(link.ParentToolCallID) == parentToolCallID {
-			childRequestID = requestID
-			break
+			if convID := strings.TrimSpace(link.ChildConversationID); convID != "" {
+				resolvedChildConvID = convID
+			}
+			childRequestIDs = append(childRequestIDs, requestID)
 		}
 	}
 	service.childParentLinkMu.Unlock()
-	if childRequestID == "" {
+	if resolvedChildConvID != "" {
+		return resolvedChildConvID
+	}
+	for _, childRequestID := range childRequestIDs {
+		stream, ok := service.broker.Get(childRequestID)
+		if !ok || stream == nil {
+			continue
+		}
+		stream.mu.Lock()
+		convID := strings.TrimSpace(stream.ConversationID)
+		stream.mu.Unlock()
+		if convID != "" {
+			return convID
+		}
+	}
+	return ""
+}
+
+func (service *Service) childConversationIDForToolCall(parentConversationID string, parentToolCallID string) string {
+	if service == nil {
 		return ""
 	}
-	stream, ok := service.broker.Get(childRequestID)
-	if !ok || stream == nil {
+	parentConversationID = strings.TrimSpace(parentConversationID)
+	parentToolCallID = strings.TrimSpace(parentToolCallID)
+	if parentToolCallID == "" {
 		return ""
 	}
-	stream.mu.Lock()
-	defer stream.mu.Unlock()
-	return strings.TrimSpace(stream.ConversationID)
+	service.delegationRuntimeMu.Lock()
+	var matched []*nativeDelegationRuntime
+	for _, item := range service.nativeDelegations {
+		if item == nil || strings.TrimSpace(item.ToolCallID) != parentToolCallID {
+			continue
+		}
+		if parentConversationID != "" && strings.TrimSpace(item.ConversationID) != "" && strings.TrimSpace(item.ConversationID) != parentConversationID {
+			continue
+		}
+		snapshot := *item
+		matched = append(matched, &snapshot)
+	}
+	service.delegationRuntimeMu.Unlock()
+	for _, item := range matched {
+		if convID := service.childConversationIDForNativeDelegation(item); convID != "" {
+			return convID
+		}
+	}
+	service.childParentLinkMu.Lock()
+	var childRequestIDs []string
+	var directConvID string
+	for requestID, link := range service.childParentLinks {
+		if strings.TrimSpace(link.ParentToolCallID) != parentToolCallID {
+			continue
+		}
+		if convID := strings.TrimSpace(link.ChildConversationID); convID != "" {
+			directConvID = convID
+		}
+		childRequestIDs = append(childRequestIDs, requestID)
+	}
+	service.childParentLinkMu.Unlock()
+	if directConvID != "" {
+		return directConvID
+	}
+	for _, childRequestID := range childRequestIDs {
+		stream, ok := service.broker.Get(childRequestID)
+		if !ok || stream == nil {
+			continue
+		}
+		stream.mu.Lock()
+		convID := strings.TrimSpace(stream.ConversationID)
+		stream.mu.Unlock()
+		if convID != "" {
+			return convID
+		}
+	}
+	return ""
 }
 
 // nativeDelegationParentRequestID 找出仍在运行、且归属 (conversation, tool_call) 的

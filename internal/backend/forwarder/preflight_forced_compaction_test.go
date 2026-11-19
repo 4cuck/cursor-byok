@@ -613,3 +613,82 @@ func TestCancelDuringCompactionPublishesFailedSummaryCompleted(t *testing.T) {
 		t.Fatal("expected SummaryCompletedUpdate{Failed: true} on cancel during compaction")
 	}
 }
+
+func TestDriveProviderCompactsCursorAccountCheckpointWhenAboveBudget(t *testing.T) {
+	homeDir, err := os.MkdirTemp("", "cursor-byok-home-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(homeDir) })
+	t.Setenv("CURSOR_BYOK_HOME", homeDir)
+	store := NewConversationFileStore(t.TempDir())
+	conversation := testConversation(nil)
+	appendEntriesInPlace(conversation, []HistoryEntry{
+		testUserMessageEntry(t, 1, "request-1", "implement 1M token feature"),
+		newAssistantTextEntry(1, "request-1", strings.Repeat("completed step ", 200), "", ""),
+		testUserMessageEntry(t, 2, "request-2", "continue"),
+	})
+	conversation.TokenDetailsMaxTokens = 1_000_000
+	conversation.CurrentTurnSeq = 2
+	conversation.CurrentRequestID = "request-2"
+	persisted, err := store.SaveConversationWithEntries(conversation.ConversationID, conversation, conversation.Entries)
+	if err != nil {
+		t.Fatalf("SaveConversationWithEntries() error = %v", err)
+	}
+
+	// Simulate an upstream Cursor checkpoint that has grown past the 80% budget (790,362 > 790,000).
+	checkpoint := &agentv1.ConversationStateStructure{
+		Mode: agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		TokenDetails: &agentv1.ConversationTokenDetails{
+			UsedTokens: 790_362,
+			MaxTokens:  1_000_000,
+		},
+		Turns: [][]byte{[]byte("turn-1")},
+	}
+	rawCheckpoint, err := proto.Marshal(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(appdata.HistoryRootPath(), persisted.ConversationID, "cursor-agent-state.bin")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, rawCheckpoint, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { modeladapter.ClearCursorAccountState(persisted.ConversationID) })
+
+	provider := &contextProjectionRequestProvider{requests: make(chan ProviderRequest, 1)}
+	broker := NewStreamBroker()
+	service := newServiceWithDependencies(store, NewHistoryProjector(), contextProjectionLifecycleCompiler{}, provider, broker)
+	service.resolver = cursorAccountSavedStateResolver{}
+
+	stream, err := broker.OpenStream(
+		"request-2",
+		persisted.ConversationID,
+		2,
+		"cursor_account1:claude-opus-5-5",
+		"Claude Opus 5.5",
+		agentv1.AgentMode_AGENT_MODE_AGENT,
+		"continue",
+	)
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	stream.CheckpointConversation = cloneConversationFile(persisted)
+
+	if err := service.driveProvider(stream); err != nil {
+		t.Fatalf("driveProvider() error = %v", err)
+	}
+	stream.mu.Lock()
+	pending := stream.PendingCompaction
+	phase := stream.Phase
+	stream.mu.Unlock()
+	if pending == nil || pending.Trigger != compactionPreflightForcedTrigger {
+		t.Fatalf("PendingCompaction = %#v, want trigger %q when upstream checkpoint exceeds 80%% budget", pending, compactionPreflightForcedTrigger)
+	}
+	if phase != TurnPhaseCompacting {
+		t.Fatalf("stream.Phase = %q, want %q", phase, TurnPhaseCompacting)
+	}
+}
+

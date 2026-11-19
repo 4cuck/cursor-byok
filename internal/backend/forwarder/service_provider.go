@@ -215,6 +215,31 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 			service.finalizeCompactionAdmission(stream)
 			return nil
 		}
+	} else if upstreamUsed := modeladapter.CursorAccountUsedTokens(conversationID); upstreamUsed > 0 {
+		contextWindowTokens := compactionContextWindowSize(conversation)
+		reserveTokens := service.resolveCompactionReserveTokens(modelID)
+		if reserveTokens <= 0 {
+			reserveTokens = compactionAutoReserveTokens
+		}
+		budgetTokens := int64(float64(contextWindowTokens)*0.8) - reserveTokens
+		if contextWindowTokens > 0 && budgetTokens > 0 && int64(upstreamUsed) > budgetTokens {
+			overflowErr := compactionTerminalError{
+				code: compactionOverflowTerminalCode,
+				message: fmt.Sprintf(
+					"cursor account checkpoint exceeds context budget before provider request (used=%d budget=%d window=%d)",
+					upstreamUsed,
+					budgetTokens,
+					contextWindowTokens,
+				),
+			}
+			if escalated, escErr := service.escalateForcedPreflightCompaction(stream, canonicalConversation, canonicalCompiled, overflowErr); escErr != nil {
+				service.setTurnPhase(stream, TurnPhaseFailed)
+				return service.failStream(stream, "unknown", escErr)
+			} else if escalated {
+				service.finalizeCompactionAdmission(stream)
+				return nil
+			}
+		}
 	}
 	if err := service.syncSummarySnapshot(stream, canonicalConversation, requestID, modelCallID); err != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)

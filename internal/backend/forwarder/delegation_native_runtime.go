@@ -2,7 +2,9 @@ package forwarder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,6 +13,8 @@ import (
 	"cursor/internal/backend/delegation"
 	"cursor/internal/logger"
 	"cursor/internal/safego"
+
+	"google.golang.org/protobuf/proto"
 )
 
 const nativeDelegationRetention = 10 * time.Minute
@@ -37,6 +41,7 @@ type nativeDelegationRuntime struct {
 	ID                      string
 	ParentRequestID         string
 	ConversationID          string
+	ChildConversationID     string
 	ToolCallID              string
 	Description             string
 	ModelID                 string
@@ -125,10 +130,17 @@ func (service *Service) registerNativeDelegation(stream *ActiveStream, pending r
 		strings.TrimSpace(runtimecore.ReadStringArg(args, "description")),
 		strings.TrimSpace(runtimecore.ReadStringArg(args, "prompt")),
 	)
+	initialChildID := strings.TrimSpace(runtimecore.ReadStringArg(args, "resume", "resume_agent_id", "resumeAgentId"))
+	if initialChildID == "" && serverMessage != nil {
+		if subagentArgs := serverMessage.GetExecServerMessage().GetSubagentArgs(); subagentArgs != nil {
+			initialChildID = strings.TrimSpace(subagentArgs.GetResumeAgentId())
+		}
+	}
 	service.nativeDelegations[pending.ExecID] = &nativeDelegationRuntime{
 		ID:                      strings.TrimSpace(pending.ExecID),
 		ParentRequestID:         parentRequestID,
 		ConversationID:          strings.TrimSpace(stream.ConversationID),
+		ChildConversationID:     initialChildID,
 		ToolCallID:              strings.TrimSpace(pending.ToolCallID),
 		Description:             description,
 		ModelID:                 modelID,
@@ -670,6 +682,176 @@ func subagentResultErrorText(result *agentv1.SubagentResult) string {
 		return ""
 	}
 	return strings.TrimSpace(result.GetError().GetError())
+}
+
+const stoppedChildProgressMaxChars = 2000
+
+func (service *Service) resolveNativeSubagentAgentID(stream *ActiveStream, pending runtimecore.PendingExec, result *agentv1.SubagentResult) string {
+	if result != nil {
+		if id := strings.TrimSpace(result.GetSuccess().GetAgentId()); id != "" {
+			return id
+		}
+		if id := strings.TrimSpace(result.GetError().GetAgentId()); id != "" {
+			return id
+		}
+	}
+	if service != nil {
+		if item, ok := service.nativeDelegationTask(pending.ExecID); ok {
+			if id := service.childConversationIDForNativeDelegation(item); id != "" {
+				return id
+			}
+		}
+		parentConvID := ""
+		if stream != nil {
+			stream.mu.Lock()
+			parentConvID = strings.TrimSpace(stream.ConversationID)
+			stream.mu.Unlock()
+		}
+		if id := service.childConversationIDForToolCall(parentConvID, pending.ToolCallID); id != "" {
+			return id
+		}
+	}
+	if args, err := runtimecore.DecodeArgsMap(pending.ArgsJSON); err == nil {
+		if id := strings.TrimSpace(runtimecore.ReadStringArg(args, "resume", "resume_agent_id", "resumeAgentId")); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func (service *Service) summarizeStoppedChildConversation(childConversationID string) string {
+	if service == nil || service.store == nil || strings.TrimSpace(childConversationID) == "" {
+		return ""
+	}
+	childConv, err := service.store.LoadConversation(strings.TrimSpace(childConversationID))
+	if err != nil || childConv == nil || len(childConv.Entries) == 0 {
+		return ""
+	}
+	var lastAssistantText string
+	var recentTools []string
+	toolCount := 0
+	for _, entry := range childConv.Entries {
+		switch strings.TrimSpace(entry.Kind) {
+		case "assistant_text":
+			var payload assistantTextPayload
+			if json.Unmarshal(entry.Payload, &payload) == nil {
+				if text := strings.TrimSpace(payload.Text); text != "" {
+					lastAssistantText = text
+				}
+			}
+		case "tool_result":
+			var payload toolResultEntryPayload
+			if json.Unmarshal(entry.Payload, &payload) == nil {
+				name := strings.TrimSpace(payload.ToolName)
+				if name != "" {
+					toolCount++
+					recentTools = append(recentTools, name)
+					if len(recentTools) > 6 {
+						recentTools = recentTools[len(recentTools)-6:]
+					}
+				}
+			}
+		}
+	}
+	var parts []string
+	if toolCount > 0 {
+		parts = append(parts, fmt.Sprintf("Completed %d tool call(s) (recent: %s).", toolCount, strings.Join(recentTools, ", ")))
+	}
+	if lastAssistantText != "" {
+		if len(lastAssistantText) > stoppedChildProgressMaxChars {
+			lastAssistantText = lastAssistantText[:stoppedChildProgressMaxChars] + "…"
+		}
+		parts = append(parts, "Latest subagent output:\n"+lastAssistantText)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (service *Service) enrichStoppedSubagentClientMessage(stream *ActiveStream, pending runtimecore.PendingExec, msg *agentv1.ExecClientMessage) *agentv1.ExecClientMessage {
+	if service == nil || msg == nil || strings.TrimSpace(pending.ExecKind) != "subagent" {
+		return msg
+	}
+	subResult := msg.GetSubagentResult()
+	if subResult == nil || !subagentResultFailed(subResult) {
+		return msg
+	}
+	agentID := service.resolveNativeSubagentAgentID(stream, pending, subResult)
+	partial := service.summarizeStoppedChildConversation(agentID)
+	if agentID == "" && partial == "" {
+		return msg
+	}
+	cloned, ok := proto.Clone(msg).(*agentv1.ExecClientMessage)
+	if !ok || cloned == nil || cloned.GetSubagentResult() == nil || cloned.GetSubagentResult().GetError() == nil {
+		return msg
+	}
+	errItem := cloned.GetSubagentResult().GetError()
+	errText := strings.TrimSpace(errItem.GetError())
+	if errText == "" {
+		errText = "subagent stopped before completion"
+	}
+	if agentID != "" {
+		errItem.AgentId = &agentID
+		if !strings.Contains(errText, agentID) {
+			errText = fmt.Sprintf("%s (agent_id=%s — to resume this existing subagent from where it stopped, call the Task tool with resume=%q)", errText, agentID, agentID)
+		}
+	}
+	if partial != "" && !strings.Contains(errText, "Latest subagent output:") && !strings.Contains(errText, "Completed ") {
+		errText += "\n\nPartial subagent progress before stopping:\n" + partial
+	}
+	errItem.Error = errText
+	return cloned
+}
+
+func (service *Service) closeCanceledParentSubagentToolCall(stream *ActiveStream, pending runtimecore.PendingExec) {
+	if service == nil || stream == nil || strings.TrimSpace(pending.ToolCallID) == "" {
+		return
+	}
+	agentID := service.resolveNativeSubagentAgentID(stream, pending, nil)
+	partial := service.summarizeStoppedChildConversation(agentID)
+	detail := "Subagent was stopped before completion."
+	if agentID != "" {
+		detail = fmt.Sprintf("Subagent was stopped before completion (agent_id=%s — to resume this existing subagent from where it stopped, call the Task tool with resume=%q).", agentID, agentID)
+	}
+	if partial != "" {
+		detail += "\n\nPartial subagent progress before stopping:\n" + partial
+	}
+	service.recordDelegationRunTerminal(stream, pending, agentv1.SubagentRunStatus_SUBAGENT_RUN_STATUS_ABORTED, "Cursor 子代理", detail)
+	var completedToolCall *agentv1.ToolCall
+	if service.execBridge != nil {
+		synth := &agentv1.ExecClientMessage{
+			Id:     pending.MessageID,
+			ExecId: pending.ExecID,
+			Message: &agentv1.ExecClientMessage_SubagentResult{
+				SubagentResult: &agentv1.SubagentResult{
+					Result: &agentv1.SubagentResult_Error{
+						Error: &agentv1.SubagentError{
+							AgentId: stringPtrIfNonEmpty(agentID),
+							Error:   detail,
+						},
+					},
+				},
+			},
+		}
+		if applied, err := service.execBridge.ApplyExecClientMessage(synth, pending); err == nil {
+			completedToolCall = applied.ToolCall
+		}
+	}
+	if err := service.appendToolResult(stream, pending.ToolCallID, "Task", pending.ArgsJSON, detail, pending.ReasoningContent, completedToolCall); err != nil {
+		logger.Errorf("forwarder canceled subagent tool result append failed request_id=%s exec_id=%s tool_call_id=%s err=%v",
+			strings.TrimSpace(stream.RequestID), strings.TrimSpace(pending.ExecID), strings.TrimSpace(pending.ToolCallID), err)
+		return
+	}
+	_ = service.publishToolCallCompleted(stream.RequestID, pending.ToolCallID, pending.ModelCallID, completedToolCall)
+}
+
+func (service *Service) absorbTerminalNativeSubagentExecResult(execID string, result *agentv1.SubagentResult) bool {
+	if service == nil || result == nil || strings.TrimSpace(execID) == "" {
+		return false
+	}
+	item, ok := service.nativeDelegationTask(execID)
+	if !ok || !delegatedStatusTerminal(item.Status) {
+		return false
+	}
+	return true
 }
 
 // hasActiveDelegation reports whether the stream currently owns any live

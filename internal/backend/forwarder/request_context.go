@@ -15,8 +15,24 @@ import (
 // session reports the remote host rather than the machine running this process.
 func cursorAccountForwardContext(conversation *ConversationFile, workspacePaths []string, terminalsFolder string) *agentv1.RequestContext {
 	if ctx := latestStoredRequestContext(conversation); ctx != nil {
+		if !requestContextEnvPopulated(ctx.GetEnv()) {
+			if storedEnv := latestStoredRequestContextEnv(conversation); storedEnv != nil {
+				ctx.Env = storedEnv
+			}
+		}
 		if ctx.Env == nil {
 			ctx.Env = &agentv1.RequestContextEnv{}
+		}
+		if len(ctx.Env.GetWorkspacePaths()) == 0 && strings.TrimSpace(ctx.Env.GetOsVersion()) == "" {
+			if strings.TrimSpace(terminalsFolder) != "" && strings.TrimSpace(ctx.Env.GetTerminalsFolder()) == "" {
+				ctx.Env.TerminalsFolder = strings.TrimSpace(terminalsFolder)
+			}
+			if len(workspacePaths) > 0 {
+				ctx.Env.WorkspacePaths = append([]string(nil), workspacePaths...)
+			}
+			if strings.TrimSpace(ctx.Env.GetProjectFolder()) == "" && len(ctx.Env.GetWorkspacePaths()) == 1 {
+				ctx.Env.ProjectFolder = ctx.Env.GetWorkspacePaths()[0]
+			}
 		}
 		return ctx
 	}
@@ -31,6 +47,37 @@ func cursorAccountForwardContext(conversation *ConversationFile, workspacePaths 
 		ctx.Env.ProjectFolder = ctx.Env.WorkspacePaths[0]
 	}
 	return ctx
+}
+
+func requestContextEnvPopulated(env *agentv1.RequestContextEnv) bool {
+	if env == nil {
+		return false
+	}
+	return len(env.GetWorkspacePaths()) > 0 ||
+		strings.TrimSpace(env.GetProjectFolder()) != "" ||
+		strings.TrimSpace(env.GetOsVersion()) != "" ||
+		strings.TrimSpace(env.GetShell()) != ""
+}
+
+func latestStoredRequestContextEnv(conversation *ConversationFile) *agentv1.RequestContextEnv {
+	if conversation == nil {
+		return nil
+	}
+	for index := len(conversation.Entries) - 1; index >= 0; index-- {
+		entry := conversation.Entries[index]
+		if strings.TrimSpace(entry.Kind) != "request_context" || len(entry.Payload) == 0 {
+			continue
+		}
+		requestContext := &agentv1.RequestContext{}
+		if err := protojson.Unmarshal(entry.Payload, requestContext); err != nil {
+			continue
+		}
+		if requestContextEnvPopulated(requestContext.GetEnv()) {
+			cloned, _ := proto.Clone(requestContext.GetEnv()).(*agentv1.RequestContextEnv)
+			return cloned
+		}
+	}
+	return nil
 }
 
 func latestStoredRequestContext(conversation *ConversationFile) *agentv1.RequestContext {

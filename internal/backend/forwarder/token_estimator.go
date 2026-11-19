@@ -169,6 +169,29 @@ func estimateCheckpointPromptTokenBreakdown(compiled CompiledConversation, hasCo
 	}
 }
 
+func scalePromptTokenBreakdownToUsedTokens(snapshot *agentv1.PromptTokenBreakdownSnapshot, usedTokens uint32) *agentv1.PromptTokenBreakdownSnapshot {
+	if snapshot == nil || usedTokens == 0 || snapshot.TotalUsedTokens <= usedTokens {
+		return snapshot
+	}
+	categoryTotal := int64(0)
+	for _, category := range snapshot.GetCategories() {
+		categoryTotal += int64(category.GetEstimatedTokens())
+	}
+	if categoryTotal <= int64(usedTokens) {
+		snapshot.TotalUsedTokens = usedTokens
+		return snapshot
+	}
+	for _, category := range snapshot.GetCategories() {
+		scaled := (int64(category.GetEstimatedTokens()) * int64(usedTokens)) / categoryTotal
+		if scaled < 1 && category.GetEstimatedTokens() > 0 {
+			scaled = 1
+		}
+		category.EstimatedTokens = clampInt64ToUint32(scaled)
+	}
+	snapshot.TotalUsedTokens = usedTokens
+	return snapshot
+}
+
 func estimateMessageBreakdownTokens(messages []modeladapter.Message) (int64, int64, int64) {
 	systemTokens := int64(0)
 	summaryTokens := int64(0)

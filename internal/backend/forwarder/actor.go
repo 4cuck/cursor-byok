@@ -175,6 +175,12 @@ func (service *Service) dispatchInboundIntent(intent InboundIntent) error {
 		) {
 			return nil
 		}
+		if service.absorbTerminalNativeSubagentExecResult(
+			intent.ExecClientMessage.GetExecId(),
+			intent.ExecClientMessage.GetSubagentResult(),
+		) {
+			return nil
+		}
 	}
 	stream, err := service.streamForIntent(intent)
 	if err != nil {

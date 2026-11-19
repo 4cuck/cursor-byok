@@ -519,6 +519,10 @@ func (service *Service) handleCancelIntent(intent InboundIntent) error {
 			continue
 		}
 		if strings.TrimSpace(pending.ExecKind) == "subagent" {
+			if hasCheckpoint && !followUpCancel {
+				service.closeCanceledParentSubagentToolCall(stream, pending)
+				modeladapter.ClearCursorAccountState(conversationID)
+			}
 			service.updateNativeDelegationStatus(pending.ExecID, delegation.TaskCanceled, "Cursor 子代理已取消", "subagent canceled")
 			service.interruptNativeChildConversation(pending.ExecID, followUpCancel)
 		}

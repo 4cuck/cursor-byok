@@ -127,6 +127,16 @@ func CursorAccountUsedTokens(conversationID string) uint32 {
 	return state.GetTokenDetails().GetUsedTokens()
 }
 
+// CursorAccountTokenDetails returns a clone of the upstream token details stored in the saved Cursor checkpoint.
+func CursorAccountTokenDetails(conversationID string) *agentv1.ConversationTokenDetails {
+	state := cursorAccountLoadState(conversationID)
+	if state == nil || state.GetTokenDetails() == nil {
+		return nil
+	}
+	cloned, _ := proto.Clone(state.GetTokenDetails()).(*agentv1.ConversationTokenDetails)
+	return cloned
+}
+
 // ClearCursorAccountState deletes the cached and persisted upstream Cursor checkpoint for conversationID.
 func ClearCursorAccountState(conversationID string) {
 	conversationID = strings.TrimSpace(conversationID)
@@ -351,7 +361,7 @@ func inspectCursorRootMessageBlob(data []byte) (role string, empty bool, isUserI
 	}
 	var text string
 	if err := json.Unmarshal(rawContent, &text); err == nil {
-		trimmedText := strings.TrimSpace(text)
+		trimmedText := strings.TrimSpace(sanitizeCursorAccountTextDelta(text))
 		if trimmedText == "" {
 			return role, true, false, false, true
 		}
@@ -369,9 +379,12 @@ func inspectCursorRootMessageBlob(data []byte) (role string, empty bool, isUserI
 			Text string `json:"text"`
 		}
 		if json.Unmarshal(parts[0], &firstPart) == nil {
-			trimmedText := strings.TrimSpace(firstPart.Text)
+			trimmedText := strings.TrimSpace(sanitizeCursorAccountTextDelta(firstPart.Text))
 			isUserInfo = isCursorBootstrapScaffoldingText(trimmedText)
 			isSummary = role == "user" && strings.HasPrefix(trimmedText, "<summary>")
+			if role == "assistant" && len(parts) == 1 && (firstPart.Type == "" || firstPart.Type == "text") && trimmedText == "" {
+				return role, true, false, false, true
+			}
 		}
 		return role, false, isUserInfo, isSummary, true
 	}
@@ -535,7 +548,10 @@ func cursorAccountBlobExact(id []byte) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	cursorAccountRememberBlob(id, data)
+	copied := append([]byte(nil), data...)
+	cursorAgentMemory.mu.Lock()
+	cursorAgentMemory.blobs[key] = copied
+	cursorAgentMemory.mu.Unlock()
 	return data, true
 }
 

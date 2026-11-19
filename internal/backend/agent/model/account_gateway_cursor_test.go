@@ -1101,3 +1101,237 @@ func TestCursorAccountBootstrapStubOrBehindCheckpointFallsBackToHistory(t *testi
 		t.Fatalf("completed checkpoint was overwritten by pre-turn bootstrap stub: %+v", loaded)
 	}
 }
+
+func TestCursorAccountStripsEndOfImageAndRetriesWhenEmpty(t *testing.T) {
+	homeDir, err := os.MkdirTemp("", "cursor-byok-home-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(homeDir) })
+	t.Setenv("CURSOR_BYOK_HOME", homeDir)
+	var attempts int
+	appended := make(chan int64, 8)
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != cursorAccountRunPath {
+			http.NotFound(w, r)
+			return
+		}
+		attempts++
+		attempt := attempts
+		w.Header().Set("content-type", "application/connect+proto")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		if !waitCursorAppend(appended, 0) {
+			return
+		}
+		if attempt == 1 {
+			writeCursorAgentFrame(w, &agentv1.AgentServerMessage{
+				Message: &agentv1.AgentServerMessage_InteractionUpdate{
+					InteractionUpdate: &agentv1.InteractionUpdate{
+						Message: &agentv1.InteractionUpdate_TextDelta{
+							TextDelta: &agentv1.TextDeltaUpdate{Text: "<end_of_image>"},
+						},
+					},
+				},
+			})
+			writeCursorAgentFrame(w, &agentv1.AgentServerMessage{
+				Message: &agentv1.AgentServerMessage_InteractionUpdate{
+					InteractionUpdate: &agentv1.InteractionUpdate{
+						Message: &agentv1.InteractionUpdate_TurnEnded{
+							TurnEnded: &agentv1.TurnEndedUpdate{InputTokens: proto.Int64(790734), OutputTokens: proto.Int64(1)},
+						},
+					},
+				},
+			})
+			_, _ = w.Write([]byte{0x02, 0, 0, 0, 2, '{', '}'})
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+		}
+		writeCursorAgentFrame(w, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionUpdate{
+				InteractionUpdate: &agentv1.InteractionUpdate{
+					Message: &agentv1.InteractionUpdate_TextDelta{
+						TextDelta: &agentv1.TextDeltaUpdate{Text: "Recovered answer after <end_of_image>"},
+					},
+				},
+			},
+		})
+		writeCursorAgentFrame(w, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionUpdate{
+				InteractionUpdate: &agentv1.InteractionUpdate{
+					Message: &agentv1.InteractionUpdate_TurnEnded{
+						TurnEnded: &agentv1.TurnEndedUpdate{InputTokens: proto.Int64(1000), OutputTokens: proto.Int64(10)},
+					},
+				},
+			},
+		})
+		_, _ = w.Write([]byte{0x02, 0, 0, 0, 2, '{', '}'})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer agent.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case cursorAccountServerConfigPath:
+			raw, _ := proto.Marshal(&aiserverv1.GetServerConfigResponse{
+				AgentUrlConfig: &aiserverv1.AgentUrlConfig{AgentnUrl: agent.URL},
+			})
+			w.Header().Set("content-type", "application/proto")
+			_, _ = w.Write(raw)
+		case cursorAccountBidiAppendPath:
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			msg := &aiserverv1.BidiAppendRequest{}
+			if err := proto.Unmarshal(body, msg); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			appended <- msg.GetAppendSeqno()
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	previous := cursorAccountBackendRoot
+	cursorAccountBackendRoot = api.URL
+	t.Cleanup(func() { cursorAccountBackendRoot = previous })
+
+	gateway := newCursorAccountGateway(staticCursorAuthorizer{token: "Bearer test"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var gotText string
+	var turnFinishedCount int
+	err = gateway.Stream(ctx, StreamRequest{
+		ModelID:        "gemini-4-carbon",
+		GroupName:      "cursor_account1",
+		ConversationID: "conv-end-of-image-retry",
+		Messages:       []Message{{Role: "user", Content: "investigate subagent continue"}},
+	}, func(event ModelEvent) error {
+		if event.Kind == ModelEventKindTextDelta {
+			gotText += event.Text
+		}
+		if event.Kind == ModelEventKindTurnFinished {
+			turnFinishedCount++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Stream error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 (1st emitted <end_of_image>, 2nd recovered)", attempts)
+	}
+	if strings.Contains(gotText, "<end_of_image>") || gotText != "Recovered answer after " {
+		t.Fatalf("gotText = %q, want '<end_of_image>' stripped and recovered", gotText)
+	}
+	if turnFinishedCount != 1 {
+		t.Fatalf("turnFinishedCount = %d, want 1", turnFinishedCount)
+	}
+}
+
+func TestCursorAccountPostToolEndOfImageTriggersFollowUpContinuation(t *testing.T) {
+	results := make(chan *agentv1.ExecClientMessage, 1)
+	events := runCursorAccountFixture(t, results, func(w http.ResponseWriter, flusher http.Flusher, appended <-chan int64) {
+		if !waitCursorAppend(appended, 0) {
+			return
+		}
+		writeCursorAgentFrame(w, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_ExecServerMessage{
+				ExecServerMessage: &agentv1.ExecServerMessage{
+					Id:     9,
+					ExecId: "read-1",
+					Message: &agentv1.ExecServerMessage_ReadArgs{
+						ReadArgs: &agentv1.ReadArgs{Path: "notes/todo.md", ToolCallId: "read-1"},
+					},
+				},
+			},
+		})
+		flusher.Flush()
+		if !waitCursorAppend(appended, 1) {
+			return
+		}
+		writeCursorAgentFrame(w, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionUpdate{
+				InteractionUpdate: &agentv1.InteractionUpdate{
+					Message: &agentv1.InteractionUpdate_TextDelta{TextDelta: &agentv1.TextDeltaUpdate{Text: "<end_of_image>"}},
+				},
+			},
+		})
+		writeCursorAgentFrame(w, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionUpdate{
+				InteractionUpdate: &agentv1.InteractionUpdate{
+					Message: &agentv1.InteractionUpdate_TurnEnded{TurnEnded: &agentv1.TurnEndedUpdate{}},
+				},
+			},
+		})
+		_, _ = w.Write([]byte{0x02, 0, 0, 0, 2, '{', '}'})
+		flusher.Flush()
+	})
+	var text, finish string
+	for _, event := range events {
+		if event.Kind == ModelEventKindTextDelta {
+			text += event.Text
+		}
+		if event.Kind == ModelEventKindTurnFinished {
+			finish = event.FinishReason
+		}
+	}
+	if text != "" {
+		t.Fatalf("text = %q, want empty (<end_of_image> stripped)", text)
+	}
+	if finish != "tool_calls" {
+		t.Fatalf("finish = %q, want tool_calls so forwarder continues after post-tool <end_of_image>", finish)
+	}
+}
+
+func TestCursorAccountSanitizeStateDropsEndOfImageAssistantBlob(t *testing.T) {
+	t.Setenv("CURSOR_BYOK_HOME", t.TempDir())
+	sysID := bytes.Repeat([]byte{0x01}, 32)
+	userID := bytes.Repeat([]byte{0x02}, 32)
+	eoiID := bytes.Repeat([]byte{0x03}, 32)
+	cursorAccountRememberBlob(sysID, []byte(`{"role":"system","content":"You are an assistant."}`))
+	cursorAccountRememberBlob(userID, []byte(`{"role":"user","content":[{"type":"text","text":"hello"}]}`))
+	cursorAccountRememberBlob(eoiID, []byte(`{"role":"assistant","content":[{"type":"text","text":"<end_of_image>"}],"id":"1"}`))
+
+	state := &agentv1.ConversationStateStructure{
+		Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		RootPromptMessagesJson: [][]byte{sysID, userID, eoiID},
+	}
+	if !sanitizeCursorAccountState(state) {
+		t.Fatal("expected sanitizeCursorAccountState to strip <end_of_image> assistant blob")
+	}
+	if got := len(state.GetRootPromptMessagesJson()); got != 2 {
+		t.Fatalf("roots len = %d, want 2 (sys + user)", got)
+	}
+}
+
+func TestCursorAccountSplitTurnIncludesBackgroundDelegationNoticeInNewTurn(t *testing.T) {
+	t.Setenv("CURSOR_BYOK_HOME", t.TempDir())
+	const convID = "conv-bg-delegation"
+	cursorAccountRememberState(convID, &agentv1.ConversationStateStructure{
+		Mode:  agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		Turns: [][]byte{[]byte("turn-1")},
+	})
+	bgNotice := "<system_reminder>\n此前转入后台继续运行的委派任务已结束（状态：completed）。任务：inspect routes。（subagent agent_id=child-agent-123，如需继续该子代理可调用 Task 并传 resume=\"child-agent-123\"）\n结果：\nAll 3 routes verified.\n</system_reminder>"
+	run := cursorAccountRunMessage(StreamRequest{
+		ConversationID: convID,
+		Messages: []Message{
+			{Role: "user", Content: "spawn subagent"},
+			{Role: "assistant", Content: "spawned"},
+			{Role: "user", Content: bgNotice},
+			{Role: "user", Content: "continue"},
+		},
+	}, "gemini-4-argon")
+	text := run.GetRunRequest().GetAction().GetUserMessageAction().GetUserMessage().GetText()
+	if !strings.Contains(text, "child-agent-123") || !strings.Contains(text, "All 3 routes verified.") || !strings.Contains(text, "continue") {
+		t.Fatalf("expected background subagent completion and agent_id in user message text, got %q", text)
+	}
+}
+

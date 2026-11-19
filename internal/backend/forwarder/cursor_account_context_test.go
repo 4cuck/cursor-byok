@@ -47,3 +47,36 @@ func TestCursorAccountForwardContextUsesStreamWorkspace(t *testing.T) {
 		t.Fatalf("project=%q terminals=%q", env.GetProjectFolder(), env.GetTerminalsFolder())
 	}
 }
+
+func TestCursorAccountForwardContextPreservesTurn1EnvAcrossRealtimeTurn2(t *testing.T) {
+	turn1Payload, err := protojson.Marshal(&agentv1.RequestContext{
+		Env: &agentv1.RequestContextEnv{
+			OsVersion:       "win32 10.0.26200",
+			Shell:           "powershell",
+			WorkspacePaths:  []string{`c:\Users\admin\Documents\cursor-byok`},
+			TerminalsFolder: `C:\Users\admin\.cursor\projects\cursor-byok\terminals`,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitAttr := "enabled"
+	turn2RealtimePayload, err := protojson.Marshal(&agentv1.RequestContext{
+		CommitAttributionMessage: &commitAttr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation := &ConversationFile{Entries: []HistoryEntry{
+		{TurnSeq: 1, Kind: "request_context", Payload: turn1Payload},
+		{TurnSeq: 2, Kind: "request_context", Payload: turn2RealtimePayload},
+	}}
+	got := cursorAccountForwardContext(conversation, nil, "")
+	env := got.GetEnv()
+	if paths := env.GetWorkspacePaths(); len(paths) != 1 || paths[0] != `c:\Users\admin\Documents\cursor-byok` {
+		t.Fatalf("follow-up lost Turn 1 workspace paths: %v", paths)
+	}
+	if got.GetCommitAttributionMessage() != "enabled" {
+		t.Fatalf("follow-up lost Turn 2 realtime fields: %q", got.GetCommitAttributionMessage())
+	}
+}

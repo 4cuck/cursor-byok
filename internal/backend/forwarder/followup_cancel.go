@@ -248,13 +248,20 @@ func (service *Service) forgetBackgroundedDelegation(execID string) {
 // 结果先写成 metadata（不进入 prompt replay，可安全落在任意物理位置），下一回合开头
 // 再由 pendingBackgroundedDelegationEntries 转成模型可见的 prompt_context 回放。
 // 绝不向已终态的父流写入，也绝不静默丢弃。
-func (service *Service) deliverBackgroundedDelegationResult(record backgroundedDelegationExec, status string, resultText string) {
+func (service *Service) deliverBackgroundedDelegationResult(record backgroundedDelegationExec, status string, resultText string, agentID ...string) {
 	if service == nil {
 		return
 	}
 	conversationID := strings.TrimSpace(record.ConversationID)
 	status = strings.TrimSpace(status)
 	resultText = strings.TrimSpace(resultText)
+	resolvedAgentID := ""
+	if len(agentID) > 0 {
+		resolvedAgentID = strings.TrimSpace(agentID[0])
+	}
+	if resolvedAgentID == "" {
+		resolvedAgentID = service.childConversationIDForToolCall(conversationID, record.ToolCallID)
+	}
 	values := map[string]any{
 		"exec_id":      strings.TrimSpace(record.ExecID),
 		"exec_kind":    strings.TrimSpace(record.ExecKind),
@@ -263,6 +270,9 @@ func (service *Service) deliverBackgroundedDelegationResult(record backgroundedD
 		"status":       status,
 		"result":       resultText,
 		"finished_at":  time.Now().UTC().Format(time.RFC3339),
+	}
+	if resolvedAgentID != "" {
+		values["agent_id"] = resolvedAgentID
 	}
 	if service.store == nil || conversationID == "" {
 		// 没有持久化落点时至少留下可检索的运行日志，不静默吞掉结果。
@@ -340,6 +350,7 @@ func backgroundedDelegationReplayText(values map[string]any) string {
 	description := strings.TrimSpace(readStringValue(values["description"]))
 	status := strings.TrimSpace(readStringValue(values["status"]))
 	result := strings.TrimSpace(readStringValue(values["result"]))
+	agentID := strings.TrimSpace(readStringValue(values["agent_id"]))
 	if status == "" {
 		status = "completed"
 	}
@@ -351,6 +362,9 @@ func backgroundedDelegationReplayText(values map[string]any) string {
 	builder.WriteString(fmt.Sprintf("此前转入后台继续运行的委派任务已结束（状态：%s）。", status))
 	if title != "" {
 		builder.WriteString(fmt.Sprintf("任务：%s。", title))
+	}
+	if agentID != "" {
+		builder.WriteString(fmt.Sprintf("（subagent agent_id=%s，如需继续该子代理可调用 Task 并传 resume=%q）", agentID, agentID))
 	}
 	if result != "" {
 		builder.WriteString("\n结果：\n")
@@ -382,13 +396,14 @@ func (service *Service) absorbBackgroundedSubagentExecResult(execID string, suba
 	}
 	service.updateNativeDelegationStatus(record.ExecID, status, progress, subagentResult.ErrorText)
 	service.forgetBackgroundedDelegation(record.ExecID)
-	service.deliverBackgroundedDelegationResult(record, string(status), subagentResult.Text)
+	service.deliverBackgroundedDelegationResult(record, string(status), subagentResult.Text, subagentResult.AgentID)
 	return true
 }
 
 // subagentTerminalOutcome 是后台化子代理终态结果的归一化形态。
 type subagentTerminalOutcome struct {
 	Failed    bool
+	AgentID   string
 	ErrorText string
 	Text      string
 }
@@ -400,9 +415,13 @@ func subagentTerminalOutcomeFrom(result *agentv1.SubagentResult) *subagentTermin
 	}
 	if subagentResultFailed(result) {
 		errorText := subagentResultErrorText(result)
-		return &subagentTerminalOutcome{Failed: true, ErrorText: errorText, Text: errorText}
+		agentID := strings.TrimSpace(result.GetError().GetAgentId())
+		return &subagentTerminalOutcome{Failed: true, AgentID: agentID, ErrorText: errorText, Text: errorText}
 	}
-	return &subagentTerminalOutcome{Text: strings.TrimSpace(result.GetSuccess().GetFinalMessage())}
+	return &subagentTerminalOutcome{
+		AgentID: strings.TrimSpace(result.GetSuccess().GetAgentId()),
+		Text:    strings.TrimSpace(result.GetSuccess().GetFinalMessage()),
+	}
 }
 
 // absorbBackgroundedAggregateResult 处理后台化 Multitask 聚合的迟到结果。

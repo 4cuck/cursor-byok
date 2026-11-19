@@ -100,11 +100,20 @@ func (service *Service) updateConversationTokenState(stream *ActiveStream, conve
 			autoCompactionReserveTokens = compactionAutoReserveTokens
 		}
 	}
+	cursorAccountUsed := uint32(0)
+	if service.cursorAccountModel(modelID) && modeladapter.HasCursorAccountState(conversationID) {
+		cursorAccountUsed = modeladapter.CursorAccountUsedTokens(conversationID)
+	}
 	_, err := service.updateConversationMetaAndCheckpoint(stream, conversationID, func(item *ConversationFile) error {
 		if item == nil {
 			return nil
 		}
 		promptTokensTotal := usage.promptTokensTotal()
+		requestTokensTotal := usage.requestTokensTotal()
+		if cursorAccountUsed > 0 {
+			promptTokensTotal = int64(cursorAccountUsed)
+			requestTokensTotal = promptTokensTotal + nonNegativeInt64(usage.OutputTokens)
+		}
 		if promptTokensTotal > 0 {
 			item.TokenDetailsUsedTokens = clampInt64ToUint32(promptTokensTotal)
 		}
@@ -118,7 +127,7 @@ func (service *Service) updateConversationTokenState(stream *ActiveStream, conve
 			item.TokenDetailsMaxTokens = resolvedWindowTokens
 		}
 		if finalizeAutoCompaction {
-			updateConversationAutoCompactionState(item, usage.requestTokensTotal(), autoCompactionReserveTokens, modelCallID, now)
+			updateConversationAutoCompactionState(item, requestTokensTotal, autoCompactionReserveTokens, modelCallID, now)
 		}
 		return nil
 	})

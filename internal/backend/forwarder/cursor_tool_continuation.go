@@ -34,7 +34,7 @@ func deliverCursorToolResult(stream *ActiveStream, toolCallID string, msg *agent
 			cloned = msg
 		}
 		stream.mu.Lock()
-		if slot, ok := stream.nativeExecSlots[strings.TrimSpace(toolCallID)]; ok && slot.execID != "" {
+		if slot, ok := stream.nativeExecSlots[strings.TrimSpace(toolCallID)]; ok && (slot.id != 0 || slot.execID != "") {
 			cloned.Id = slot.id
 			cloned.ExecId = slot.execID
 		}

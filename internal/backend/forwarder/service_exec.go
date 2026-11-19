@@ -41,6 +41,12 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 		) {
 			return nil
 		}
+		if service.absorbTerminalNativeSubagentExecResult(
+			intent.ExecClientMessage.GetExecId(),
+			intent.ExecClientMessage.GetSubagentResult(),
+		) {
+			return nil
+		}
 		if service.observeMissingBackgroundShellExecClientMessage(stream, intent.ExecClientMessage) {
 			return nil
 		}
@@ -76,6 +82,15 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 	}
 	if isHiddenWriteExecKind(pending.ExecKind) {
 		return service.handleHiddenWriteExecResult(stream, pending, intent.ExecClientMessage)
+	}
+	if strings.TrimSpace(pending.ExecKind) == "subagent" && subagentResultFailed(intent.ExecClientMessage.GetSubagentResult()) {
+		errorText := subagentResultErrorText(intent.ExecClientMessage.GetSubagentResult())
+		// 瞬时上游故障（request_timeout/503/连接拒绝等）自动重试同一次 Task：
+		// 重新派发后不写终态失败、不交付失败 tool_result，父模型继续等待重试结果。
+		if service.maybeAutoRetryNativeSubagent(stream, pending, errorText) {
+			return nil
+		}
+		intent.ExecClientMessage = service.enrichStoppedSubagentClientMessage(stream, pending, intent.ExecClientMessage)
 	}
 	result, err := service.execBridge.ApplyExecClientMessage(intent.ExecClientMessage, pending)
 	if err != nil {
@@ -141,11 +156,6 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 			progress = "Cursor 子代理执行失败"
 			errorText = subagentResultErrorText(intent.ExecClientMessage.GetSubagentResult())
 			runStatus = agentv1.SubagentRunStatus_SUBAGENT_RUN_STATUS_ERROR
-			// 瞬时上游故障（request_timeout/503/连接拒绝等）自动重试同一次 Task：
-			// 重新派发后不写终态失败、不交付失败 tool_result，父模型继续等待重试结果。
-			if service.maybeAutoRetryNativeSubagent(stream, pending, errorText) {
-				return nil
-			}
 		}
 		service.updateNativeDelegationStatus(pending.ExecID, status, progress, errorText)
 		service.recordDelegationRunTerminal(stream, pending, runStatus, "Cursor 子代理", errorText)

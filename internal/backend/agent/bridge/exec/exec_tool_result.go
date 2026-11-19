@@ -817,9 +817,16 @@ func convertSubagentResultToTaskResult(result *agentv1.SubagentResult) *agentv1.
 			},
 		}
 	case *agentv1.SubagentResult_Error:
+		errText := strings.TrimSpace(item.Error.GetError())
+		if agentID := strings.TrimSpace(item.Error.GetAgentId()); agentID != "" && !strings.Contains(errText, agentID) {
+			if errText == "" {
+				errText = "subagent stopped"
+			}
+			errText = fmt.Sprintf("%s (agent_id=%s)", errText, agentID)
+		}
 		return &agentv1.TaskResult{
 			Result: &agentv1.TaskResult_Error{
-				Error: &agentv1.TaskError{Error: item.Error.GetError()},
+				Error: &agentv1.TaskError{Error: errText},
 			},
 		}
 	default:
