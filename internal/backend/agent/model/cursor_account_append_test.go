@@ -519,6 +519,31 @@ func writeCursorAgentEnd(w io.Writer, payload string) {
 	_, _ = w.Write(append(header, payload...))
 }
 
+func TestCursorAccountStreamKeepsSpaceBeforeNumber(t *testing.T) {
+	backend := startCursorAccountTestBackend(t, func(_ int, w http.ResponseWriter, flusher http.Flusher) {
+		writeCursorAgentText(w, "until")
+		writeCursorAgentText(w, " ")
+		writeCursorAgentText(w, "10,000")
+		writeCursorAgentText(w, "\n\n")
+		writeCursorAgentText(w, "last")
+		writeCursorAgentText(w, " ")
+		writeCursorAgentText(w, "5,000")
+		writeCursorAgentTurnEnded(w)
+		flusher.Flush()
+	})
+	_ = backend
+	text, err := streamCursorAccountText(newCursorAccountGateway(staticCursorAuthorizer{token: "Bearer test"}), StreamRequest{
+		ModelID:  "claude-4.5-sonnet",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "until 10,000\n\nlast 5,000" {
+		t.Fatalf("text = %q", text)
+	}
+}
+
 func TestCursorAccountGatewayResetsRefusedCheckpoint(t *testing.T) {
 	t.Setenv("CURSOR_BYOK_HOME", t.TempDir())
 	const conversationID = "conv-refused-checkpoint"

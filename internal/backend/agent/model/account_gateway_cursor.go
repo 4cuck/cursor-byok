@@ -834,11 +834,16 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 					sawEndOfImageToken = true
 				}
 				cleanedText := sanitizeCursorAccountTextDelta(rawText)
-				if strings.TrimSpace(cleanedText) == "" {
+				if cleanedText == "" {
 					continue
 				}
-				noteUseful()
-				sawVisibleTextAfterLastTool = true
+				// A space or newline often arrives as its own delta, especially
+				// before a number ("until 10,000"). Dropping that chunk glues
+				// the number to the previous word.
+				if strings.TrimSpace(cleanedText) != "" {
+					noteUseful()
+					sawVisibleTextAfterLastTool = true
+				}
 				if err := sink(ModelEvent{
 					Kind:       ModelEventKindTextDelta,
 					OccurredAt: time.Now().UTC(),
