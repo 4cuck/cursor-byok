@@ -1237,8 +1237,8 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	// 其参数往往已被过滤或截断，照常执行会绕过安全策略（参照上游 aa47152f 的语义：
 	// 被内容过滤回合的工具调用一律拒绝，回合按正常结束收口）。
 	contentFiltered := strings.TrimSpace(finishReason) == "content_filter"
-	// 同一条 Cursor 账户流已经把工具结果写回去并正常结束时，再开一轮会把
-	// 已经执行过的 Read 再规划一遍。
+	// 同一条 Cursor 账户流已经把工具结果或交互答案写回去并正常结束时，再开一轮
+	// 会把已经回答过的 SwitchMode 当成用户又说了一句 Continue。
 	inlineTurnCompleted := inlineCursorTools && strings.TrimSpace(finishReason) == "stop"
 	if !inlineTurnCompleted && (hadToolInvocation || shouldResumeAfterToolResults(finishReason)) && !terminalToolInvocation && !contentFiltered {
 		if err := service.publishCheckpoint(requestID, conversationID); err != nil {

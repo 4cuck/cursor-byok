@@ -174,7 +174,7 @@ type ActiveStream struct {
 	CursorToolResults chan *agentv1.ExecClientMessage
 	// CursorInteractionReplies 把交互卡片的答案写回仍打开的 Cursor 账户 RunSSE。
 	CursorInteractionReplies chan *agentv1.InteractionResponse
-	// CursorInlineToolTurn 表示本次 provider pass 已把工具结果写回同一条上游流。
+	// CursorInlineToolTurn 表示本次 provider pass 已把工具结果或交互卡片答案写回同一条上游流。
 	CursorInlineToolTurn         bool
 	cursorToolWaiting            bool
 	cursorToolDelivered          bool

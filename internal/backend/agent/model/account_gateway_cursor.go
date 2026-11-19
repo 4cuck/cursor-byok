@@ -1145,29 +1145,45 @@ func cursorAccountRunMessageFor(req StreamRequest, modelID, stateConversationID 
 	} else if state.Mode == nil {
 		state.Mode = mode.Enum()
 	}
-	userMsg := &agentv1.UserMessage{
-		Text:      text,
-		MessageId: uuid.NewString(),
-		Mode:      mode,
-	}
 	selectedContext, preFetchedBlobs := cursorAccountSelectedImagesForTurn(req.Messages)
-	if selectedContext != nil {
-		userMsg.SelectedContext = selectedContext
-	}
-	action := &agentv1.UserMessageAction{
-		UserMessage:    userMsg,
-		RequestContext: cursorAccountRequestContext(req),
+	requestContext := cursorAccountRequestContext(req)
+	// Cursor's own client sends ResumeAction when the user did not type a new
+	// message. A tool result or a finished mode switch is already in the
+	// checkpoint; inventing a user message of "Continue." makes the model
+	// treat that word as the request.
+	var action *agentv1.ConversationAction
+	if strings.TrimSpace(text) == "" && selectedContext == nil {
+		action = &agentv1.ConversationAction{
+			Action: &agentv1.ConversationAction_ResumeAction{
+				ResumeAction: &agentv1.ResumeAction{RequestContext: requestContext},
+			},
+		}
+	} else {
+		userMsg := &agentv1.UserMessage{
+			Text:      text,
+			MessageId: uuid.NewString(),
+			Mode:      mode,
+		}
+		if selectedContext != nil {
+			userMsg.SelectedContext = selectedContext
+		}
+		action = &agentv1.ConversationAction{
+			Action: &agentv1.ConversationAction_UserMessageAction{
+				UserMessageAction: &agentv1.UserMessageAction{
+					UserMessage:    userMsg,
+					RequestContext: requestContext,
+				},
+			},
+		}
 	}
 	return &agentv1.AgentClientMessage{
 		Message: &agentv1.AgentClientMessage_RunRequest{
 			RunRequest: &agentv1.AgentRunRequest{
 				ConversationState: state,
-				Action: &agentv1.ConversationAction{
-					Action: &agentv1.ConversationAction_UserMessageAction{UserMessageAction: action},
-				},
-				RequestedModel:  cursorAccountRequestedModel(modelID, req.ThinkingEffort, req.FastMode, req.MaxMode, req.ModelParameters, req.CursorModelSpec, req.ResolvedContextWindowTokens),
-				ConversationId:  proto.String(conversationID),
-				PreFetchedBlobs: preFetchedBlobs,
+				Action:            action,
+				RequestedModel:    cursorAccountRequestedModel(modelID, req.ThinkingEffort, req.FastMode, req.MaxMode, req.ModelParameters, req.CursorModelSpec, req.ResolvedContextWindowTokens),
+				ConversationId:    proto.String(conversationID),
+				PreFetchedBlobs:   preFetchedBlobs,
 			},
 		},
 	}
@@ -1756,7 +1772,7 @@ func cursorAccountSideCallTurnMessages(messages []Message) ([]Message, string) {
 
 func cursorAccountSplitTurnMessages(messages []Message) ([]Message, string) {
 	if len(messages) == 0 {
-		return nil, "Continue."
+		return nil, ""
 	}
 	split := len(messages)
 	last := messages[len(messages)-1]
@@ -1775,17 +1791,15 @@ func cursorAccountSplitTurnMessages(messages []Message) ([]Message, string) {
 	}
 	history := append([]Message(nil), messages[:historyEnd]...)
 	if split == len(messages) {
-		if len(backgroundDelegationNotices) > 0 {
-			return history, strings.Join(backgroundDelegationNotices, "\n\n") + "\n\nContinue."
-		}
-		return history, "Continue."
+		return history, strings.Join(backgroundDelegationNotices, "\n\n")
 	}
 	text := strings.TrimSpace(cursorAccountMessageText(messages[split]))
-	if text == "" {
-		text = "Continue."
-	}
 	if len(backgroundDelegationNotices) > 0 {
-		text = strings.Join(backgroundDelegationNotices, "\n\n") + "\n\n" + text
+		if text == "" {
+			text = strings.Join(backgroundDelegationNotices, "\n\n")
+		} else {
+			text = strings.Join(backgroundDelegationNotices, "\n\n") + "\n\n" + text
+		}
 	}
 	return history, text
 }

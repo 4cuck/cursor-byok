@@ -71,6 +71,12 @@ func deliverCursorInteractionResult(stream *ActiveStream, msg *agentv1.Interacti
 	}
 	select {
 	case ch <- msg:
+		// SwitchMode and the other interaction cards are answered on the same
+		// open Cursor stream. Mark that turn inline so a later stop does not
+		// start another pass after the model has already finished.
+		stream.mu.Lock()
+		stream.CursorInlineToolTurn = true
+		stream.mu.Unlock()
 		return true
 	default:
 		return false

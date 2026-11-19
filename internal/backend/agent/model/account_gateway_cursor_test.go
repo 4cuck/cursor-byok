@@ -470,6 +470,49 @@ func TestCursorAccountFollowUpLeavesTheClosedToolRun(t *testing.T) {
 	if strings.Contains(history, "MIDDLE") || strings.Contains(text, "MIDDLE") {
 		t.Fatal("the middle of the terminal output was still sent")
 	}
+	if follow.GetRunRequest().GetAction().GetResumeAction() == nil {
+		t.Fatal("tool follow-up must resume the checkpoint, not invent a user message")
+	}
+	if strings.Contains(text, "Continue.") || strings.Contains(history, "Continue.") {
+		t.Fatal("synthetic Continue. was sent to the model")
+	}
+}
+
+func TestCursorAccountBackgroundNoticeDoesNotInventContinue(t *testing.T) {
+	t.Setenv("CURSOR_BYOK_HOME", t.TempDir())
+	notice := "<system_reminder>\n此前转入后台继续运行的委派任务已结束（状态：completed）。任务：inspect routes。（subagent agent_id=child-agent-123）\n结果：\nAll 3 routes verified.\n</system_reminder>"
+	run := cursorAccountRunMessage(StreamRequest{
+		ConversationID: "conv-bg-only",
+		Messages: []Message{
+			{Role: "user", Content: "spawn subagent"},
+			{Role: "assistant", Content: "spawned"},
+			{Role: "user", Content: notice},
+			{Role: "tool", Name: "Read", ToolCallID: "call-1", Content: "file body"},
+		},
+	}, "gemini-4-argon")
+	if run.GetRunRequest().GetAction().GetResumeAction() == nil {
+		t.Fatal("a turn that ends on a tool result must resume, not send a new user message")
+	}
+	if run.GetRunRequest().GetAction().GetUserMessageAction() != nil {
+		t.Fatal("tool follow-up invented a user message")
+	}
+	history := cursorAccountHistoryPlain(run)
+	if !strings.Contains(history, "file body") || !strings.Contains(history, "spawn subagent") {
+		t.Fatalf("history = %q", history)
+	}
+	if strings.Contains(history, "Continue.") {
+		t.Fatal("synthetic Continue. was written into the checkpoint")
+	}
+}
+
+func TestCursorAccountKeepsLiteralUserContinue(t *testing.T) {
+	run := cursorAccountRunMessage(StreamRequest{
+		Messages: []Message{{Role: "user", Content: "Continue."}},
+	}, "claude-fable-5-2")
+	text := run.GetRunRequest().GetAction().GetUserMessageAction().GetUserMessage().GetText()
+	if text != "Continue." {
+		t.Fatalf("text = %q, want the user's own message", text)
+	}
 }
 
 func cursorAccountHistoryPlain(message *agentv1.AgentClientMessage) string {
