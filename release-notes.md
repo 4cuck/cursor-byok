@@ -1,20 +1,12 @@
-## v1.0.44
-
-### Changed
-
-- **Cursor accounts share one model list**:
-  - Syncing no longer copies the full catalog onto every account. Cursor models stay in a single `cursor_account` list.
-  - Set as current chooses which saved account serves that list. Other saved accounts are used only when the current account runs out of quota for a model.
-  - Removed the Sync all button, which had been creating a separate copy of every model for each account.
+## v1.0.45
 
 ### Fixed
 
-- **Deleting synced Cursor models no longer fails with a truncated JSON body**:
-  - Removing one Cursor model, a Cursor supplier, or all synced models now happens inside the app and only sends the model ids.
-  - This fixes `Unable to parse request body as JSON: unexpected end of JSON input` after a large sync.
-- **A large file read no longer freezes the next turn on "Planning next moves"**:
-  - Reading a long file, including a terminal log, now sends Cursor the same head-and-tail excerpt it already uses for long shell output.
-  - The tool card in the IDE still shows the full file. The model can read a smaller range when it needs the middle.
+- **Large edits no longer work from a cut-down file read**:
+  - v1.0.44 rewrote every Read result with the shell-output head-and-tail split and marked the read truncated.
+  - Cursor's own exec host already formats a Read: the file stays whole until 100,000 characters, and only then asks for `offset` and `limit`. A terminal log opened as a file is a Read, not a shell listing.
+  - Those Read results are now passed through unchanged, so a later edit sees the same file Cursor produced.
+- **Shell output is unchanged**: a finished command is still kept whole until 10,000 characters, then the first and last 5,000, matching Cursor.
 
 > **Windows 用户注意**：安装时若被 SmartScreen 拦截，点击「更多信息」->「仍要运行」即可。
 
@@ -22,11 +14,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.44-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.44-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.44-windows-arm64-installer.exe` 或 `cursor-byok-1.0.44-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.44-windows-x32-installer.exe` 或 `cursor-byok-1.0.44-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.44-macos-arm64.dmg` 或 `cursor-byok-1.0.44-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.44-macos-x64.dmg` 或 `cursor-byok-1.0.44-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.44-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.45-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.45-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.45-windows-arm64-installer.exe` 或 `cursor-byok-1.0.45-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.45-windows-x32-installer.exe` 或 `cursor-byok-1.0.45-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.45-macos-arm64.dmg` 或 `cursor-byok-1.0.45-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.45-macos-x64.dmg` 或 `cursor-byok-1.0.45-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.45-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

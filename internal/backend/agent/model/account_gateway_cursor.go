@@ -945,7 +945,6 @@ func serveCursorAccountToolResults(ctx context.Context, appendFrame cursorAccoun
 				default:
 				}
 			}
-			cursorAccountCapUpstreamExec(cloned)
 			wrapped := &agentv1.AgentClientMessage{
 				Message: &agentv1.AgentClientMessage_ExecClientMessage{ExecClientMessage: cloned},
 			}
@@ -1220,8 +1219,8 @@ func cursorAccountSelectedImagesForTurn(messages []Message) (*agentv1.SelectedCo
 // follow-up prompt. Shell output uses Cursor's own 10_000-byte head/tail cap.
 const cursorAccountToolTextLimit = 16 * 1024
 
-// Cursor keeps a shell result whole until 10_000 bytes, then shows the first
-// and last 5_000. A longer raw listing makes the open Fable stream go silent.
+// Cursor keeps a shell result whole until 10_000 characters, then keeps the
+// first and last 5_000. A longer raw listing makes the open Fable stream go silent.
 const (
 	cursorShellOutputLimit = 10_000
 	cursorShellOutputEdge  = 5_000
@@ -1950,38 +1949,17 @@ func cursorAccountMessageText(message Message) string {
 
 func cursorAccountToolText(message Message) string {
 	name := strings.TrimSpace(message.Name)
-	// Shell listings and Read results (a terminal log is a Read of the terminal
-	// file) both leave Fable silent on the next turn once the raw text passes
-	// Cursor's 10_000-byte listing cap. The UI still has the full file.
-	if strings.EqualFold(name, "Shell") || strings.EqualFold(name, "Read") {
+	// Shell listings are the one result Cursor splits (10_000 characters,
+	// first and last 5_000). Read results, including a terminal log opened
+	// as a file, are already in the form Cursor's exec host produced.
+	// Cutting them drops the middle of a file the model is about to edit.
+	if strings.EqualFold(name, "Shell") {
 		return CursorAccountShellOutput(message.Content)
 	}
+	if strings.EqualFold(name, "Read") {
+		return message.Content
+	}
 	return cursorAccountTruncateMiddle(message.Content, cursorAccountToolTextLimit)
-}
-
-// CursorAccountShellOutput is the shell text the installed Cursor client puts
-// in front of the model. The terminal UI keeps the full output. The model sees
-// at most 10_000 bytes, split into the head and tail once it grows past that.
-// cursorAccountCapUpstreamExec shortens a Read result before it is appended
-// on the open Cursor account stream. The local tool card keeps the full file.
-func cursorAccountCapUpstreamExec(msg *agentv1.ExecClientMessage) {
-	if msg == nil {
-		return
-	}
-	capReadSuccess(msg.GetReadResult().GetSuccess())
-	capReadSuccess(msg.GetRedactedReadResult().GetSuccess())
-}
-
-func capReadSuccess(success *agentv1.ReadSuccess) {
-	if success == nil {
-		return
-	}
-	content := success.GetContent()
-	if content == "" || len(content) <= cursorShellOutputLimit {
-		return
-	}
-	success.Truncated = true
-	success.Output = &agentv1.ReadSuccess_Content{Content: CursorAccountShellOutput(content)}
 }
 
 func CursorAccountShellOutput(text string) string {
