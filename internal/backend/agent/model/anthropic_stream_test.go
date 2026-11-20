@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 
 	"cursor/internal/modelchannel"
 )
@@ -54,6 +56,48 @@ func TestAnthropicStreamAuthModesAndCustomAuthPrecedence(t *testing.T) {
 			}
 			if gotAPIKey != tt.wantAPIKey || gotAuthorization != tt.wantAuthorization {
 				t.Fatalf("headers x-api-key=%q Authorization=%q, want %q/%q", gotAPIKey, gotAuthorization, tt.wantAPIKey, tt.wantAuthorization)
+			}
+		})
+	}
+}
+
+// relayStreamTestClient supplies SSE bytes and transport errors without opening a socket.
+func relayStreamTestClient(body io.Reader) *http.Client {
+	return &http.Client{Transport: anthropicRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}, nil
+	})}
+}
+
+type relayTimeoutProbe struct {
+	read bool
+}
+
+func (p *relayTimeoutProbe) Read([]byte) (int, error) {
+	p.read = true
+	return 0, os.ErrDeadlineExceeded
+}
+
+func TestAnthropicStreamStopsAtMessageStop(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		buffered bool
+	}{
+		{"timeout on next read", false},
+		{"terminal bytes returned with timeout", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			probe := &relayTimeoutProbe{}
+			var body io.Reader = io.MultiReader(strings.NewReader(canonicalAnthropicSSE()), probe)
+			if tt.buffered {
+				body = iotest.DataErrReader(body)
+			}
+			adapter := &AnthropicAdapter{client: relayStreamTestClient(body)}
+			events, err := runAnthropicTestStream(t, adapter, StreamRequest{BaseURL: "https://relay.invalid", APIKey: "test", ModelID: "claude-test"}, "")
+			if err != nil || countAnthropicTurnFinished(events) != 1 || events[len(events)-1].FinishReason != "end_turn" {
+				t.Fatalf("message_stop should finish once before the trailing timeout: events=%+v, err=%v", events, err)
+			}
+			if !tt.buffered && probe.read {
+				t.Fatal("adapter read the response body again after message_stop")
 			}
 		})
 	}

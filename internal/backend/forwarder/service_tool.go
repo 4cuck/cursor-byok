@@ -23,6 +23,31 @@ func (service *Service) handleToolInvocation(stream *ActiveStream, invocation ru
 	if err := providerLoopInterruptErr(nil, stream, invocation.ModelCallID); err != nil {
 		return err
 	}
+	// Internal Cursor spill writes (agent-tools/*.txt) are initiated by Cursor's
+	// own server during WebFetch/WebSearch/MCP execution. They are not model file
+	// edits, must work in Plan/Ask/Agent modes, and must not trip doom-loop checks
+	// or emit edit cards.
+	if nativeExecIsInternalSpillWrite(invocation.NativeExec) {
+		return service.dispatchNativeCursorExec(stream, invocation)
+	}
+	// Internal Read/Write execs owned by an upstream Cursor EditToolCall run on
+	// the IDE silently while the EditToolCall InteractionUpdate drives the UI
+	// card. Still enforce mode checks for writes, without counting them toward
+	// ToolInvocationCount or doom-loop detection.
+	if invocation.SilentUI && len(invocation.NativeExec) > 0 {
+		trimmed := strings.TrimSpace(invocation.ToolName)
+		stream.mu.Lock()
+		mode := stream.Mode
+		subagentTypeName := ""
+		if stream.CheckpointConversation != nil {
+			subagentTypeName = strings.TrimSpace(stream.CheckpointConversation.SubagentTypeName)
+		}
+		stream.mu.Unlock()
+		if !isToolAllowedInMode(mode, subagentTypeName, trimmed) {
+			return service.rejectSilentNativeExecBeforeDispatch(stream, invocation, fmt.Errorf("tool invocation is not enabled in mode %s: %s", mode.String(), invocation.ToolName))
+		}
+		return service.dispatchNativeCursorExec(stream, invocation)
+	}
 	// Shell 指纹熔断：本轮内同一确定性拒绝达到阈值后，Shell 对剩余轮次不可用。
 	if strings.TrimSpace(invocation.ToolName) == "Shell" {
 		circuit := currentTurnShellCircuit(stream)
@@ -149,10 +174,7 @@ func (service *Service) handleToolInvocation(stream *ActiveStream, invocation ru
 		return err
 	}
 	if len(invocation.NativeExec) > 0 {
-		rememberNativeExecSlot(stream, invocation)
-		if !nativeExecIsWrite(invocation.NativeExec) {
-			return service.dispatchNativeCursorExec(stream, invocation)
-		}
+		return service.dispatchNativeCursorExec(stream, invocation)
 	}
 	if isPatchEditToolName(trimmedToolName) {
 		if err := service.handlePatchEditToolInvocation(stream, invocation); err != nil {

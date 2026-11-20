@@ -178,7 +178,9 @@ type cursorAccountOutput struct {
 
 func (output *cursorAccountOutput) emit(event ModelEvent) error {
 	switch event.Kind {
-	case ModelEventKindTextDelta, ModelEventKindThinkingDelta, ModelEventKindToolLikeCompleted:
+	case ModelEventKindTextDelta, ModelEventKindThinkingDelta, ModelEventKindToolLikeCompleted,
+		ModelEventKindPartialToolCall, ModelEventKindToolCallDelta,
+		ModelEventKindCursorWebResult, ModelEventKindCursorEditStarted, ModelEventKindCursorEditCompleted:
 		output.forwarded = true
 	}
 	return output.sink(event)
@@ -432,40 +434,140 @@ type cursorExecSlot struct {
 	execID string
 }
 
+// Exec and interaction IDs have separate wire namespaces. The forwarder, on the
+// other hand, keys pending work and history by CallID. Only disambiguate a
+// display ID when another invocation on this run has already claimed it.
+type cursorDispatchIDs map[string]bool
+
+func (used cursorDispatchIDs) claim(display string) string {
+	id := display
+	for n := len(used); used[id]; n++ {
+		id = fmt.Sprintf("%s-%d", display, n)
+	}
+	used[id] = true
+	return id
+}
+
+// The reader registers requests before dispatch; the reply pump retires them.
+// Keep closed identities for this run so retransmissions cannot execute twice.
+type cursorExecRoutes struct {
+	mu       sync.Mutex
+	open     map[cursorExecSlot]bool
+	openByID map[uint32]int // stream_close carries only the numeric ID
+}
+
+func newCursorExecRoutes() *cursorExecRoutes {
+	return &cursorExecRoutes{open: make(map[cursorExecSlot]bool), openByID: make(map[uint32]int)}
+}
+
+func (routes *cursorExecRoutes) register(slot cursorExecSlot) bool {
+	routes.mu.Lock()
+	defer routes.mu.Unlock()
+	if _, seen := routes.open[slot]; seen {
+		return false
+	}
+	routes.open[slot] = true
+	routes.openByID[slot.id]++
+	return true
+}
+
+// correlate returns nil rather than appending a result to an unknown or
+// ambiguous exec. A numeric-only identity is a complete wire key in its own
+// right. Old callers omitting IDs may fill them only from an unambiguous slot.
+func (routes *cursorExecRoutes) correlate(msg *agentv1.ExecClientMessage) (*agentv1.ExecClientMessage, bool) {
+	routes.mu.Lock()
+	defer routes.mu.Unlock()
+	key := cursorExecSlot{msg.GetId(), msg.GetExecId()}
+	if active, known := routes.open[key]; known && (key != (cursorExecSlot{}) || active) {
+		if !active { // A duplicate or late reply to an already retired exec.
+			return nil, false
+		}
+	} else {
+		var found bool
+		for slot, active := range routes.open {
+			if (msg.Id != 0 && msg.Id != slot.id) || (msg.ExecId != "" && msg.ExecId != slot.execID) {
+				continue
+			}
+			if !active {
+				// A partial ID matching an old slot could be a late reply to it.
+				if msg.Id != 0 || msg.ExecId != "" {
+					return nil, false
+				}
+				continue
+			}
+			if found {
+				return nil, false
+			}
+			key, found = slot, true
+		}
+		if !found {
+			return nil, false
+		}
+		msg = proto.CloneOf(msg)
+		msg.Id, msg.ExecId = key.id, key.execID
+	}
+	var terminal bool
+	if msg.GetShellStream() != nil {
+		_, terminal = cursorAccountShellCloseID(msg)
+	} else {
+		terminal = msg.GetMessage() != nil && msg.GetSubagentAwaitResult().GetStillRunning() == nil
+	}
+	if !terminal {
+		return msg, false
+	}
+	routes.open[key] = false
+	routes.openByID[key.id]--
+	_, closeStream := cursorAccountTerminalExecCloseID(msg)
+	return msg, closeStream && routes.openByID[key.id] == 0
+}
+
 func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppendFunc, requestID, conversationID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, toolResults <-chan *agentv1.ExecClientMessage, interactionReplies <-chan *agentv1.InteractionResponse, requestContext *agentv1.RequestContext, sink func(ModelEvent) error) error {
 	cursorAccountResetFrameLog()
 	var pending []byte
 	tmp := make([]byte, 8192)
-	var seqMu sync.Mutex
+	var appendMu sync.Mutex
 	seq := int64(1)
-	nextSeq := func() int64 {
-		seqMu.Lock()
-		defer seqMu.Unlock()
+	sendFrame := func(sendCtx context.Context, payload []byte) error {
+		appendMu.Lock()
+		defer appendMu.Unlock()
 		n := seq
 		seq++
-		return n
+		return appendFrame(sendCtx, n, payload)
+	}
+	sendExecClose := func(sendCtx context.Context, id uint32) error {
+		control := &agentv1.AgentClientMessage{
+			Message: &agentv1.AgentClientMessage_ExecClientControlMessage{
+				ExecClientControlMessage: &agentv1.ExecClientControlMessage{
+					Message: &agentv1.ExecClientControlMessage_StreamClose{
+						StreamClose: &agentv1.ExecClientStreamClose{Id: id},
+					},
+				},
+			},
+		}
+		return sendFrame(sendCtx, mustCursorProto(control))
 	}
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 	var finishInline <-chan struct{}
 	var toolContinued <-chan struct{}
-	var pendingExecs chan cursorExecSlot
+	execRoutes := newCursorExecRoutes()
 	if toolResults != nil || interactionReplies != nil {
+		signal := make(chan struct{}, 1)
+		finishInline = signal
 		continued := make(chan struct{}, 8)
 		toolContinued = continued
 		if toolResults != nil {
-			signal := make(chan struct{}, 1)
-			finishInline = signal
-			pendingExecs = make(chan cursorExecSlot, 8)
-			go serveCursorAccountToolResults(streamCtx, appendFrame, nextSeq, toolResults, pendingExecs, signal, continued)
+			go serveCursorAccountToolResults(streamCtx, sendFrame, toolResults, execRoutes, signal, continued)
 		}
 		if interactionReplies != nil {
-			go serveCursorAccountInteractionReplies(streamCtx, appendFrame, nextSeq, interactionReplies, continued)
+			go serveCursorAccountInteractionReplies(streamCtx, sendFrame, interactionReplies, signal, continued)
 		}
 	}
 	thinkingActive := false
 	var thinkingStarted time.Time
-	toolSeen := map[string]struct{}{}
+	querySeen := make(map[uint32]bool)
+	cursorEditDisplayIDs := make(map[string]string)
+	dispatchIDs := cursorDispatchIDs{}
 	var inputTokens, outputTokens, cacheRead, cacheWrite, reasoningTokens int64
 	usagePresent := false
 	finishReason := "stop"
@@ -536,6 +638,7 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 	}
 	defer silent.Stop()
 	sawUseful := false
+	toolSilenceActive := false
 	toolSilence := time.NewTimer(time.Hour)
 	if !toolSilence.Stop() {
 		select {
@@ -544,6 +647,25 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 		}
 	}
 	defer toolSilence.Stop()
+	resetToolSilence := func() {
+		if !toolSilence.Stop() {
+			select {
+			case <-toolSilence.C:
+			default:
+			}
+		}
+		toolSilenceActive = true
+		toolSilence.Reset(cursorAccountToolStallTimeout)
+	}
+	stopToolSilence := func() {
+		toolSilenceActive = false
+		if !toolSilence.Stop() {
+			select {
+			case <-toolSilence.C:
+			default:
+			}
+		}
+	}
 
 	// Cursor's agent server (including Grok 4.7) flushes SetBlob writes for the
 	// user/assistant messages and the terminal conversationCheckpointUpdate AFTER
@@ -589,12 +711,7 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			default:
 			}
 		}
-		if !toolSilence.Stop() {
-			select {
-			case <-toolSilence.C:
-			default:
-			}
-		}
+		stopToolSilence()
 	}
 
 	for {
@@ -617,14 +734,9 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			finishReason = "tool_calls"
 			return finishTurn()
 		case <-toolContinued:
-			if !toolSilence.Stop() {
-				select {
-				case <-toolSilence.C:
-				default:
-				}
-			}
-			toolSilence.Reset(cursorAccountToolStallTimeout)
+			resetToolSilence()
 		case <-toolSilence.C:
+			toolSilenceActive = false
 			logger.Infof("cursor account stream stalled after a tool result request_id=%s model=%s; continuing in a fresh pass", requestID, modelID)
 			finishReason = "tool_calls"
 			return finishTurn()
@@ -699,7 +811,7 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			cursorAccountNoteFrame(cursorAccountServerMessageKind(msg))
 			if kv := msg.GetKvServerMessage(); kv != nil {
 				armSilent()
-				if err := appendFrame(ctx, nextSeq(), mustCursorProto(cursorAccountKVReply(kv))); err != nil {
+				if err := sendFrame(ctx, mustCursorProto(cursorAccountKVReply(kv))); err != nil {
 					if sawTurnEnded {
 						return finishTurn()
 					}
@@ -725,10 +837,11 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 					logger.Infof("cursor account ignored unsupported interaction query id=%d request_id=%s", query.GetId(), requestID)
 					continue
 				}
-				if _, seen := toolSeen[callID]; seen {
+				if querySeen[query.GetId()] {
 					continue
 				}
-				toolSeen[callID] = struct{}{}
+				querySeen[query.GetId()] = true
+				callID = dispatchIDs.claim(callID)
 				sawToolCall = true
 				sawVisibleTextAfterLastTool = false
 				if err := finishThinking(); err != nil {
@@ -768,13 +881,19 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			}
 			if exec := msg.GetExecServerMessage(); exec != nil {
 				if exec.GetRequestContextArgs() != nil {
-					if err := appendFrame(ctx, nextSeq(), mustCursorProto(cursorAccountContextReply(exec.GetId(), exec.GetExecId(), requestContext))); err != nil {
+					if err := sendFrame(ctx, mustCursorProto(cursorAccountContextReply(exec.GetId(), exec.GetExecId(), requestContext))); err != nil {
+						return err
+					}
+					if err := sendExecClose(ctx, exec.GetId()); err != nil {
 						return err
 					}
 					continue
 				}
 				if reply, ok := cursorAccountExecReply(exec); ok {
-					if err := appendFrame(ctx, nextSeq(), mustCursorProto(reply)); err != nil {
+					if err := sendFrame(ctx, mustCursorProto(reply)); err != nil {
+						return err
+					}
+					if err := sendExecClose(ctx, exec.GetId()); err != nil {
 						return err
 					}
 					continue
@@ -783,19 +902,20 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 				if !ok {
 					return fmt.Errorf("cursor requested an unsupported tool execution")
 				}
-				if _, seen := toolSeen[callID]; seen {
+				if !execRoutes.register(cursorExecSlot{id: exec.GetId(), execID: exec.GetExecId()}) {
 					continue
 				}
-				toolSeen[callID] = struct{}{}
-				sawToolCall = true
-				sawVisibleTextAfterLastTool = false
-				if err := finishThinking(); err != nil {
-					return err
+				noteUseful()
+				silentEditExec := cursorExecBelongsToUpstreamEdit(exec, cursorEditDisplayIDs)
+				if silentEditExec {
+					callID = cursorAccountExecWireCallID(exec)
 				}
-				if toolResults != nil && pendingExecs != nil {
-					select {
-					case pendingExecs <- cursorExecSlot{id: exec.GetId(), execID: exec.GetExecId()}:
-					default:
+				callID = dispatchIDs.claim(callID)
+				sawToolCall = true
+				if !silentEditExec {
+					sawVisibleTextAfterLastTool = false
+					if err := finishThinking(); err != nil {
+						return err
 					}
 				}
 				if err := sink(ModelEvent{
@@ -811,6 +931,7 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 						ArgsJSON:    args,
 						NativeExec:  mustCursorProto(exec),
 						ModelCallID: requestID,
+						SilentUI:    silentEditExec,
 					},
 				}); err != nil {
 					return err
@@ -825,8 +946,126 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			if update == nil {
 				continue
 			}
+			if partial := update.GetPartialToolCall(); partial != nil {
+				if id := CursorEditPartialCallID(partial); id != "" {
+					noteUseful()
+					displayID := claimCursorEditDisplayID(cursorEditDisplayIDs, dispatchIDs, id, partial.GetCallId())
+					card := proto.CloneOf(partial.GetToolCall())
+					if displayID != id && card != nil && card.ToolCallId != nil {
+						card.ToolCallId = proto.String(displayID)
+					}
+					sawToolCall = true
+					sawVisibleTextAfterLastTool = false
+					if err := finishThinking(); err != nil {
+						return err
+					}
+					if err := sink(ModelEvent{
+						Kind:          ModelEventKindPartialToolCall,
+						OccurredAt:    time.Now().UTC(),
+						Provider:      providerLabel,
+						GroupName:     providerLabel,
+						Model:         modelID,
+						ToolCallID:    displayID,
+						ToolCall:      card,
+						ArgsTextDelta: partial.GetArgsTextDelta(),
+					}); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			if delta := update.GetToolCallDelta(); delta != nil && delta.GetToolCallDelta().GetEditToolCallDelta() != nil {
+				if id := strings.TrimSpace(delta.GetCallId()); id != "" {
+					noteUseful()
+					displayID := claimCursorEditDisplayID(cursorEditDisplayIDs, dispatchIDs, id)
+					if err := sink(ModelEvent{
+						Kind:          ModelEventKindToolCallDelta,
+						OccurredAt:    time.Now().UTC(),
+						Provider:      providerLabel,
+						GroupName:     providerLabel,
+						Model:         modelID,
+						ToolCallID:    displayID,
+						ToolCallDelta: proto.CloneOf(delta.GetToolCallDelta()),
+					}); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			if started := update.GetToolCallStarted(); started != nil {
+				if id := CursorEditStartedCallID(started); id != "" {
+					noteUseful()
+					displayID := claimCursorEditDisplayID(cursorEditDisplayIDs, dispatchIDs, id, started.GetCallId())
+					cloned := proto.CloneOf(started)
+					if displayID != id {
+						cloned.CallId = displayID
+						if cloned.ToolCall != nil && cloned.ToolCall.ToolCallId != nil {
+							cloned.ToolCall.ToolCallId = proto.String(displayID)
+						}
+					}
+					sawToolCall = true
+					sawVisibleTextAfterLastTool = false
+					if err := finishThinking(); err != nil {
+						return err
+					}
+					if err := sink(ModelEvent{
+						Kind:              ModelEventKindCursorEditStarted,
+						OccurredAt:        time.Now().UTC(),
+						Provider:          providerLabel,
+						GroupName:         providerLabel,
+						Model:             modelID,
+						ToolCallID:        displayID,
+						CursorEditStarted: cloned,
+					}); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			if completion := update.GetToolCallCompleted(); completion != nil {
+				if id := CursorWebResultCallID(completion); id != "" {
+					noteUseful()
+					// A visible terminal card is not an empty/end-of-image-only turn.
+					sawVisibleTextAfterLastTool = true
+					if err := sink(ModelEvent{Kind: ModelEventKindCursorWebResult, OccurredAt: time.Now().UTC(),
+						Provider: providerLabel, GroupName: providerLabel, Model: modelID, ToolCallID: id, CursorWebResult: completion}); err != nil {
+						return err
+					}
+					continue
+				}
+				if id := CursorEditCompletedCallID(completion); id != "" {
+					noteUseful()
+					displayID := claimCursorEditDisplayID(cursorEditDisplayIDs, dispatchIDs, id, completion.GetCallId())
+					cloned := proto.CloneOf(completion)
+					if displayID != id {
+						cloned.CallId = displayID
+						if cloned.ToolCall != nil && cloned.ToolCall.ToolCallId != nil {
+							cloned.ToolCall.ToolCallId = proto.String(displayID)
+						}
+					}
+					sawVisibleTextAfterLastTool = true
+					if err := finishThinking(); err != nil {
+						return err
+					}
+					if err := sink(ModelEvent{
+						Kind:                ModelEventKindCursorEditCompleted,
+						OccurredAt:          time.Now().UTC(),
+						Provider:            providerLabel,
+						GroupName:           providerLabel,
+						Model:               modelID,
+						ToolCallID:          displayID,
+						CursorEditCompleted: cloned,
+					}); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			if update.GetSummaryStarted() != nil || update.GetSummary() != nil || update.GetSummaryCompleted() != nil {
 				noteUseful()
+			}
+			if toolSilenceActive && (update.GetHeartbeat() != nil || update.GetToolCallStarted() != nil || update.GetPartialToolCall() != nil || update.GetToolCallDelta() != nil || update.GetStepStarted() != nil || update.GetStepCompleted() != nil || update.GetTokenDelta() != nil) {
+				resetToolSilence()
 			}
 			if text := update.GetTextDelta(); text != nil && text.GetText() != "" {
 				rawText := text.GetText()
@@ -899,7 +1138,7 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 	}
 }
 
-func serveCursorAccountInteractionReplies(ctx context.Context, appendFrame cursorAccountAppendFunc, nextSeq func() int64, replies <-chan *agentv1.InteractionResponse, continued chan<- struct{}) {
+func serveCursorAccountInteractionReplies(ctx context.Context, sendFrame func(context.Context, []byte) error, replies <-chan *agentv1.InteractionResponse, finish, continued chan<- struct{}) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -911,8 +1150,14 @@ func serveCursorAccountInteractionReplies(ctx context.Context, appendFrame curso
 			wrapped := &agentv1.AgentClientMessage{
 				Message: &agentv1.AgentClientMessage_InteractionResponse{InteractionResponse: msg},
 			}
-			if err := appendFrame(ctx, nextSeq(), mustCursorProto(wrapped)); err != nil {
+			if err := sendFrame(ctx, mustCursorProto(wrapped)); err != nil {
 				logger.Warnf("cursor account interaction reply was not delivered: %v", err)
+				// The server is still waiting for this reply. Resume in a fresh pass,
+				// as for an undeliverable exec result, rather than waiting for a frame.
+				select {
+				case finish <- struct{}{}:
+				default:
+				}
 				return
 			}
 			if continued != nil {
@@ -925,7 +1170,7 @@ func serveCursorAccountInteractionReplies(ctx context.Context, appendFrame curso
 	}
 }
 
-func serveCursorAccountToolResults(ctx context.Context, appendFrame cursorAccountAppendFunc, nextSeq func() int64, toolResults <-chan *agentv1.ExecClientMessage, pendingExecs <-chan cursorExecSlot, finish chan<- struct{}, continued chan<- struct{}) {
+func serveCursorAccountToolResults(ctx context.Context, sendFrame func(context.Context, []byte) error, toolResults <-chan *agentv1.ExecClientMessage, routes *cursorExecRoutes, finish chan<- struct{}, continued chan<- struct{}) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -938,22 +1183,15 @@ func serveCursorAccountToolResults(ctx context.Context, appendFrame cursorAccoun
 				}
 				return
 			}
-			cloned, _ := proto.Clone(msg).(*agentv1.ExecClientMessage)
-			if cloned == nil {
-				cloned = msg
-			}
-			if strings.TrimSpace(cloned.GetExecId()) == "" {
-				select {
-				case slot := <-pendingExecs:
-					cloned.Id = slot.id
-					cloned.ExecId = slot.execID
-				default:
-				}
+			reply, closeStream := routes.correlate(msg)
+			if reply == nil {
+				logger.Warnf("cursor account ignored tool result without an unambiguous outstanding exec id=%d", msg.GetId())
+				continue
 			}
 			wrapped := &agentv1.AgentClientMessage{
-				Message: &agentv1.AgentClientMessage_ExecClientMessage{ExecClientMessage: cloned},
+				Message: &agentv1.AgentClientMessage_ExecClientMessage{ExecClientMessage: reply},
 			}
-			if err := appendFrame(ctx, nextSeq(), mustCursorProto(wrapped)); err != nil {
+			if err := sendFrame(ctx, mustCursorProto(wrapped)); err != nil {
 				logger.Warnf("cursor account tool result was not delivered: %v", err)
 				select {
 				case finish <- struct{}{}:
@@ -961,7 +1199,8 @@ func serveCursorAccountToolResults(ctx context.Context, appendFrame cursorAccoun
 				}
 				return
 			}
-			if id, ok := cursorAccountTerminalExecCloseID(cloned); ok {
+			if closeStream {
+				id := reply.GetId()
 				// The IDE closes a finished exec with stream_close. Without it
 				// the upstream tool stays open and the model sits silent after
 				// a Read, Grep, or background shell spawn.
@@ -974,7 +1213,7 @@ func serveCursorAccountToolResults(ctx context.Context, appendFrame cursorAccoun
 						},
 					},
 				}
-				if err := appendFrame(ctx, nextSeq(), mustCursorProto(control)); err != nil {
+				if err := sendFrame(ctx, mustCursorProto(control)); err != nil {
 					logger.Warnf("cursor account shell stream was not closed: %v", err)
 					select {
 					case finish <- struct{}{}:
@@ -1732,6 +1971,9 @@ func cursorAccountFollowsToolResult(messages []Message) bool {
 		if role == "tool" || strings.TrimSpace(message.ToolCallID) != "" {
 			return true
 		}
+		if cursorAccountScaffoldingMessage(message) {
+			continue
+		}
 		if role == "user" || role == "system" {
 			return false
 		}
@@ -1770,14 +2012,31 @@ func cursorAccountSideCallTurnMessages(messages []Message) ([]Message, string) {
 	return history, "<instructions>\n" + strings.Join(instructions, "\n\n") + "\n</instructions>\n\n" + text
 }
 
+func isCursorAccountCommandMessage(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "<cursor_commands>")
+}
+
 func cursorAccountSplitTurnMessages(messages []Message) ([]Message, string) {
 	if len(messages) == 0 {
 		return nil, ""
 	}
 	split := len(messages)
 	last := messages[len(messages)-1]
-	if !cursorAccountIsToolMessage(last) && !strings.EqualFold(strings.TrimSpace(last.Role), "assistant") {
+	if !cursorAccountIsToolMessage(last) &&
+		!strings.EqualFold(strings.TrimSpace(last.Role), "assistant") &&
+		!isCursorAccountSummaryText(cursorAccountMessagePlainText(last)) {
 		split = len(messages) - 1
+	}
+	turnEnd := len(messages)
+	if split < len(messages) && split > 0 && isCursorAccountCommandMessage(cursorAccountMessagePlainText(messages[split])) {
+		prev := messages[split-1]
+		prevText := cursorAccountMessagePlainText(prev)
+		if !cursorAccountIsToolMessage(prev) &&
+			!strings.EqualFold(strings.TrimSpace(prev.Role), "assistant") &&
+			!isCursorAccountSummaryText(prevText) &&
+			!isCursorAccountBackgroundDelegationMessage(prevText) {
+			split--
+		}
 	}
 	historyEnd := split
 	var backgroundDelegationNotices []string
@@ -1793,15 +2052,14 @@ func cursorAccountSplitTurnMessages(messages []Message) ([]Message, string) {
 	if split == len(messages) {
 		return history, strings.Join(backgroundDelegationNotices, "\n\n")
 	}
-	text := strings.TrimSpace(cursorAccountMessageText(messages[split]))
-	if len(backgroundDelegationNotices) > 0 {
-		if text == "" {
-			text = strings.Join(backgroundDelegationNotices, "\n\n")
-		} else {
-			text = strings.Join(backgroundDelegationNotices, "\n\n") + "\n\n" + text
+	turnParts := make([]string, 0, len(backgroundDelegationNotices)+(turnEnd-split))
+	turnParts = append(turnParts, backgroundDelegationNotices...)
+	for i := split; i < turnEnd; i++ {
+		if part := strings.TrimSpace(cursorAccountMessageText(messages[i])); part != "" {
+			turnParts = append(turnParts, part)
 		}
 	}
-	return history, text
+	return history, strings.Join(turnParts, "\n\n")
 }
 
 func cursorAccountTurn(messages []Message) ([]*agentv1.ConversationHistoryMessage, string) {
@@ -1918,8 +2176,17 @@ func cursorAccountPromptMessages(messages []Message) []Message {
 	return filtered
 }
 
+func cursorAccountHasImageParts(message Message) bool {
+	for _, part := range message.ContentParts {
+		if strings.EqualFold(strings.TrimSpace(part.Type), "image") && part.Image != nil && len(part.Image.Data) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func cursorAccountScaffoldingMessage(message Message) bool {
-	if cursorAccountIsToolMessage(message) {
+	if cursorAccountIsToolMessage(message) || cursorAccountHasImageParts(message) {
 		return false
 	}
 	role := strings.ToLower(strings.TrimSpace(message.Role))
@@ -1940,6 +2207,13 @@ func cursorAccountScaffoldingMessage(message Message) bool {
 		"<agent_transcripts>",
 		"<mcp_file_system>",
 		"<custom_subagents>",
+		"<user_intent_summary>",
+		"<hooks_additional_context>",
+		"<current_file_contents>",
+		"<commit_attribution_message>",
+		"<pr_attribution_message>",
+		"<current_plan>",
+		"<todo_list>",
 		"<system_reminder>",
 		"<current_user_request>",
 	} {
@@ -2022,31 +2296,50 @@ func cursorAccountUTF8Suffix(text string, limit int) string {
 	return suffix
 }
 
+// IsCursorInternalSpillWritePath reports whether path targets a Cursor
+// agent-tools/*.txt output spill file (e.g. WebFetch/WebSearch/MCP/Shell spill
+// written by Cursor's server/host). Matches Cursor 3.30.14's agent-tools rule.
+func IsCursorInternalSpillWritePath(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" || trimmed != path {
+		return false
+	}
+	normalized := strings.ReplaceAll(trimmed, "\\", "/")
+	parts := strings.Split(normalized, "/")
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			return false
+		}
+		clean = append(clean, part)
+	}
+	if len(clean) < 2 {
+		return false
+	}
+	parent := clean[len(clean)-2]
+	base := clean[len(clean)-1]
+	return strings.EqualFold(parent, "agent-tools") &&
+		strings.HasSuffix(strings.ToLower(base), ".txt") &&
+		len(base) > len(".txt")
+}
+
 func cursorAccountTerminalExecCloseID(message *agentv1.ExecClientMessage) (uint32, bool) {
-	if message == nil || message.GetId() == 0 {
+	if message == nil || message.GetMessage() == nil {
 		return 0, false
 	}
-	if id, ok := cursorAccountShellCloseID(message); ok {
-		return id, true
+	if message.GetShellStream() != nil {
+		return cursorAccountShellCloseID(message)
 	}
-	switch {
-	case message.GetReadResult() != nil,
-		message.GetRedactedReadResult() != nil,
-		message.GetGrepResult() != nil,
-		message.GetDeleteResult() != nil,
-		message.GetLsResult() != nil,
-		message.GetDiagnosticsResult() != nil,
-		message.GetMcpResult() != nil,
-		message.GetFetchResult() != nil,
-		message.GetWriteResult() != nil,
-		message.GetShellResult() != nil,
-		message.GetBackgroundShellSpawnResult() != nil,
-		message.GetListMcpResourcesExecResult() != nil,
-		message.GetReadMcpResourceExecResult() != nil:
-		return message.GetId(), true
-	default:
+	if message.GetSubagentAwaitResult().GetStillRunning() != nil {
 		return 0, false
 	}
+	// Cursor's cursor-agent-exec sends stream_close after every finished exec
+	// (including id=0, because SimpleExecManager.nextId starts at 0). Only
+	// non-terminal streaming frames stay open.
+	return message.GetId(), true
 }
 
 func cursorAccountShellCloseID(message *agentv1.ExecClientMessage) (uint32, bool) {
@@ -2214,6 +2507,10 @@ func cursorAccountExecReply(exec *agentv1.ExecServerMessage) (*agentv1.AgentClie
 		client.Message = &agentv1.ExecClientMessage_ShellAllowlistPrecheckResult{
 			ShellAllowlistPrecheckResult: &agentv1.ShellAllowlistPrecheckResult{Allowlisted: true},
 		}
+	case exec.GetMcpAllowlistPrecheckArgs() != nil:
+		client.Message = &agentv1.ExecClientMessage_McpAllowlistPrecheckResult{
+			McpAllowlistPrecheckResult: &agentv1.McpAllowlistPrecheckResult{Allowlisted: true},
+		}
 	case exec.GetWebFetchAllowlistPrecheckArgs() != nil:
 		client.Message = &agentv1.ExecClientMessage_WebFetchAllowlistPrecheckResult{
 			WebFetchAllowlistPrecheckResult: &agentv1.WebFetchAllowlistPrecheckResult{Allowlisted: true},
@@ -2224,6 +2521,61 @@ func cursorAccountExecReply(exec *agentv1.ExecServerMessage) (*agentv1.AgentClie
 	return &agentv1.AgentClientMessage{
 		Message: &agentv1.AgentClientMessage_ExecClientMessage{ExecClientMessage: client},
 	}, true
+}
+
+func cursorAccountExecWireCallID(exec *agentv1.ExecServerMessage) string {
+	if exec == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(exec.GetExecId()); id != "" {
+		return id
+	}
+	return fmt.Sprintf("exec-%d", exec.GetId())
+}
+
+func claimCursorEditDisplayID(displayByRaw map[string]string, dispatchIDs cursorDispatchIDs, primary string, aliases ...string) string {
+	candidates := make([]string, 0, 1+len(aliases))
+	if trimmed := strings.TrimSpace(primary); trimmed != "" {
+		candidates = append(candidates, trimmed)
+	}
+	for _, alias := range aliases {
+		if trimmed := strings.TrimSpace(alias); trimmed != "" {
+			candidates = append(candidates, trimmed)
+		}
+	}
+	displayID := ""
+	for _, key := range candidates {
+		if existing, ok := displayByRaw[key]; ok && existing != "" {
+			displayID = existing
+			break
+		}
+	}
+	if displayID == "" {
+		displayID = dispatchIDs.claim(strings.TrimSpace(primary))
+	}
+	for _, key := range candidates {
+		displayByRaw[key] = displayID
+	}
+	return displayID
+}
+
+func cursorExecBelongsToUpstreamEdit(exec *agentv1.ExecServerMessage, cursorEditDisplayIDs map[string]string) bool {
+	if exec == nil || len(cursorEditDisplayIDs) == 0 {
+		return false
+	}
+	switch {
+	case exec.GetReadArgs() != nil:
+		_, ok := cursorEditDisplayIDs[strings.TrimSpace(exec.GetReadArgs().GetToolCallId())]
+		return ok
+	case exec.GetRedactedReadArgs() != nil:
+		_, ok := cursorEditDisplayIDs[strings.TrimSpace(exec.GetRedactedReadArgs().GetToolCallId())]
+		return ok
+	case exec.GetWriteArgs() != nil:
+		_, ok := cursorEditDisplayIDs[strings.TrimSpace(exec.GetWriteArgs().GetToolCallId())]
+		return ok
+	default:
+		return false
+	}
 }
 
 func cursorAccountExecTool(exec *agentv1.ExecServerMessage) (string, string, []byte, bool) {
@@ -2251,6 +2603,14 @@ func cursorAccountExecTool(exec *agentv1.ExecServerMessage) (string, string, []b
 		}
 	case exec.GetWriteArgs() != nil:
 		name, msg = "Write", exec.GetWriteArgs()
+		// Internal spill writes to agent-tools/*.txt carry the parent WebFetch /
+		// WebSearch / MCP toolCallId. Keep the exec's own wire ID so the spill
+		// write never collides with the parent tool card or interaction state.
+		if !IsCursorInternalSpillWritePath(exec.GetWriteArgs().GetPath()) {
+			if id := strings.TrimSpace(exec.GetWriteArgs().GetToolCallId()); id != "" {
+				callID = id
+			}
+		}
 	case exec.GetDeleteArgs() != nil:
 		name, msg = "Delete", exec.GetDeleteArgs()
 	case exec.GetGrepArgs() != nil:
@@ -2278,6 +2638,9 @@ func cursorAccountExecTool(exec *agentv1.ExecServerMessage) (string, string, []b
 		name, msg = "ReadLints", exec.GetDiagnosticsArgs()
 	case exec.GetFetchArgs() != nil:
 		name, msg = "Fetch", exec.GetFetchArgs()
+		if id := strings.TrimSpace(exec.GetFetchArgs().GetToolCallId()); id != "" {
+			callID = id
+		}
 	case exec.GetMcpArgs() != nil:
 		name, msg = "CallMcpTool", exec.GetMcpArgs()
 	case exec.GetListMcpResourcesExecArgs() != nil:

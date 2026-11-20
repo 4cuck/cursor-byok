@@ -383,10 +383,10 @@ func buildSuccessfulEditResult(path string, beforeContent string, afterContent s
 		AfterFullFileContent: afterContent,
 	}
 	if beforeContent != "" {
-		success.BeforeFullFileContent = stringPtr(beforeContent)
+		success.BeforeFullFileContent = literalStringPtr(beforeContent)
 	}
 	if diffString != "" {
-		success.DiffString = stringPtr(diffString)
+		success.DiffString = literalStringPtr(diffString)
 	}
 	if linesAdded != 0 {
 		success.LinesAdded = int32Ptr(linesAdded)

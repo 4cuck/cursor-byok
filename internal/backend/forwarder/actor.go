@@ -70,6 +70,7 @@ type streamTimerKind string
 const (
 	streamTimerNonStreamingRecovery streamTimerKind = "non_streaming_recovery"
 	streamTimerInteractionTimeout   streamTimerKind = "interaction_timeout"
+	streamTimerCursorWebResult      streamTimerKind = "cursor_web_result_timeout"
 	streamTimerShellForeground      streamTimerKind = "shell_foreground"
 	streamTimerShellTransportClose  streamTimerKind = "shell_transport_close"
 	streamTimerCheckpointBlobs      streamTimerKind = "checkpoint_blobs"
@@ -887,6 +888,7 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 				Message: buildToolCallStartedMessage(toolCallID, modelCallID, displayToolCall),
 			})
 		}
+		noteCursorEditPartial(stream, toolCallID, modelCallID, displayToolCall)
 		return service.broker.Publish(requestID, StreamEvent{
 			Message: buildPartialToolCallMessage(toolCallID, modelCallID, displayToolCall, event.ArgsTextDelta),
 		})
@@ -897,7 +899,21 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 		return service.broker.Publish(requestID, StreamEvent{
 			Message: buildToolCallDeltaMessage(event.ToolCallID, modelCallID, event.ToolCallDelta),
 		})
+	case modeladapter.ModelEventKindCursorWebResult:
+		return service.applyCursorWebResult(stream, event.CursorWebResult, modelCallID)
+	case modeladapter.ModelEventKindCursorEditStarted:
+		return service.applyCursorEditStarted(stream, event.CursorEditStarted, modelCallID)
+	case modeladapter.ModelEventKindCursorEditCompleted:
+		return service.applyCursorEditCompleted(stream, event.CursorEditCompleted, modelCallID)
 	case modeladapter.ModelEventKindToolLikeCompleted:
+		if event.ToolInvocation == nil {
+			return fmt.Errorf("tool invocation is required")
+		}
+		if event.ToolInvocation.SilentUI {
+			invocation := *event.ToolInvocation
+			invocation.ModelCallID = modelCallID
+			return service.handleToolInvocation(stream, invocation)
+		}
 		stream.mu.Lock()
 		accumulatedText := string(stream.ProviderAccumulatedText)
 		accumulatedReasoning := string(stream.ProviderAccumulatedReasoning)
@@ -913,9 +929,6 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 			if err := service.flushAssistantText(stream, conversationID, turnSeq, requestID, accumulatedText, accumulatedReasoning, accumulatedReasoningSignature, accumulatedReasoningSignatureSource, accumulatedReasoningItemID, accumulatedReasoningStatus, accumulatedReasoningSummary, false); err != nil {
 				return err
 			}
-		}
-		if event.ToolInvocation == nil {
-			return fmt.Errorf("tool invocation is required")
 		}
 		invocation := *event.ToolInvocation
 		invocation.ReasoningContent = reasoningForTool
@@ -1076,6 +1089,12 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 
 	if errors.Is(payload.Err, errProviderLoopInterrupted) || isTerminalStreamStatus(status) {
 		return nil
+	}
+	if err := service.closeUnreportedCursorWeb(stream, "Cursor ended the stream without reporting a web tool result."); err != nil {
+		return service.failStreamIfNonTerminal(stream, "unknown", err)
+	}
+	if err := service.closeUnreportedCursorEdits(stream, "Cursor ended the stream without reporting an edit result.", false); err != nil {
+		return service.failStreamIfNonTerminal(stream, "unknown", err)
 	}
 	if payload.Err != nil {
 		// 已实时推送给客户端的部分输出（文本/推理）在错误收口前必须先落盘，
@@ -1406,6 +1425,14 @@ func (service *Service) handleTimerEvent(stream *ActiveStream, payload *streamTi
 		return service.recoverShellWithoutTerminal(stream, current, shellRecoveryReasonTransportClosed)
 	case streamTimerExecWatchdog:
 		return service.recoverStaleExecWithoutTerminal(stream, payload.ExecID, payload.MessageID, payload.Reason)
+	case streamTimerCursorWebResult:
+		stream.mu.Lock()
+		_, waiting := stream.approvedCursorWeb[payload.ExecID]
+		stream.mu.Unlock()
+		if !waiting {
+			return nil
+		}
+		return service.handleCancelIntent(InboundIntent{RequestID: stream.RequestID, CancelReason: "Timed out waiting for Cursor's web tool result", CancelTerminalStatus: conversationStatusInterrupted})
 	case streamTimerInteractionTimeout:
 		return service.recoverStaleInteractionWithoutResponse(stream, payload)
 	case streamTimerTurnStale:

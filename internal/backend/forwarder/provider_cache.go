@@ -159,7 +159,10 @@ func (recorder *streamRecorder) record(event modeladapter.ModelEvent) {
 		recorder.hadAssistantOutput = true
 	case modeladapter.ModelEventKindPartialToolCall,
 		modeladapter.ModelEventKindToolCallDelta,
-		modeladapter.ModelEventKindToolLikeCompleted:
+		modeladapter.ModelEventKindToolLikeCompleted,
+		modeladapter.ModelEventKindCursorWebResult,
+		modeladapter.ModelEventKindCursorEditStarted,
+		modeladapter.ModelEventKindCursorEditCompleted:
 		// 模型发起了工具调用，视为有效输出（工具调用结果回合也可能没有 TextDelta）。
 		// 但含工具调用的回合绝不允许写入本地响应缓存：命中回放会再次派发同一工具，
 		// 造成 shell/写文件等副作用重复执行。

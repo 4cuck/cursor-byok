@@ -21,6 +21,7 @@ import (
 	"cursor/gen/agentv1"
 	"cursor/gen/aiserverv1"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -816,10 +817,161 @@ func TestCursorAccountReadAndBackgroundSpawnCloseTheExec(t *testing.T) {
 	}
 }
 
+func TestCursorAccountConversationSearchResultClosesOriginalExec(t *testing.T) {
+	const id = 73
+	pending := newCursorExecRoutes()
+	pending.register(cursorExecSlot{id: id, execID: "search-exec"})
+	results := make(chan *agentv1.ExecClientMessage, 1)
+	results <- &agentv1.ExecClientMessage{Message: &agentv1.ExecClientMessage_ConversationSearchResult{
+		ConversationSearchResult: &agentv1.ConversationSearchResult{Result: &agentv1.ConversationSearchResult_Success{Success: &agentv1.ConversationSearchSuccess{}}},
+	}}
+	close(results)
+	var frames []*agentv1.AgentClientMessage
+	serveCursorAccountToolResults(context.Background(), func(_ context.Context, payload []byte) error {
+		msg := &agentv1.AgentClientMessage{}
+		if err := proto.Unmarshal(payload, msg); err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, msg)
+		return nil
+	}, results, pending, nil, nil)
+	if len(frames) != 2 {
+		t.Fatalf("got %d frames; want a search result followed by one stream_close", len(frames))
+	}
+	result := frames[0].GetExecClientMessage()
+	if result.GetConversationSearchResult().GetSuccess() == nil || result.GetId() != id || result.GetExecId() != "search-exec" {
+		t.Fatalf("unexpected search result: %v", result)
+	}
+	if got := frames[1].GetExecClientControlMessage().GetStreamClose().GetId(); got != id {
+		t.Fatalf("stream_close ID = %d, want %d", got, id)
+	}
+}
+
+func TestCursorAccountPrechecksAndContextSendStreamClose(t *testing.T) {
+	var input bytes.Buffer
+	for _, msg := range []*agentv1.AgentServerMessage{
+		{Message: &agentv1.AgentServerMessage_ExecServerMessage{ExecServerMessage: &agentv1.ExecServerMessage{
+			Id: 11, ExecId: "ctx-1", Message: &agentv1.ExecServerMessage_RequestContextArgs{RequestContextArgs: &agentv1.RequestContextArgs{}},
+		}}},
+		{Message: &agentv1.AgentServerMessage_ExecServerMessage{ExecServerMessage: &agentv1.ExecServerMessage{
+			Id: 12, ExecId: "wf-1", Message: &agentv1.ExecServerMessage_WebFetchAllowlistPrecheckArgs{WebFetchAllowlistPrecheckArgs: &agentv1.WebFetchAllowlistPrecheckArgs{}},
+		}}},
+		{Message: &agentv1.AgentServerMessage_ExecServerMessage{ExecServerMessage: &agentv1.ExecServerMessage{
+			Id: 13, ExecId: "mcp-1", Message: &agentv1.ExecServerMessage_McpAllowlistPrecheckArgs{McpAllowlistPrecheckArgs: &agentv1.McpAllowlistPrecheckArgs{}},
+		}}},
+		{Message: &agentv1.AgentServerMessage_InteractionUpdate{InteractionUpdate: &agentv1.InteractionUpdate{
+			Message: &agentv1.InteractionUpdate_TurnEnded{TurnEnded: &agentv1.TurnEndedUpdate{}},
+		}}},
+	} {
+		writeCursorAgentFrame(&input, msg)
+	}
+	var seqs []int64
+	var frames []*agentv1.AgentClientMessage
+	err := readCursorAccountStream(context.Background(), func(_ context.Context, seq int64, raw []byte) error {
+		seqs = append(seqs, seq)
+		m := &agentv1.AgentClientMessage{}
+		if err := proto.Unmarshal(raw, m); err != nil {
+			return err
+		}
+		frames = append(frames, m)
+		return nil
+	}, "req", "conv", "model", "cursor", 0, &input, nil, nil, nil, nil, func(ModelEvent) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 6 {
+		t.Fatalf("got %d frames, want 6 (3 results + 3 stream_close)", len(frames))
+	}
+	for i, wantID := range []uint32{11, 12, 13} {
+		if seqs[2*i] != int64(2*i+1) || seqs[2*i+1] != int64(2*i+2) {
+			t.Fatalf("seq mismatch at pair %d: %v", i, seqs)
+		}
+		if got := frames[2*i].GetExecClientMessage().GetId(); got != wantID {
+			t.Fatalf("result %d id=%d, want %d", i, got, wantID)
+		}
+		if got := frames[2*i+1].GetExecClientControlMessage().GetStreamClose().GetId(); got != wantID {
+			t.Fatalf("close %d id=%d, want %d", i, got, wantID)
+		}
+	}
+}
+
+func TestCursorAccountExecServerMessageStopsSilentTimeout(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	execs := make(chan *agentv1.ExecClientMessage, 2)
+	dispatched := make(chan struct{}, 1)
+	go func() {
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_ExecServerMessage{
+				ExecServerMessage: &agentv1.ExecServerMessage{
+					Id: 21, ExecId: "grep-1",
+					Message: &agentv1.ExecServerMessage_GrepArgs{GrepArgs: &agentv1.GrepArgs{Glob: proto.String("**/*"), ToolCallId: "call-glob"}},
+				},
+			},
+		})
+		<-dispatched
+		// Wait longer than silentTimeout (40ms) to prove ExecServerMessage stopped it.
+		time.Sleep(120 * time.Millisecond)
+		execs <- &agentv1.ExecClientMessage{
+			Id: 21, ExecId: "grep-1",
+			Message: &agentv1.ExecClientMessage_GrepResult{GrepResult: &agentv1.GrepResult{}},
+		}
+		writeCursorAgentFrame(writer, &agentv1.AgentServerMessage{
+			Message: &agentv1.AgentServerMessage_InteractionUpdate{InteractionUpdate: &agentv1.InteractionUpdate{
+				Message: &agentv1.InteractionUpdate_TurnEnded{TurnEnded: &agentv1.TurnEndedUpdate{}},
+			}},
+		})
+		_ = writer.Close()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := readCursorAccountStream(ctx, func(_ context.Context, _ int64, _ []byte) error { return nil },
+		"req", "conv", "model", "cursor", 40*time.Millisecond, reader, nil, execs, nil, nil, func(e ModelEvent) error {
+			if e.ToolInvocation != nil {
+				select {
+				case dispatched <- struct{}{}:
+				default:
+				}
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("ExecServerMessage should have stopped silent timeout, got err=%v", err)
+	}
+}
+
+func TestCursorInternalSpillWriteDoesNotStealParentToolCallID(t *testing.T) {
+	calls, frames := runCursorWireExchange(t, []string{
+		`{"interactionQuery":{"id":1,"webFetchRequestQuery":{"args":{"url":"https://github.com/4cuck/cursor-byok/releases","toolCallId":"call-fetch"}}}}`,
+		`{"execServerMessage":{"id":2,"execId":"spill-write-1","writeArgs":{"path":"/root/cursor-byok/agent-tools/226f3f4f-f560-4513-a657-107666fbc3d7.txt","fileText":"releases","toolCallId":"call-fetch"}}}`,
+		`{"interactionQuery":{"id":3,"webSearchRequestQuery":{"args":{"searchTerm":"4cuck cursor-byok","toolCallId":"call-search"}}}}`,
+	}, []string{
+		`{"id":2,"execId":"spill-write-1","writeResult":{"success":{"path":"/root/cursor-byok/agent-tools/226f3f4f-f560-4513-a657-107666fbc3d7.txt","linesCreated":1,"fileSize":8}}}`,
+	}, true)
+	if len(calls) != 3 {
+		t.Fatalf("got %d calls, want 3", len(calls))
+	}
+	if calls[0].ToolInvocation.CallID != "call-fetch" {
+		t.Fatalf("WebFetch CallID = %q, want call-fetch", calls[0].ToolInvocation.CallID)
+	}
+	if calls[1].ToolInvocation.CallID != "spill-write-1" {
+		t.Fatalf("spill Write CallID = %q, want spill-write-1 (must not collide with parent)", calls[1].ToolInvocation.CallID)
+	}
+	if calls[2].ToolInvocation.CallID != "call-search" {
+		t.Fatalf("WebSearch CallID = %q, want call-search", calls[2].ToolInvocation.CallID)
+	}
+	// 2 interaction approvals + 1 writeResult + 1 stream_close = 4 frames
+	if len(frames) != 4 {
+		t.Fatalf("got %d frames, want 4: %v", len(frames), frames)
+	}
+}
+
 func TestCursorAccountShellExitClosesTheExecStream(t *testing.T) {
 	var mu sync.Mutex
 	var got []*agentv1.AgentClientMessage
 	appended := make(chan struct{}, 8)
+	dispatched := make(chan struct{}, 1)
 	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != cursorAccountRunPath {
 			http.NotFound(w, r)
@@ -827,6 +979,9 @@ func TestCursorAccountShellExitClosesTheExecStream(t *testing.T) {
 		}
 		w.Header().Set("content-type", "application/connect+proto")
 		w.WriteHeader(http.StatusOK)
+		writeCursorAgentFrame(w, &agentv1.AgentServerMessage{Message: &agentv1.AgentServerMessage_ExecServerMessage{
+			ExecServerMessage: &agentv1.ExecServerMessage{Id: 7, ExecId: "exec-7", Message: &agentv1.ExecServerMessage_ShellStreamArgs{ShellStreamArgs: &agentv1.ShellArgs{}}},
+		}})
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
@@ -884,10 +1039,15 @@ func TestCursorAccountShellExitClosesTheExecStream(t *testing.T) {
 			ConversationID:    "11111111-2222-3333-4444-555555555555",
 			Messages:          []Message{{Role: "user", Content: "list the directory"}},
 			CursorToolResults: results,
-		}, func(ModelEvent) error { return nil })
+		}, func(e ModelEvent) error {
+			if e.ToolInvocation != nil {
+				dispatched <- struct{}{}
+			}
+			return nil
+		})
 	}()
-	if !waitCursorAppendSignal(appended) {
-		t.Fatal("run request was not appended")
+	if !waitCursorAppendSignal(appended) || !waitCursorAppendSignal(dispatched) {
+		t.Fatal("run request or shell invocation was not dispatched")
 	}
 	output := strings.Repeat("A", 6000) + "MIDDLE" + strings.Repeat("Z", 6000)
 	results <- &agentv1.ExecClientMessage{
@@ -998,6 +1158,102 @@ func parameterPairs(model *agentv1.RequestedModel) []string {
 	return pairs
 }
 
+// Feed actual framed Cursor messages. The server withholds completion until it
+// receives the approval over the same stream, not merely until the UI sees it.
+func TestReadCursorAccountStreamOwnsWebResults(t *testing.T) {
+	const approved = `{"id":19,"webSearchRequestResponse":{"approved":{}}}`
+	for _, tc := range []struct{ name, query, completion, wantID string }{
+		{"after approval", `{"interactionQuery":{"id":19,"webSearchRequestQuery":{"args":{"searchTerm":"docs","toolCallId":"call-search"}}}}`, `{"callId":"lifecycle-envelope","modelCallId":"upstream-model","toolCall":{"webSearchToolCall":{"args":{"searchTerm":"docs","toolCallId":"call-search"},"result":{"success":{"references":[{"title":"Docs","url":"https://example.invalid/","chunk":"found"}]}}}}}`, "call-search"},
+		{"card identity", "", `{"toolCall":{"toolCallId":"card-id","webSearchToolCall":{"result":{"rejected":{"reason":"denied"}}}}}`, "card-id"},
+		{"without approval", "", `{"modelCallId":"upstream-model","toolCall":{"webFetchToolCall":{"args":{"toolCallId":"call-fetch","url":"https://example.invalid/"},"result":{"error":{"url":"https://example.invalid/","error":"unavailable"}}}}}`, "call-fetch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := func(raw string) []byte {
+				m := &agentv1.AgentServerMessage{}
+				if err := protojson.Unmarshal([]byte(raw), m); err != nil {
+					t.Fatal(err)
+				}
+				return cursorAccountFrame(mustCursorProto(m))
+			}
+			var input bytes.Buffer
+			if tc.query != "" {
+				input.Write(frame(tc.query))
+			}
+			var rest bytes.Buffer
+			for _, ignored := range []string{
+				`{"callId":"args-only","toolCall":{"webSearchToolCall":{"args":{"searchTerm":"draft"},"result":{}}}}`,
+				`{"callId":"other","toolCall":{"readToolCall":{}}}`,
+				`{"toolCall":{"webFetchToolCall":{"result":{"success":{"markdown":"no identity"}}}}}`,
+			} {
+				rest.Write(frame(`{"interactionUpdate":{"toolCallCompleted":` + ignored + `}}`))
+			}
+			rest.Write(frame(`{"interactionUpdate":{"toolCallCompleted":` + tc.completion + `}}`))
+			rest.Write(frame(`{"interactionUpdate":{"textDelta":{"text":"<end_of_image>"}}}`))
+			rest.Write(frame(`{"interactionUpdate":{"turnEnded":{}}}`))
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			appended := make(chan struct{})
+			go func() {
+				if tc.query != "" {
+					select {
+					case <-appended:
+					case <-ctx.Done():
+						return
+					}
+				}
+				_, _ = writer.Write(rest.Bytes())
+				_ = writer.Close()
+			}()
+			reply := &agentv1.InteractionResponse{}
+			if err := protojson.Unmarshal([]byte(approved), reply); err != nil {
+				t.Fatal(err)
+			}
+			replies := make(chan *agentv1.InteractionResponse, 1)
+			var intents, results, turns int
+			err := readCursorAccountStream(ctx, func(_ context.Context, _ int64, raw []byte) error {
+				msg := &agentv1.AgentClientMessage{}
+				if err := proto.Unmarshal(raw, msg); err != nil {
+					return err
+				}
+				if tc.query == "" || !proto.Equal(msg.GetInteractionResponse(), reply) {
+					t.Errorf("unexpected append: %v", msg)
+				}
+				close(appended)
+				return nil
+			}, "req", "conv", "model", "cursor", 0, io.MultiReader(&input, reader), nil, nil, replies, nil, func(e ModelEvent) error {
+				switch e.Kind {
+				case ModelEventKindToolLikeCompleted:
+					intents++
+					if e.ToolInvocation == nil || len(e.ToolInvocation.NativeInteraction) == 0 || e.ToolCallID != tc.wantID {
+						t.Fatalf("not the original permission query: %+v", e)
+					}
+					replies <- reply
+				case ModelEventKindCursorWebResult:
+					results++
+					want := &agentv1.ToolCallCompletedUpdate{}
+					if err := protojson.Unmarshal([]byte(tc.completion), want); err != nil {
+						return err
+					}
+					if e.ToolInvocation != nil || e.ToolCallID != tc.wantID || !proto.Equal(e.CursorWebResult, want) {
+						t.Fatalf("result changed or became executable: %+v", e)
+					}
+				case ModelEventKindTurnFinished:
+					turns++
+				default:
+					t.Errorf("unexpected event: %s", e.Kind)
+				}
+				return nil
+			})
+			if err != nil || turns != 1 || results != 1 || intents > 1 || (tc.query == "") != (intents == 0) {
+				t.Fatalf("intents=%d results=%d turns=%d err=%v", intents, results, turns, err)
+			}
+		})
+	}
+}
+
 func TestReadCursorAccountStreamReturnsAskQuestionAnswerOnTheSameStream(t *testing.T) {
 	query := &agentv1.InteractionQuery{
 		Id: 7,
@@ -1074,6 +1330,59 @@ func TestReadCursorAccountStreamReturnsAskQuestionAnswerOnTheSameStream(t *testi
 		}
 	case <-time.After(time.Second):
 		t.Fatal("interaction answer was not written back to the cursor stream")
+	}
+}
+
+func TestReadCursorAccountStreamInteractionAppendFailureFinishesForContinuation(t *testing.T) {
+	query := &agentv1.InteractionQuery{Id: 91, Query: &agentv1.InteractionQuery_WebSearchRequestQuery{WebSearchRequestQuery: &agentv1.WebSearchRequestQuery{}}}
+	var input bytes.Buffer
+	writeCursorAgentFrame(&input, &agentv1.AgentServerMessage{Message: &agentv1.AgentServerMessage_InteractionQuery{InteractionQuery: query}})
+	// Upstream is waiting for the reply: it sends neither another frame nor EOF.
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	replies := make(chan *agentv1.InteractionResponse, 1)
+	attempted := make(chan uint32, 1)
+	appendFrame := func(_ context.Context, _ int64, payload []byte) error {
+		msg := &agentv1.AgentClientMessage{}
+		if err := proto.Unmarshal(payload, msg); err != nil {
+			return err
+		}
+		attempted <- msg.GetInteractionResponse().GetId()
+		return io.ErrClosedPipe
+	}
+	var finishReason string
+	err := readCursorAccountStream(ctx, appendFrame, "req", "conv", "model", "cursor", 0, io.MultiReader(&input, reader), nil, nil, replies, nil, func(event ModelEvent) error {
+		switch event.Kind {
+		case ModelEventKindToolLikeCompleted:
+			original := &agentv1.InteractionQuery{}
+			if err := proto.Unmarshal(event.ToolInvocation.NativeInteraction, original); err != nil {
+				return err
+			}
+			replies <- &agentv1.InteractionResponse{
+				Id: original.GetId(),
+				Result: &agentv1.InteractionResponse_WebSearchRequestResponse{
+					WebSearchRequestResponse: &agentv1.WebSearchRequestResponse{
+						Result: &agentv1.WebSearchRequestResponse_Approved_{Approved: &agentv1.WebSearchRequestResponse_Approved{}},
+					},
+				},
+			}
+		case ModelEventKindTurnFinished:
+			finishReason = event.FinishReason
+		}
+		return nil
+	})
+	if err != nil || finishReason != "tool_calls" {
+		t.Fatalf("expected continuation after failed append, got finish=%q err=%v", finishReason, err)
+	}
+	select {
+	case id := <-attempted:
+		if id != query.GetId() {
+			t.Fatalf("attempted response ID = %d, want %d", id, query.GetId())
+		}
+	default:
+		t.Fatal("finished without attempting the reply")
 	}
 }
 
@@ -1762,5 +2071,127 @@ func TestReadCursorAccountStreamResetsSilentTimeoutOnKVActivity(t *testing.T) {
 	}
 	if got != "restored ok" {
 		t.Fatalf("got = %q, want %q", got, "restored ok")
+	}
+}
+
+func newCursorAccountTestHome(t *testing.T) {
+	t.Helper()
+	homeDir, err := os.MkdirTemp("", "cursor-byok-home-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(homeDir) })
+	t.Setenv("CURSOR_BYOK_HOME", homeDir)
+}
+
+func TestCursorAccountFollowUpIgnoresTrailingStructuredStateScaffolding(t *testing.T) {
+	newCursorAccountTestHome(t)
+	const convID = "conv-todo-scaffolding"
+	cursorAccountRememberState(convID, &agentv1.ConversationStateStructure{
+		Mode:  agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		Turns: [][]byte{[]byte("completed-turn-1")},
+	})
+
+	run := cursorAccountRunMessage(StreamRequest{
+		ConversationID: convID,
+		Messages: []Message{
+			{Role: "system", Content: "local system prompt"},
+			{Role: "user", Content: "<rules>\n<user_rule>rule</user_rule>\n</rules>"},
+			{Role: "user", Content: "<user_query>\nfix the stall bug\n</user_query>"},
+			{Role: "assistant", Content: "Everything is built and verified."},
+			{Role: "user", Content: "<rules>\n<user_rule>rule</user_rule>\n</rules>"},
+			{Role: "user", Content: "<current_file_contents>\n<file path=\"a.go\">package a</file>\n</current_file_contents>"},
+			{Role: "user", Content: "<user_query>\nBump version number and make a release\n</user_query>"},
+			{Role: "user", Content: "<system_reminder>\nAt this point, the active mode changed to agent.\n</system_reminder>"},
+			{Role: "user", Content: "<current_plan>\n# Plan\n1. Done\n</current_plan>"},
+			{Role: "user", Content: "<todo_list>\n- [completed] trace: Trace bug\n- [completed] repair: Fix bug\n</todo_list>"},
+			{Role: "user", Content: "<system_reminder>\nYou are currently under the todo section, be sure to track tasks.\n</system_reminder>"},
+			{Role: "user", Content: "<system_reminder>\nFor the turn that contains this reminder, the active mode is agent.\n</system_reminder>"},
+			{Role: "user", Content: "<current_user_request>\nBump version number and make a release\n</current_user_request>"},
+		},
+	}, "gemini-4-neon")
+
+	userAction := run.GetRunRequest().GetAction().GetUserMessageAction()
+	if userAction == nil {
+		t.Fatalf("expected UserMessageAction, got %+v", run.GetRunRequest().GetAction())
+	}
+	gotText := userAction.GetUserMessage().GetText()
+	if !strings.Contains(gotText, "Bump version number and make a release") {
+		t.Fatalf("user message lost real request; got %q", gotText)
+	}
+	if strings.Contains(gotText, "<todo_list>") || strings.Contains(gotText, "<current_plan>") || strings.Contains(gotText, "<current_file_contents>") {
+		t.Fatalf("scaffolding leaked into user message: %q", gotText)
+	}
+}
+
+func TestCursorAccountToolFollowUpWithTrailingStructuredStateResumesCleanly(t *testing.T) {
+	newCursorAccountTestHome(t)
+	const convID = "conv-tool-trailing-todo"
+	run := cursorAccountRunMessage(StreamRequest{
+		ConversationID: convID,
+		Messages: []Message{
+			{Role: "user", Content: "<user_query>\nupdate todos\n</user_query>"},
+			{Role: "assistant", Content: "updating", ToolCalls: []ToolCallDescriptor{{
+				ID: "call-1", Type: "function", Function: ToolCallFunctionShape{Name: "TodoWrite", Arguments: `{}`},
+			}}},
+			{Role: "tool", Name: "TodoWrite", ToolCallID: "call-1", Content: "Successfully updated TODOs."},
+			{Role: "user", Content: "<todo_list>\n- [in_progress] step1: Do work\n</todo_list>"},
+			{Role: "user", Content: "<system_reminder>\nYou are currently under the todo section.\n</system_reminder>"},
+		},
+	}, "gemini-4-neon")
+
+	if run.GetRunRequest().GetAction().GetResumeAction() == nil {
+		t.Fatalf("expected ResumeAction after tool result + trailing <todo_list>, got %+v", run.GetRunRequest().GetAction())
+	}
+	if run.GetRunRequest().GetConversationId() == convID {
+		t.Fatalf("expected fresh upstream conversation id after tool result + trailing scaffolding, got %q", run.GetRunRequest().GetConversationId())
+	}
+}
+
+func TestCursorAccountPreservesUserQueryWithSelectedCursorCommands(t *testing.T) {
+	newCursorAccountTestHome(t)
+	const convID = "conv-cursor-commands"
+	cursorAccountRememberState(convID, &agentv1.ConversationStateStructure{
+		Mode:  agentv1.AgentMode_AGENT_MODE_AGENT.Enum(),
+		Turns: [][]byte{[]byte("turn-1")},
+	})
+
+	run := cursorAccountRunMessage(StreamRequest{
+		ConversationID: convID,
+		Messages: []Message{
+			{Role: "user", Content: "<user_query>\nhello\n</user_query>"},
+			{Role: "assistant", Content: "hi"},
+			{Role: "user", Content: "<user_query>\n/goal ship v1.0.51\n</user_query>"},
+			{Role: "user", Content: "<cursor_commands>\n<cursor_command name=\"goal\">\nLoop until done.\n</cursor_command>\n</cursor_commands>"},
+			{Role: "user", Content: "<todo_list>\n- [completed] old: Old task\n</todo_list>"},
+		},
+	}, "gemini-4-neon")
+
+	gotText := run.GetRunRequest().GetAction().GetUserMessageAction().GetUserMessage().GetText()
+	if !strings.Contains(gotText, "/goal ship v1.0.51") || !strings.Contains(gotText, "<cursor_commands>") {
+		t.Fatalf("expected both user query and cursor_commands, got %q", gotText)
+	}
+	if strings.Contains(gotText, "<todo_list>") {
+		t.Fatalf("unexpected <todo_list> in user message: %q", gotText)
+	}
+}
+
+func TestCursorAccountSummaryOnlyTailResumesInsteadOfSendingSummaryAsUserQuery(t *testing.T) {
+	newCursorAccountTestHome(t)
+	const convID = "conv-summary-only-resume"
+	summary := "<conversation_summary>\nCompacted prior turns.\n</conversation_summary>"
+	run := cursorAccountRunMessage(StreamRequest{
+		ConversationID: convID,
+		Messages: []Message{
+			{Role: "user", Content: summary},
+			{Role: "user", Content: "<todo_list>\n- [in_progress] work: Keep going\n</todo_list>"},
+		},
+	}, "grok-4.7")
+
+	if run.GetRunRequest().GetAction().GetResumeAction() == nil {
+		t.Fatalf("expected ResumeAction when only summary precedes resume, got %+v", run.GetRunRequest().GetAction())
+	}
+	if history := cursorAccountHistoryPlain(run); !strings.Contains(history, "Compacted prior turns.") {
+		t.Fatalf("expected summary preserved in synthesized history, got %q", history)
 	}
 }

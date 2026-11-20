@@ -350,6 +350,9 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		stream.ExecCompletionSignals = make(map[string]chan struct{})
 	}
 	stream.RecentCompletedExecs = make(map[uint32]time.Time)
+	stream.approvedCursorWeb = nil
+	stream.activeCursorEdits = nil
+	stream.observedFileContents = nil
 	stream.RecentCompletedInteractions = make(map[string]time.Time)
 	stream.BackgroundShells = make(map[string]*BackgroundShellState)
 	stream.BackgroundShellsByMessageID = make(map[uint32]string)

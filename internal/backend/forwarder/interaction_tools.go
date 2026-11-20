@@ -6,12 +6,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
+	modeladapter "cursor/internal/backend/agent/model"
+	promptengine "cursor/internal/backend/agent/prompt"
 	"cursor/internal/logger"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -125,6 +129,132 @@ func (service *Service) dispatchNativeCursorInteraction(stream *ActiveStream, in
 	return nil
 }
 
+func nativeCursorWeb(p runtimecore.PendingInteraction) bool {
+	return p.NativeCursor && (p.InteractionKind == "web_search" || p.InteractionKind == "web_fetch")
+}
+
+// The actor serializes decisions, completions and cancellations. Use canonical
+// turn history as the receipt so retries (including a late echo of a denial or
+// timeout) cannot publish another result. Never correlate by query or URL.
+func (service *Service) applyCursorWebResult(stream *ActiveStream, completion *agentv1.ToolCallCompletedUpdate, modelCallID string) error {
+	id := modeladapter.CursorWebResultCallID(completion)
+	if id == "" {
+		return nil
+	}
+	card := completion.GetToolCall()
+	name := inferToolName(card)
+	stream.mu.Lock()
+	if isTerminalStreamStatus(stream.Status) {
+		stream.mu.Unlock()
+		return nil
+	}
+	if c := stream.CheckpointConversation; c != nil {
+		for i := len(c.Entries) - 1; i >= 0; i-- {
+			e := c.Entries[i]
+			if e.Kind == "tool_result" && e.TurnSeq == stream.TurnSeq && e.RequestID == stream.RequestID && historyEntryToolCallID(e) == id {
+				stream.mu.Unlock()
+				return nil
+			}
+		}
+	}
+	p, approved := stream.approvedCursorWeb[id]
+	if !approved {
+		for _, candidate := range stream.PendingInteractions {
+			if nativeCursorWeb(candidate) && candidate.ToolCallID == id {
+				p = candidate
+				break
+			}
+		}
+	}
+	if p.InteractionID != "" && deriveToolNameFromPendingInteraction(p) != name {
+		stream.mu.Unlock()
+		return nil
+	}
+	delete(stream.approvedCursorWeb, id)
+	stream.mu.Unlock()
+	if approved {
+		clearStreamTimer(stream, providerTimerKey(streamTimerCursorWebResult, id))
+	}
+	if !approved && p.InteractionID != "" {
+		// The server finished while the permission UI was still open.
+		markInteractionCompleted(stream, p)
+		clearStreamTimer(stream, providerTimerKey(streamTimerInteractionTimeout, p.InteractionID))
+		stream.mu.Lock()
+		stream.CursorInlineToolTurn = true
+		stream.mu.Unlock()
+	}
+	if len(p.ArgsJSON) != 0 && (card.GetWebSearchToolCall() != nil && card.GetWebSearchToolCall().GetArgs() == nil || card.GetWebFetchToolCall() != nil && card.GetWebFetchToolCall().GetArgs() == nil) {
+		card = proto.CloneOf(card)
+		start := buildStartedToolCall(runtimecore.ToolInvocation{ToolName: name, ArgsJSON: p.ArgsJSON})
+		if search := card.GetWebSearchToolCall(); search != nil {
+			search.Args = start.GetWebSearchToolCall().GetArgs()
+		} else {
+			card.GetWebFetchToolCall().Args = start.GetWebFetchToolCall().GetArgs()
+		}
+	}
+	// A standalone result contains its own arguments; the projector can replay
+	// both the assistant call and tool response from this single history entry.
+	replay, ok := promptengine.BuildToolResultReplayMessage(id, card)
+	if !ok {
+		return fmt.Errorf("invalid Cursor %s result for %s", name, id)
+	}
+	limit, _ := projectedToolReplayLimit(name)
+	if err := service.appendCursorWebResult(stream, id, name, p.ArgsJSON, truncateProjectedReplayText(name, replay.Content, limit), p.ReasoningContent, card); err != nil {
+		return err
+	}
+	if err := service.publishToolCallCompleted(stream.RequestID, id, firstNonEmpty(p.ModelCallID, modelCallID, completion.GetModelCallId()), card); err != nil {
+		return err
+	}
+	return service.publishCheckpoint(stream.RequestID, stream.ConversationID)
+}
+
+func (service *Service) appendCursorWebResult(stream *ActiveStream, id, name string, args []byte, text, reasoning string, card *agentv1.ToolCall) error {
+	raw, err := protojson.Marshal(card)
+	if err != nil {
+		return err
+	}
+	entry := newToolResultEntry(stream.TurnSeq, stream.RequestID, id, name, string(args), text, reasoning, raw)
+	entry.NativeWebResult = true
+	_, err = service.appendConversationEntries(stream, stream.ConversationID, []HistoryEntry{entry})
+	return err
+}
+
+// A dropped reply leaves Cursor waiting for permission; reconciliation alone
+// cannot finish a provider which is still active. Never resend or run the tool.
+func (service *Service) interruptUndeliveredWebReply(stream *ActiveStream) error {
+	return service.handleCancelIntent(InboundIntent{RequestID: stream.RequestID, CancelReason: "Could not deliver the web tool decision to Cursor", CancelTerminalStatus: conversationStatusInterrupted})
+}
+
+func (service *Service) closeMissingCursorWeb(stream *ActiveStream, p runtimecore.PendingInteraction, reason string) error {
+	name := deriveToolNameFromPendingInteraction(p)
+	card := buildStartedToolCall(runtimecore.ToolInvocation{ToolName: name, ArgsJSON: p.ArgsJSON})
+	// The error describes the missing result, not an upstream execution outcome.
+	if search := card.GetWebSearchToolCall(); search != nil {
+		search.Result = &agentv1.WebSearchResult{Result: &agentv1.WebSearchResult_Error{Error: &agentv1.WebSearchError{Error: reason}}}
+	} else {
+		fetch := card.GetWebFetchToolCall()
+		fetch.Result = &agentv1.WebFetchResult{Result: &agentv1.WebFetchResult_Error{Error: &agentv1.WebFetchError{Url: fetch.GetArgs().GetUrl(), Error: reason}}}
+	}
+	if err := service.appendCursorWebResult(stream, p.ToolCallID, name, p.ArgsJSON, reason, p.ReasoningContent, card); err != nil {
+		return err
+	}
+	return service.publishToolCallCompleted(stream.RequestID, p.ToolCallID, p.ModelCallID, card)
+}
+
+func (service *Service) closeUnreportedCursorWeb(stream *ActiveStream, reason string) error {
+	stream.mu.Lock()
+	waiting := stream.approvedCursorWeb
+	stream.approvedCursorWeb = nil
+	stream.mu.Unlock()
+	for _, id := range slices.Sorted(maps.Keys(waiting)) {
+		clearStreamTimer(stream, providerTimerKey(streamTimerCursorWebResult, id))
+		if err := service.closeMissingCursorWeb(stream, waiting[id], reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func interactionKindForTool(name string) string {
 	switch strings.TrimSpace(name) {
 	case "AskQuestion":
@@ -161,6 +291,28 @@ func rejectedCursorInteraction(pending runtimecore.PendingInteraction, reason st
 						Result: &agentv1.AskQuestionResult_Rejected{
 							Rejected: &agentv1.AskQuestionRejected{Reason: reason},
 						},
+					},
+				},
+			},
+		}
+	case "web_search":
+		return &agentv1.InteractionResponse{
+			Id: queryID,
+			Result: &agentv1.InteractionResponse_WebSearchRequestResponse{
+				WebSearchRequestResponse: &agentv1.WebSearchRequestResponse{
+					Result: &agentv1.WebSearchRequestResponse_Rejected_{
+						Rejected: &agentv1.WebSearchRequestResponse_Rejected{Reason: reason},
+					},
+				},
+			},
+		}
+	case "web_fetch":
+		return &agentv1.InteractionResponse{
+			Id: queryID,
+			Result: &agentv1.InteractionResponse_WebFetchRequestResponse{
+				WebFetchRequestResponse: &agentv1.WebFetchRequestResponse{
+					Result: &agentv1.WebFetchRequestResponse_Rejected_{
+						Rejected: &agentv1.WebFetchRequestResponse_Rejected{Reason: reason},
 					},
 				},
 			},
@@ -271,10 +423,32 @@ func (service *Service) handleInteractionResult(intent InboundIntent) error {
 	}
 	markInteractionCompleted(stream, pending)
 	clearStreamTimer(stream, providerTimerKey(streamTimerInteractionTimeout, pending.InteractionID))
+	if !result.IsTerminal && nativeCursorWeb(pending) {
+		if deliverCursorInteractionResult(stream, intent.InteractionResponse) {
+			stream.mu.Lock()
+			if stream.approvedCursorWeb == nil {
+				stream.approvedCursorWeb = make(map[string]runtimecore.PendingInteraction)
+			}
+			stream.approvedCursorWeb[pending.ToolCallID] = pending
+			stream.mu.Unlock()
+			// Even a live connection that sends unrelated frames must not keep a
+			// missing result open forever. This is not an executable bridge slot.
+			service.scheduleStreamTimer(stream, providerTimerKey(streamTimerCursorWebResult, pending.ToolCallID), defaultInteractionTimeout, streamTimerCursorWebResult, pending.ToolCallID, 0, "")
+			return nil
+		}
+		if err := service.closeMissingCursorWeb(stream, pending, "Approval could not be delivered to Cursor; no web result is available."); err != nil {
+			return err
+		}
+		return service.interruptUndeliveredWebReply(stream)
+	}
 	toolName := strings.TrimSpace(deriveToolNameFromPendingInteraction(pending))
 	if result.ToolCall != nil {
 		applySwitchModeMetadata(stream, result.ToolCall)
-		if err := service.appendToolResult(stream, result.ToolCallID, toolName, pending.ArgsJSON, result.ToolResultPayload, pending.ReasoningContent, result.ToolCall); err != nil {
+		appendResult := service.appendToolResult
+		if nativeCursorWeb(pending) {
+			appendResult = service.appendCursorWebResult
+		}
+		if err := appendResult(stream, result.ToolCallID, toolName, pending.ArgsJSON, result.ToolResultPayload, pending.ReasoningContent, result.ToolCall); err != nil {
 			return err
 		}
 	} else if strings.TrimSpace(result.ToolResultPayload) != "" {
@@ -312,6 +486,9 @@ func (service *Service) handleInteractionResult(intent InboundIntent) error {
 	}
 	if pending.NativeCursor && deliverCursorInteractionResult(stream, intent.InteractionResponse) {
 		return nil
+	}
+	if nativeCursorWeb(pending) {
+		return service.interruptUndeliveredWebReply(stream)
 	}
 	if !shouldAutoResumeAfterInteraction(pending) {
 		rememberPendingProviderCompletion(stream, pendingTurnCompletion{
@@ -934,6 +1111,9 @@ func (service *Service) recoverStaleInteractionWithoutResponse(stream *ActiveStr
 	if pending.NativeCursor {
 		if response := rejectedCursorInteraction(pending, reason); response != nil && deliverCursorInteractionResult(stream, response) {
 			return nil
+		}
+		if nativeCursorWeb(pending) {
+			return service.interruptUndeliveredWebReply(stream)
 		}
 	}
 	if !shouldAutoResumeAfterInteraction(pending) {

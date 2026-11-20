@@ -3,6 +3,9 @@ package forwarder
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -187,6 +190,11 @@ func limitProjectedToolResultReplay(toolName string, content string, resultText 
 	if len(content) <= limit {
 		return content
 	}
+	if fromStoredToolCall && strings.TrimSpace(toolName) == "Grep" {
+		if sample := compactOversizedGrepReplay(content, limit); sample != "" {
+			return sample
+		}
+	}
 	if staleAggressive {
 		// 陈旧大结果两端都可能携带关键信息（命令在头部、报错/退出码在尾部），故保留头尾。
 		if fromStoredToolCall {
@@ -212,6 +220,66 @@ func limitProjectedToolResultReplay(toolName string, content string, resultText 
 		return truncateProjectedReplayText(toolName, fallback, limit)
 	}
 	return truncateProjectedReplayText(toolName, content, limit)
+}
+
+// The projector passes result JSON, not the enclosing ToolCall. Reserve room for
+// the notice even when the match text alone would fit after dropping the JSON.
+func compactOversizedGrepReplay(content string, limit int) string {
+	var result agentv1.GrepResult
+	if err := protojson.Unmarshal([]byte(content), &result); err != nil || result.GetSuccess() == nil {
+		return ""
+	}
+	notice := fmt.Sprintf("\n\n[truncated: stored Grep result exceeded %d bytes]", limit)
+	var sample strings.Builder
+	appendLine := func(parts ...string) bool {
+		if sample.Len() > 0 {
+			sample.WriteByte('\n')
+		}
+		for _, part := range parts {
+			remaining := limit - len(notice) - sample.Len()
+			if len(part) >= remaining {
+				sample.WriteString(truncateProjectedUTF8(part, remaining))
+				return false
+			}
+			sample.WriteString(part)
+		}
+		return true
+	}
+	appendResult := func(group *agentv1.GrepUnionResult) bool {
+		for _, file := range group.GetContent().GetMatches() {
+			for _, match := range file.GetMatches() {
+				// Surrounding context must not crowd the actual hits out of a short replay.
+				if match.GetIsContextLine() {
+					continue
+				}
+				if !appendLine(file.GetFile(), ":", strconv.Itoa(int(match.GetLineNumber())), ":", match.GetContent()) {
+					return false
+				}
+			}
+		}
+		for _, path := range group.GetFiles().GetFiles() {
+			if !appendLine(path) {
+				return false
+			}
+		}
+		for _, count := range group.GetCount().GetCounts() {
+			if !appendLine(count.GetFile(), ":", strconv.Itoa(int(count.GetCount()))) {
+				return false
+			}
+		}
+		return true
+	}
+	workspaces := result.GetSuccess().GetWorkspaceResults()
+	for _, root := range slices.Sorted(maps.Keys(workspaces)) {
+		if !appendResult(workspaces[root]) {
+			return sample.String() + notice
+		}
+	}
+	appendResult(result.GetSuccess().GetActiveEditorResult())
+	if sample.Len() == 0 {
+		return ""
+	}
+	return sample.String() + notice
 }
 
 func projectedToolReplayLimit(toolName string) (int, bool) {

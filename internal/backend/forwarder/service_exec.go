@@ -167,8 +167,29 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 	if strings.TrimSpace(pending.ExecKind) == "execute_hook_pre_compact" {
 		return service.handlePreCompactTerminal(stream, pending.ProviderPass, strings.TrimSpace(result.ToolResultPayload))
 	}
+	if pending.SilentUI {
+		// Internal Cursor execs (agent-tools/*.txt spill writes and Read/Write
+		// RPCs behind a Cursor-owned EditToolCall) must not emit fake UI cards
+		// or pollute conversation history; record observed file content and
+		// return the IDE's ExecClientMessage directly to the open Cursor stream.
+		observeNativeExecFileSnapshot(stream, pending, intent.ExecClientMessage)
+		if !deliverCursorToolResult(stream, pending.ToolCallID, intent.ExecClientMessage) {
+			return service.reconcileStream(stream)
+		}
+		return nil
+	}
+	enrichNativeWriteToolCallWithObservedBefore(stream, pending, intent.ExecClientMessage.GetWriteResult(), result.ToolCall)
+	observeNativeExecFileSnapshot(stream, pending, intent.ExecClientMessage)
 	if result.ToolCall != nil {
-		if err := service.appendToolResult(stream, result.ToolCallID, deriveToolNameFromPendingExec(pending), pending.ArgsJSON, result.ToolResultPayload, pending.ReasoningContent, result.ToolCall); err != nil {
+		historyCard, historyText := result.ToolCall, result.ToolResultPayload
+		if edit := historyCard.GetEditToolCall(); pending.ExecKind == "write" && edit != nil {
+			// Keep full content on the live edit card and typed cloud reply, not
+			// duplicated as diff, result text and after-content in checkpoints.
+			path := firstNonEmpty(resultPath(edit.GetResult()), edit.GetArgs().GetPath())
+			historyCard = buildCompletedWriteHistoryToolCall(path, edit.GetResult())
+			historyText = summarizeWriteHistoryResult(path, edit.GetResult())
+		}
+		if err := service.appendToolResult(stream, result.ToolCallID, deriveToolNameFromPendingExec(pending), pending.ArgsJSON, historyText, pending.ReasoningContent, historyCard); err != nil {
 			return err
 		}
 	} else if strings.TrimSpace(result.ToolResultPayload) != "" {
@@ -337,6 +358,13 @@ func (service *Service) handleExecControl(intent InboundIntent) error {
 	}
 	if strings.TrimSpace(pending.ExecKind) == "execute_hook_pre_compact" {
 		return service.handlePreCompactTerminal(stream, pending.ProviderPass, "")
+	}
+	if pending.SilentUI {
+		errMsg := silentNativeExecErrorMessage(pending, result.ToolResultPayload)
+		if !deliverCursorToolResult(stream, pending.ToolCallID, errMsg) {
+			return service.reconcileStream(stream)
+		}
+		return nil
 	}
 	if strings.TrimSpace(result.ToolResultPayload) != "" {
 		if err := service.appendToolResult(stream, pending.ToolCallID, deriveToolNameFromPendingExec(pending), pending.ArgsJSON, result.ToolResultPayload, pending.ReasoningContent, nil); err != nil {
@@ -529,6 +557,9 @@ func (service *Service) recoverNonStreamingExecAfterStreamClose(stream *ActiveSt
 	markExecCompleted(stream, pending)
 	toolName := strings.TrimSpace(deriveToolNameFromPendingExec(pending))
 	resultPayload := fmt.Sprintf("%s transport closed before terminal result arrived", firstNonEmpty(toolName, pending.ExecKind, "tool"))
+	if pending.SilentUI {
+		return service.continueCursorToolOrReconcile(stream, pending.ToolCallID, silentNativeExecErrorMessage(pending, resultPayload))
+	}
 	// GitDiff 的两条恢复路径必须交还同一份退路：只说「传输关了」，模型既拿不到 diff
 	// 也不知道该干什么，下一步多半是重试同一个必然再失败的调用。
 	if strings.TrimSpace(pending.ExecKind) == "git_diff" {
@@ -776,6 +807,9 @@ func buildPendingToolCalls(pendingExecs []runtimecore.PendingExec, pendingIntera
 }
 
 func encodePendingExecAsAssistantOutput(pending runtimecore.PendingExec) (string, bool) {
+	if pending.SilentUI {
+		return "", false
+	}
 	toolCallID := strings.TrimSpace(pending.ToolCallID)
 	toolName, argsJSON, ok := pendingAssistantToolShape(pending)
 	if toolCallID == "" || !ok || strings.TrimSpace(toolName) == "" {

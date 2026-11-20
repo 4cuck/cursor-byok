@@ -3,10 +3,12 @@ package forwarder
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"cursor/gen/agentv1"
+	execbridge "cursor/internal/backend/agent/bridge/exec"
 	runtimecore "cursor/internal/backend/agent/core"
 	modeladapter "cursor/internal/backend/agent/model"
 
@@ -41,7 +43,7 @@ func deliverCursorToolResultWithin(stream *ActiveStream, toolCallID string, msg 
 			cloned = msg
 		}
 		stream.mu.Lock()
-		if slot, ok := stream.nativeExecSlots[strings.TrimSpace(toolCallID)]; ok && (slot.id != 0 || slot.execID != "") {
+		if slot, ok := stream.nativeExecSlots[strings.TrimSpace(toolCallID)]; ok {
 			cloned.Id = slot.id
 			cloned.ExecId = slot.execID
 		}
@@ -142,16 +144,44 @@ const (
 )
 
 // deliverCursorAccountShellTerminal sends the text the model can read, then the
-// finished shell, on the open Cursor account stream. A spill file path is not a
-// substitute for that text: the model then tries to Read it and the turn stays
-// on "Planning next moves".
+// finished shell, on the open Cursor account stream. For local Cursor spill
+// files (agent-tools/*.txt or the stream's terminals folder), inline bounded
+// text so the model doesn't stall on "Planning next moves"; never read
+// arbitrary paths, and preserve OutputLocation when no inline text is available
+// (such as remote SSH spill files).
 func deliverCursorAccountShellTerminal(stream *ActiveStream, toolCallID string, pending runtimecore.PendingExec, message *agentv1.ExecClientMessage) bool {
-	accountPending := pendingWithShellSpill(pending, message)
-	terminal := cursorAccountShellTerminalMessage(message, shellHasInlineOutput(accountPending, message))
+	if message == nil {
+		return false
+	}
+	accountPending := pendingWithLocalCursorShellSpill(stream, pending, message)
+	terminal := proto.CloneOf(message)
+	if result := terminal.GetShellResult(); result != nil {
+		execbridge.FillMissingShellOutput(result, accountPending)
+		trim := func(stdout, stderr *string, interleaved, head, tail *string, location **agentv1.OutputLocation) {
+			*stdout = modeladapter.CursorAccountShellOutput(*stdout)
+			*stderr = modeladapter.CursorAccountShellOutput(*stderr)
+			hasText := strings.TrimSpace(*stdout) != "" || strings.TrimSpace(*stderr) != ""
+			for _, field := range []*string{interleaved, head, tail} {
+				if field != nil {
+					*field = modeladapter.CursorAccountShellOutput(*field)
+					hasText = hasText || strings.TrimSpace(*field) != ""
+				}
+			}
+			if hasText {
+				*location = nil
+			}
+		}
+		if s := result.GetSuccess(); s != nil {
+			trim(&s.Stdout, &s.Stderr, s.InterleavedOutput, s.OutputHead, s.OutputTail, &s.OutputLocation)
+		} else if f := result.GetFailure(); f != nil {
+			trim(&f.Stdout, &f.Stderr, f.InterleavedOutput, f.OutputHead, f.OutputTail, &f.OutputLocation)
+		}
+	}
 	if preface := shellStreamOutputPreface(accountPending, terminal); preface != nil {
 		if !deliverCursorToolResultWithin(stream, toolCallID, preface, cursorShellTerminalDeliverWait) {
 			return false
 		}
+		terminal.GetShellStream().GetExit().OutputLocation = nil
 	}
 	return deliverCursorToolResultWithin(stream, toolCallID, terminal, cursorShellTerminalDeliverWait)
 }
@@ -160,29 +190,15 @@ func isCursorAccountShellTerminal(message *agentv1.ExecClientMessage) bool {
 	return message.GetShellStream().GetExit() != nil || message.GetShellResult() != nil
 }
 
-func pendingWithShellSpill(pending runtimecore.PendingExec, message *agentv1.ExecClientMessage) runtimecore.PendingExec {
-	located := readShellSpillFile(shellOutputLocationPath(message))
-	if len(located) > len(pending.StdoutBuffer) {
+func pendingWithLocalCursorShellSpill(stream *ActiveStream, pending runtimecore.PendingExec, message *agentv1.ExecClientMessage) runtimecore.PendingExec {
+	path := shellOutputLocationPath(message)
+	if !isAllowedLocalCursorShellSpillPath(stream, path) {
+		return pending
+	}
+	if located := readLocalCursorShellSpillFile(path); len(located) > len(pending.StdoutBuffer) {
 		pending.StdoutBuffer = located
 	}
 	return pending
-}
-
-func shellHasInlineOutput(pending runtimecore.PendingExec, message *agentv1.ExecClientMessage) bool {
-	if strings.TrimSpace(pending.StdoutBuffer) != "" || strings.TrimSpace(pending.StderrBuffer) != "" {
-		return true
-	}
-	if success := message.GetShellResult().GetSuccess(); success != nil {
-		if strings.TrimSpace(success.GetStdout()) != "" || strings.TrimSpace(success.GetStderr()) != "" || strings.TrimSpace(success.GetInterleavedOutput()) != "" {
-			return true
-		}
-	}
-	if failure := message.GetShellResult().GetFailure(); failure != nil {
-		if strings.TrimSpace(failure.GetStdout()) != "" || strings.TrimSpace(failure.GetStderr()) != "" || strings.TrimSpace(failure.GetInterleavedOutput()) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func shellOutputLocationPath(message *agentv1.ExecClientMessage) string {
@@ -201,12 +217,32 @@ func shellOutputLocationPath(message *agentv1.ExecClientMessage) string {
 	return ""
 }
 
-func readShellSpillFile(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
+func isAllowedLocalCursorShellSpillPath(stream *ActiveStream, path string) bool {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" || trimmed != path {
+		return false
 	}
-	info, err := os.Stat(path)
+	if modeladapter.IsCursorInternalSpillWritePath(trimmed) {
+		return true
+	}
+	if stream == nil {
+		return false
+	}
+	stream.mu.Lock()
+	terminalsFolder := strings.TrimSpace(stream.TerminalsFolder)
+	stream.mu.Unlock()
+	if terminalsFolder == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(terminalsFolder), filepath.Clean(trimmed))
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || strings.ContainsAny(rel, `/\`) {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(rel), ".txt") && len(rel) > len(".txt")
+}
+
+func readLocalCursorShellSpillFile(path string) string {
+	info, err := os.Lstat(path)
 	if err != nil || info.Size() <= 0 || !info.Mode().IsRegular() {
 		return ""
 	}
@@ -232,52 +268,4 @@ func readShellSpillFile(path string) string {
 	}
 	n, _ = io.ReadFull(file, tail)
 	return string(head) + "\n\n[Output too long. middle of spill file elided]\n\n" + string(tail[:n])
-}
-
-// cursorAccountShellTerminalMessage is the shell completion sent upstream.
-// When the output text is already inline, the spill-file path is removed so
-// the model does not open a second Read for the same bytes.
-func cursorAccountShellTerminalMessage(message *agentv1.ExecClientMessage, haveInlineOutput bool) *agentv1.ExecClientMessage {
-	if message == nil || (message.GetShellStream().GetExit() == nil && message.GetShellResult() == nil) {
-		return message
-	}
-	cloned, _ := proto.Clone(message).(*agentv1.ExecClientMessage)
-	if cloned == nil {
-		return message
-	}
-	if exit := cloned.GetShellStream().GetExit(); exit != nil && haveInlineOutput {
-		exit.OutputLocation = nil
-	}
-	if result := cloned.GetShellResult(); result != nil {
-		trimCursorAccountShellResult(result, haveInlineOutput)
-	}
-	return cloned
-}
-
-func trimCursorAccountShellResult(result *agentv1.ShellResult, dropLocation bool) {
-	if result == nil {
-		return
-	}
-	if success := result.GetSuccess(); success != nil {
-		success.Stdout = modeladapter.CursorAccountShellOutput(success.GetStdout())
-		success.Stderr = modeladapter.CursorAccountShellOutput(success.GetStderr())
-		if success.InterleavedOutput != nil {
-			trimmed := modeladapter.CursorAccountShellOutput(success.GetInterleavedOutput())
-			success.InterleavedOutput = &trimmed
-		}
-		if dropLocation {
-			success.OutputLocation = nil
-		}
-	}
-	if failure := result.GetFailure(); failure != nil {
-		failure.Stdout = modeladapter.CursorAccountShellOutput(failure.GetStdout())
-		failure.Stderr = modeladapter.CursorAccountShellOutput(failure.GetStderr())
-		if failure.InterleavedOutput != nil {
-			trimmed := modeladapter.CursorAccountShellOutput(failure.GetInterleavedOutput())
-			failure.InterleavedOutput = &trimmed
-		}
-		if dropLocation {
-			failure.OutputLocation = nil
-		}
-	}
 }

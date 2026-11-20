@@ -8,6 +8,9 @@ import (
 
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func buildReadCompletedToolCall(toolCallID string, argsJSON []byte, result *agentv1.ReadResult) *agentv1.ToolCall {
@@ -323,13 +326,6 @@ func subagentTypeProtoFromString(raw string) *agentv1.SubagentType {
 // buildShellCompletedToolCall 构造 Shell 对应的完成态 ToolCall。
 func buildShellCompletedToolCall(toolCallID string, argsJSON []byte, stdout string, stderr string, exit *agentv1.ShellStreamExit) *agentv1.ToolCall {
 	args := decodeShellArgsForResult(argsJSON)
-	shellArgs := &agentv1.ShellArgs{
-		Command:          args.Command,
-		WorkingDirectory: args.WorkingDirectory,
-		Timeout:          shellTimeoutFromArgs(args),
-		ToolCallId:       toolCallID,
-		Description:      stringPtr(strings.TrimSpace(args.Description)),
-	}
 	successPayload := buildShellSuccessPayload(args, stdout, stderr, exit)
 	isBackground := false
 	result := &agentv1.ShellResult{
@@ -361,13 +357,86 @@ func buildShellCompletedToolCall(toolCallID string, argsJSON []byte, stdout stri
 			Failure: failure,
 		}
 	}
+	return buildShellResultToolCall(shellCardArgs(toolCallID, args), result)
+}
+
+func shellCardArgs(toolCallID string, args shellResultArgs) *agentv1.ShellArgs {
+	return &agentv1.ShellArgs{
+		Command:                args.Command,
+		WorkingDirectory:       args.WorkingDirectory,
+		Timeout:                shellTimeoutFromArgs(args),
+		ToolCallId:             toolCallID,
+		Description:            stringPtr(args.Description),
+		RequestedSandboxPolicy: args.RequestedSandboxPolicy,
+		OutputNotification:     buildShellOutputNotificationConfig(args.NotifyOnOutput),
+	}
+}
+
+func completedShellArgs(pending runtimecore.PendingExec) *agentv1.ShellArgs {
+	// OpenNativeExec stores the original ShellArgs as protobuf JSON. Unlike
+	// provider tool arguments, those args may include a zero timeout and
+	// native-only fields (approval, command parsing, etc.).
+	if strings.HasPrefix(pending.ExecID, nativeExecIDPrefix) {
+		var args agentv1.ShellArgs
+		if err := protojson.Unmarshal(pending.ArgsJSON, &args); err == nil {
+			args.ToolCallId = pending.ToolCallID
+			return &args
+		}
+	}
+	return shellCardArgs(pending.ToolCallID, decodeShellArgsForResult(pending.ArgsJSON))
+}
+
+// FillMissingShellOutput restores captured channels on a private copy. An IDE
+// preview or interleaved transcript already represents both channels.
+func FillMissingShellOutput(result *agentv1.ShellResult, pending runtimecore.PendingExec) {
+	fill := func(stdout, stderr *string, interleaved, head, tail string) {
+		if interleaved != "" || head != "" || tail != "" {
+			return
+		}
+		if *stdout == "" {
+			*stdout = pending.StdoutBuffer
+		}
+		if *stderr == "" {
+			*stderr = pending.StderrBuffer
+		}
+	}
+	if s := result.GetSuccess(); s != nil {
+		fill(&s.Stdout, &s.Stderr, s.GetInterleavedOutput(), s.GetOutputHead(), s.GetOutputTail())
+	} else if f := result.GetFailure(); f != nil {
+		fill(&f.Stdout, &f.Stderr, f.GetInterleavedOutput(), f.GetOutputHead(), f.GetOutputTail())
+	}
+}
+
+// boundedShellResult keeps the client's actual outcome (including optional
+// fields and spill-file metadata). Only text carried over the wire is usable.
+func boundedShellResult(completed *agentv1.ShellResult, pending runtimecore.PendingExec) *agentv1.ShellResult {
+	result := proto.CloneOf(completed)
+	FillMissingShellOutput(result, pending)
+	boundOutput := func(stdout, stderr, interleaved, head, tail *string) {
+		*stdout, *stderr = truncateShellStreamsForReplay(*stdout, *stderr)
+		if interleaved != nil {
+			*interleaved = truncateReplayTextMiddle("Shell interleaved output", *interleaved, 2*shellReplayStreamLimit)
+		}
+		if head != nil {
+			*head = truncateReplayTextMiddle("Shell output head", *head, shellReplayStreamLimit)
+		}
+		if tail != nil {
+			*tail = truncateReplayTextMiddle("Shell output tail", *tail, shellReplayStreamLimit)
+		}
+	}
+	if s := result.GetSuccess(); s != nil {
+		boundOutput(&s.Stdout, &s.Stderr, s.InterleavedOutput, s.OutputHead, s.OutputTail)
+	} else if f := result.GetFailure(); f != nil {
+		boundOutput(&f.Stdout, &f.Stderr, f.InterleavedOutput, f.OutputHead, f.OutputTail)
+	}
+	return result
+}
+
+func buildShellResultToolCall(args *agentv1.ShellArgs, result *agentv1.ShellResult) *agentv1.ToolCall {
 	return &agentv1.ToolCall{
+		ToolCallId: stringPtr(args.ToolCallId),
 		Tool: &agentv1.ToolCall_ShellToolCall{
-			ShellToolCall: &agentv1.ShellToolCall{
-				Args:        shellArgs,
-				Result:      result,
-				Description: stringPtr(strings.TrimSpace(args.Description)),
-			},
+			ShellToolCall: &agentv1.ShellToolCall{Args: args, Result: result, Description: args.Description},
 		},
 	}
 }

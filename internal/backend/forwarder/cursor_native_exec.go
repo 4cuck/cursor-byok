@@ -1,6 +1,7 @@
 package forwarder
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -18,15 +19,8 @@ type nativeExecSlot struct {
 	execID string
 }
 
-func rememberNativeExecSlot(stream *ActiveStream, invocation runtimecore.ToolInvocation) {
-	if stream == nil || len(invocation.NativeExec) == 0 {
-		return
-	}
-	original := &agentv1.ExecServerMessage{}
-	if err := proto.Unmarshal(invocation.NativeExec, original); err != nil {
-		return
-	}
-	toolCallID := strings.TrimSpace(invocation.CallID)
+func rememberNativeExecSlot(stream *ActiveStream, callID string, original *agentv1.ExecServerMessage) {
+	toolCallID := strings.TrimSpace(callID)
 	if toolCallID == "" {
 		return
 	}
@@ -49,12 +43,16 @@ func nativeParentParameters(parameters []modeladapter.ModelParameter) []execbrid
 	return copied
 }
 
-func nativeExecIsWrite(raw []byte) bool {
-	message := &agentv1.ExecServerMessage{}
-	if err := proto.Unmarshal(raw, message); err != nil {
+func nativeExecIsInternalSpillWrite(raw []byte) bool {
+	if len(raw) == 0 {
 		return false
 	}
-	return message.GetWriteArgs() != nil
+	msg := &agentv1.ExecServerMessage{}
+	if err := proto.Unmarshal(raw, msg); err != nil {
+		return false
+	}
+	write := msg.GetWriteArgs()
+	return write != nil && modeladapter.IsCursorInternalSpillWritePath(write.GetPath())
 }
 
 // dispatchNativeCursorExec sends the agent exec to the local Cursor client
@@ -67,6 +65,38 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 	original := &agentv1.ExecServerMessage{}
 	if err := proto.Unmarshal(invocation.NativeExec, original); err != nil {
 		return err
+	}
+	// Keep the gateway's dispatch ID for card/history and exec correlation.
+	rememberNativeExecSlot(stream, invocation.CallID, original)
+	silentUI := invocation.SilentUI
+	if write := original.GetWriteArgs(); write != nil {
+		isSpill := modeladapter.IsCursorInternalSpillWritePath(write.GetPath())
+		silentUI = silentUI || isSpill
+		if !isSpill {
+			if strings.TrimSpace(invocation.ToolName) != "Write" {
+				err := fmt.Errorf("native Write does not match tool %q", invocation.ToolName)
+				return service.rejectNativeWriteBeforeDispatch(stream, invocation, write.GetPath(), err)
+			}
+			if err := validateWritePath(write.GetPath()); err != nil {
+				return service.rejectNativeWriteBeforeDispatch(stream, invocation, write.GetPath(), err)
+			}
+			// A leading space can make an otherwise absolute path relative on the
+			// client. Never validate a trimmed path and forward a different one.
+			if strings.TrimSpace(write.GetPath()) != write.GetPath() {
+				return service.rejectNativeWriteBeforeDispatch(stream, invocation, write.GetPath(), fmt.Errorf("native write path has surrounding whitespace"))
+			}
+		} else if err := validateWritePath(write.GetPath()); err != nil {
+			return service.rejectNativeWriteBeforeDispatch(stream, invocation, write.GetPath(), err)
+		}
+		argsJSON, err := nativeWriteDisplayArgs(write).MarshalJSON()
+		if err != nil {
+			return err
+		}
+		invocation.ArgsJSON = argsJSON
+		if !silentUI && isCanvasFilePath(write.GetPath()) {
+			// Managed canvases still need the proxy's edit and diagnostics lifecycle.
+			return service.handleWriteToolInvocation(stream, invocation)
+		}
 	}
 	// Cursor's cloud agent resolves Task model "auto" to composer before this
 	// process sees the exec. The IDE then launches that child as Auto and never
@@ -100,8 +130,12 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 	pendingExec.ReasoningContent = invocation.ReasoningContent
 	pendingExec.ReasoningSignature = invocation.ReasoningSignature
 	pendingExec.ReasoningSignatureSource = invocation.ReasoningSignatureSource
+	pendingExec.SilentUI = silentUI
 	pendingExec = initializePendingExecForTracking(pendingExec)
-	started := buildStartedToolCall(invocation)
+	var started *agentv1.ToolCall
+	if !silentUI {
+		started = buildStartedToolCall(invocation)
+	}
 	if started != nil {
 		if subagent := original.GetSubagentArgs(); subagent != nil && strings.TrimSpace(subagent.GetModelId()) == strings.TrimSpace(parentModel.ModelID) && strings.TrimSpace(parentModel.ModelID) != "" {
 			label := displayModel
@@ -111,7 +145,11 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 			ensureTaskToolCallModel(started, label)
 		}
 		if checkpointConversationInitialized(stream) {
-			if toolCallPayload, marshalErr := protojson.Marshal(started); marshalErr == nil {
+			historyCard := started
+			if write := original.GetWriteArgs(); write != nil {
+				historyCard = buildStartedWriteHistoryToolCall(write.GetPath())
+			}
+			if toolCallPayload, marshalErr := protojson.Marshal(historyCard); marshalErr == nil {
 				_, _ = service.appendConversationEntries(stream, stream.ConversationID, []HistoryEntry{
 					newToolCallEntryWithProviderMetadata(stream.TurnSeq, stream.RequestID, invocation.CallID, invocation.ToolName, invocation.ReasoningContent, invocation.ReasoningSignature, invocation.ReasoningSignatureSource, invocation.ReasoningProviderItemID, invocation.ReasoningProviderStatus, invocation.ReasoningProviderSummary, invocation.ProviderItemID, invocation.ProviderCallID, invocation.ProviderStatus, toolCallPayload),
 				})
@@ -174,4 +212,29 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 		return err
 	}
 	return nil
+}
+
+// rejectNativeWriteBeforeDispatch returns a typed WriteResult error to Cursor's
+// open stream instead of dropping the exec or closing the RunSSE stream (which
+// would abort concurrent in-flight WebFetch/WebSearch calls).
+func (service *Service) rejectNativeWriteBeforeDispatch(stream *ActiveStream, invocation runtimecore.ToolInvocation, path string, cause error) error {
+	if stream == nil || cause == nil {
+		return cause
+	}
+	errMsg := &agentv1.ExecClientMessage{
+		Message: &agentv1.ExecClientMessage_WriteResult{
+			WriteResult: &agentv1.WriteResult{
+				Result: &agentv1.WriteResult_Error{
+					Error: &agentv1.WriteError{
+						Path:  strings.TrimSpace(path),
+						Error: strings.TrimSpace(cause.Error()),
+					},
+				},
+			},
+		},
+	}
+	if deliverCursorToolResult(stream, invocation.CallID, errMsg) {
+		return nil
+	}
+	return service.completePreDispatchToolError(stream, invocation, nil, false, false, cause)
 }

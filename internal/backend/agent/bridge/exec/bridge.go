@@ -364,10 +364,12 @@ func (bridge *Bridge) ApplyExecClientMessage(msg *agentv1.ExecClientMessage, pen
 		return result, nil
 	case "shell":
 		if completed := msg.GetShellResult(); completed != nil {
-			raw, err := protojson.Marshal(completed)
+			bounded := boundedShellResult(completed, pending)
+			raw, err := protojson.Marshal(bounded)
 			if err != nil {
 				return ExecApplyResult{}, err
 			}
+			result.ToolCall = buildShellResultToolCall(completedShellArgs(pending), bounded)
 			result.ToolResultPayload = string(raw)
 			result.IsTerminal = true
 			return result, nil

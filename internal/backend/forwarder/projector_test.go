@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -135,6 +136,96 @@ func TestProjectLegacyCheckpointLargeModelHistoryUsesRootReplay(t *testing.T) {
 	}
 	if len(messages) != 400 {
 		t.Fatalf("decoded replay messages = %d, want 400", len(messages))
+	}
+}
+
+func TestProjectPromptReplayStoredGrepMatches(t *testing.T) {
+	const callID = "call-grep"
+	const file = "src/探针.go"
+	for _, tc := range []struct {
+		name       string
+		lines      int
+		historical bool
+		truncated  bool
+		limit      int
+	}{
+		{"current_oversized", 32, false, true, projectedGrepReplayLimit},
+		{"historical_oversized", 10, true, true, staleToolResultReplayLimit},
+		{"current_under_cap", 10, false, false, projectedGrepReplayLimit},
+		{"historical_under_threshold", 5, true, false, projectedGrepReplayLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var lines []string
+			if tc.historical && tc.truncated {
+				// Enough leading context to crowd every actual hit out of a raw prefix.
+				for i := 36; i < 41; i++ {
+					lines = append(lines, fmt.Sprintf(`{"lineNumber":%d,"isContextLine":true,"content":"%s"}`, i, strings.Repeat("界", 330)))
+				}
+			}
+			for i := 0; i < tc.lines; i++ {
+				lines = append(lines, fmt.Sprintf(`{"lineNumber":%d,"content":"needle 命中 %s"}`, 41+i, strings.Repeat("界", 330)))
+			}
+			toolCall := json.RawMessage(fmt.Sprintf(`{"grepToolCall":{
+				"args":{"pattern":"needle"},
+				"result":{"success":{"pattern":"needle","outputMode":"content","workspaceResults":{
+					"/repo":{"content":{"matches":[{"file":%q,"matches":[%s]}]}}
+				}}}
+			}}`, file, strings.Join(lines, ",")))
+			entries := []HistoryEntry{
+				testUserMessageEntry(t, 1, "req-1", "Search for needle"),
+				newToolCallEntry(1, "req-1", callID, "Grep", "", "", toolCall),
+				newToolResultEntry(1, "req-1", callID, "Grep", `{"pattern":"needle"}`, "grep success pattern=needle mode=content", "", toolCall),
+			}
+			if tc.historical {
+				entries = append(entries, testUserMessageEntry(t, 2, "req-2", "Continue"))
+			}
+			conversation := testConversation(entries)
+			original := string(conversation.Entries[2].Payload)
+			replay, err := NewHistoryProjector().ProjectPromptReplay(conversation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(replay) < 3 || replay[2].Role != "tool" || replay[2].ToolCallID != callID {
+				t.Fatal("missing Grep tool reply")
+			}
+			if string(conversation.Entries[2].Payload) != original {
+				t.Fatal("projecting Grep changed the stored result")
+			}
+			got := replay[2].Content
+			if len(got) > tc.limit || !utf8.ValidString(got) {
+				t.Fatalf("invalid replay: %d bytes (limit %d), valid UTF-8: %t", len(got), tc.limit, utf8.ValidString(got))
+			}
+			if tc.truncated {
+				if !strings.Contains(got, file+":41:needle 命中") || !strings.Contains(got, "[truncated:") {
+					t.Error("oversized replay lost the matched path, line, text or truncation notice")
+				}
+			} else {
+				decoded := &agentv1.ToolCall{}
+				if err := protojson.Unmarshal(toolCall, decoded); err != nil {
+					t.Fatal(err)
+				}
+				want, ok := promptengine.BuildToolResultReplayMessage(callID, decoded)
+				if !ok || got != want.Content {
+					t.Error("under-limit replay differs from the original structured result")
+				}
+			}
+		})
+	}
+}
+
+func TestHistoricalGrepReplayListsFilesAndCountsDeterministically(t *testing.T) {
+	// Per-file counts exceed the threshold as JSON, but all paths fit as text.
+	var counts []string
+	for i := 0; i < 290; i++ {
+		counts = append(counts, fmt.Sprintf(`{"file":"p/%03d.go","count":7}`, i))
+	}
+	content := fmt.Sprintf(`{"success":{"workspaceResults":{
+		"/z":{"files":{"files":["src/z.go"]}},
+		"/a":{"count":{"counts":[%s]}}
+	},"activeEditorResult":{"files":{"files":["src/editor.go"]}}}}`, strings.Join(counts, ","))
+	got := limitProjectedToolResultReplay("Grep", content, "grep success", true, true)
+	if !strings.HasPrefix(got, "p/000.go:7\n") || !strings.Contains(got, "p/289.go:7\nsrc/z.go\nsrc/editor.go\n\n[truncated:") || len(got) > staleToolResultReplayLimit {
+		t.Fatalf("unexpected historical Grep sample: %.120q", got)
 	}
 }
 

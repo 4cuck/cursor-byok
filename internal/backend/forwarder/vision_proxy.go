@@ -599,7 +599,7 @@ func (service *Service) describeImageOnce(ctx context.Context, image *modeladapt
 			return nil
 		case modeladapter.ModelEventKindThinkingDelta, modeladapter.ModelEventKindThinkingCompleted, modeladapter.ModelEventKindTurnFinished:
 			return nil
-		case modeladapter.ModelEventKindToolLikeCompleted, modeladapter.ModelEventKindPartialToolCall, modeladapter.ModelEventKindToolCallDelta:
+		case modeladapter.ModelEventKindToolLikeCompleted, modeladapter.ModelEventKindPartialToolCall, modeladapter.ModelEventKindToolCallDelta, modeladapter.ModelEventKindCursorEditStarted, modeladapter.ModelEventKindCursorEditCompleted:
 			return errVisionProxyToolInvocation
 		case modeladapter.ModelEventKindProviderError:
 			if event.Err != nil {

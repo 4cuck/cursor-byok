@@ -119,6 +119,8 @@ func nativeInheritedParameters(parameters []NativeModelParameter) []*agentv1.Req
 	return inherited
 }
 
+const nativeExecIDPrefix = "exec-native-"
+
 // OpenNativeExec forwards a Cursor agent exec to the local client without
 // rebuilding it through our tool-argument decoders. The installed IDE client
 // already knows how to run every exec shape, including Glob sent as a
@@ -132,7 +134,7 @@ func (bridge *Bridge) OpenNativeExec(exec *agentv1.ExecServerMessage, toolCall r
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("native exec clone failed")
 	}
 	cloned.Id = bridge.nextID()
-	cloned.ExecId = fmt.Sprintf("exec-native-%d", time.Now().UnixNano())
+	cloned.ExecId = fmt.Sprintf("%s%d", nativeExecIDPrefix, time.Now().UnixNano())
 	return &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{ExecServerMessage: cloned},
 	}, runtimecore.PendingExec{

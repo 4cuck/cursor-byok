@@ -121,7 +121,7 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 			return nil
 		case modeladapter.ModelEventKindThinkingDelta, modeladapter.ModelEventKindThinkingCompleted, modeladapter.ModelEventKindTurnFinished:
 			return nil
-		case modeladapter.ModelEventKindToolLikeCompleted, modeladapter.ModelEventKindPartialToolCall, modeladapter.ModelEventKindToolCallDelta:
+		case modeladapter.ModelEventKindToolLikeCompleted, modeladapter.ModelEventKindPartialToolCall, modeladapter.ModelEventKindToolCallDelta, modeladapter.ModelEventKindCursorEditStarted, modeladapter.ModelEventKindCursorEditCompleted:
 			return errCommitMessageToolInvocation
 		case modeladapter.ModelEventKindProviderError:
 			if event.Err != nil {

@@ -79,7 +79,7 @@ func summarizeWebSearchResponse(response *agentv1.WebSearchRequestResponse) stri
 }
 
 // applyWebSearchResponse 把 WebSearch approval 响应转换成最终工具结果。
-func (bridge *Bridge) applyWebSearchResponse(response *agentv1.WebSearchRequestResponse, args *agentv1.WebSearchArgs) (*agentv1.WebSearchResult, string) {
+func (bridge *Bridge) applyWebSearchResponse(response *agentv1.WebSearchRequestResponse, args *agentv1.WebSearchArgs, nativeCursor bool) (*agentv1.WebSearchResult, string) {
 	if response == nil {
 		return &agentv1.WebSearchResult{
 			Result: &agentv1.WebSearchResult_Error{
@@ -89,7 +89,9 @@ func (bridge *Bridge) applyWebSearchResponse(response *agentv1.WebSearchRequestR
 	}
 	switch item := response.GetResult().(type) {
 	case *agentv1.WebSearchRequestResponse_Approved_:
-		_ = item
+		if nativeCursor {
+			return nil, "" // permission is not a result
+		}
 		references, payload, err := bridge.executeWebSearch(strings.TrimSpace(args.GetSearchTerm()))
 		if err != nil {
 			return &agentv1.WebSearchResult{
@@ -120,7 +122,7 @@ func (bridge *Bridge) applyWebSearchResponse(response *agentv1.WebSearchRequestR
 }
 
 // applyWebFetchResponse 把 WebFetch approval 响应转换成最终工具结果。
-func (bridge *Bridge) applyWebFetchResponse(response *agentv1.WebFetchRequestResponse, args *agentv1.WebFetchArgs) (*agentv1.WebFetchResult, string) {
+func (bridge *Bridge) applyWebFetchResponse(response *agentv1.WebFetchRequestResponse, args *agentv1.WebFetchArgs, nativeCursor bool) (*agentv1.WebFetchResult, string) {
 	if response == nil {
 		return &agentv1.WebFetchResult{
 			Result: &agentv1.WebFetchResult_Error{
@@ -133,7 +135,9 @@ func (bridge *Bridge) applyWebFetchResponse(response *agentv1.WebFetchRequestRes
 	}
 	switch item := response.GetResult().(type) {
 	case *agentv1.WebFetchRequestResponse_Approved_:
-		_ = item
+		if nativeCursor {
+			return nil, "" // permission is not a result
+		}
 		markdown, err := bridge.executeWebFetch(strings.TrimSpace(args.GetUrl()))
 		if err != nil {
 			return &agentv1.WebFetchResult{

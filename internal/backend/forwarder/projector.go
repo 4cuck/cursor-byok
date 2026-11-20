@@ -743,7 +743,13 @@ func projectCheckpointTurnBlobs(conversation *ConversationFile, blobs *checkpoin
 				if err := protojson.Unmarshal(normalizeLegacyShellToolCallPayload(payload.ToolCall), toolCall); err != nil {
 					return nil, err
 				}
-				if !shouldPersistToolResultName(firstNonEmpty(strings.TrimSpace(payload.ToolName), inferToolName(toolCall))) {
+				name := firstNonEmpty(payload.ToolName, inferToolName(toolCall))
+				if entry.NativeWebResult && (name == "WebSearch" || name == "WebFetch") {
+					// Unlike a live update, a checkpoint step has no enclosing call ID.
+					if toolCall.GetToolCallId() == "" {
+						toolCall.ToolCallId = stringPtr(payload.ToolCallID)
+					}
+				} else if !shouldPersistToolResultName(name) {
 					continue
 				}
 				stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{

@@ -2,6 +2,7 @@ package forwarder
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	runtimecore "cursor/internal/backend/agent/core"
 	modeladapter "cursor/internal/backend/agent/model"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -68,6 +70,71 @@ func openPendingAskQuestionStream(t *testing.T, service *Service, requestID stri
 		"等待用户输入超时",
 	)
 	return stream
+}
+
+func TestNativeCursorWebInteractionTimeoutDeniesOriginalQuery(t *testing.T) {
+	for _, tc := range []struct {
+		tool   string
+		query  *agentv1.InteractionQuery
+		reason func(*agentv1.InteractionResponse) string
+	}{
+		{
+			tool: "WebSearch",
+			query: &agentv1.InteractionQuery{Id: 8802, Query: &agentv1.InteractionQuery_WebSearchRequestQuery{
+				WebSearchRequestQuery: &agentv1.WebSearchRequestQuery{},
+			}},
+			reason: func(r *agentv1.InteractionResponse) string {
+				return r.GetWebSearchRequestResponse().GetRejected().GetReason()
+			},
+		},
+		{
+			tool: "WebFetch",
+			query: &agentv1.InteractionQuery{Id: 8803, Query: &agentv1.InteractionQuery_WebFetchRequestQuery{
+				WebFetchRequestQuery: &agentv1.WebFetchRequestQuery{},
+			}},
+			reason: func(r *agentv1.InteractionResponse) string {
+				return r.GetWebFetchRequestResponse().GetRejected().GetReason()
+			},
+		},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			service := NewService(t.TempDir(), nilResolver{})
+			stream, err := service.broker.OpenStream("req-web", "conv-web", 1, "model-id", "Model Name", agentv1.AgentMode_AGENT_MODE_AGENT, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := service.replaceCheckpointConversation(stream, testConversation(nil)); err != nil {
+				t.Fatal(err)
+			}
+			replies := make(chan *agentv1.InteractionResponse, 1)
+			stream.CursorInteractionReplies = replies
+			raw, err := proto.Marshal(tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := service.dispatchNativeCursorInteraction(stream, runtimecore.ToolInvocation{ToolName: tc.tool, CallID: "web-call", ArgsJSON: []byte(`{}`), NativeInteraction: raw}); err != nil {
+				t.Fatal(err)
+			}
+			id := strconv.FormatUint(uint64(tc.query.GetId()), 10)
+			key := providerTimerKey(streamTimerInteractionTimeout, id)
+			defer clearStreamTimer(stream, key)
+			stream.mu.Lock()
+			token := stream.TimerTokens[key]
+			stream.mu.Unlock()
+			const reason = "synthetic timeout"
+			if err := service.handleTimerEvent(stream, &streamTimerEvent{Key: key, Token: token, Kind: streamTimerInteractionTimeout, ExecID: id, Reason: reason}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case reply := <-replies:
+				if reply.GetId() != tc.query.GetId() || tc.reason(reply) != reason {
+					t.Fatalf("timeout reply = %v, want %s rejection for query %s with reason %q", reply, tc.tool, id, reason)
+				}
+			default:
+				t.Fatal("timeout did not deliver a native rejection to the waiting stream")
+			}
+		})
+	}
 }
 
 func persistedToolResultEntries(t *testing.T, service *Service, conversationID string, toolCallID string) []toolResultEntryPayload {

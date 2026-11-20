@@ -234,6 +234,16 @@ const (
 	ModelEventKindToolCallDelta ModelEventKind = "tool_call_delta"
 	// ModelEventKindToolLikeCompleted 表示工具意图已完整收口。
 	ModelEventKindToolLikeCompleted ModelEventKind = "tool_like_completed"
+	// ModelEventKindCursorWebResult is display/history only. It is never a tool invocation.
+	ModelEventKindCursorWebResult ModelEventKind = "cursor_web_result"
+	// ModelEventKindCursorEditStarted is display/history only. It forwards
+	// Cursor's upstream EditToolCall start card while ReadArgs/WriteArgs run
+	// silently underneath.
+	ModelEventKindCursorEditStarted ModelEventKind = "cursor_edit_started"
+	// ModelEventKindCursorEditCompleted is display/history only. It carries
+	// Cursor's authoritative EditToolCall outcome (before/after content and
+	// real +/- line counts).
+	ModelEventKindCursorEditCompleted ModelEventKind = "cursor_edit_completed"
 	// ModelEventKindTurnFinished 表示当前模型回合结束。
 	ModelEventKindTurnFinished ModelEventKind = "turn_finished"
 	// ModelEventKindProviderError 表示 provider 侧返回错误。
@@ -278,6 +288,12 @@ type ModelEvent struct {
 	ToolCallID string
 	// ToolCall 保存 partial tool call 当前可公开的结构化快照。
 	ToolCall *agentv1.ToolCall
+	// CursorWebResult carries the upstream terminal card, not executable arguments.
+	CursorWebResult *agentv1.ToolCallCompletedUpdate
+	// CursorEditStarted carries the upstream EditToolCall start update.
+	CursorEditStarted *agentv1.ToolCallStartedUpdate
+	// CursorEditCompleted carries the upstream terminal EditToolCall card.
+	CursorEditCompleted *agentv1.ToolCallCompletedUpdate
 	// ToolCallDelta 保存与当前工具调用相关的流式增量。
 	ToolCallDelta *agentv1.ToolCallDelta
 	// ArgsTextDelta 保存原始工具参数文本增量，供兼容层透传。
@@ -304,6 +320,50 @@ type ModelEvent struct {
 	FinishReason string
 	// Err 表示 provider 错误。
 	Err error
+}
+
+// CursorWebResultCallID accepts only terminal native web outcomes. An interaction
+// query ID, exec ID, model ID or matching URL is not evidence of tool identity.
+func CursorWebResultCallID(completion *agentv1.ToolCallCompletedUpdate) string {
+	card := completion.GetToolCall()
+	var argsID string
+	switch {
+	case card.GetWebSearchToolCall().GetResult().GetResult() != nil:
+		argsID = card.GetWebSearchToolCall().GetArgs().GetToolCallId()
+	case card.GetWebFetchToolCall().GetResult().GetResult() != nil:
+		argsID = card.GetWebFetchToolCall().GetArgs().GetToolCallId()
+	default:
+		return ""
+	}
+	return firstNonEmptyString(argsID, card.GetToolCallId(), completion.GetCallId())
+}
+
+// CursorEditPartialCallID returns the tool call ID for an upstream Cursor
+// EditToolCall partial update, or "" when the update is not an edit card.
+func CursorEditPartialCallID(partial *agentv1.PartialToolCallUpdate) string {
+	if partial == nil || partial.GetToolCall().GetEditToolCall() == nil {
+		return ""
+	}
+	return firstNonEmptyString(partial.GetToolCall().GetToolCallId(), partial.GetCallId())
+}
+
+// CursorEditStartedCallID returns the tool call ID for an upstream Cursor
+// EditToolCall start update, or "" when the update is not an edit card.
+func CursorEditStartedCallID(started *agentv1.ToolCallStartedUpdate) string {
+	if started == nil || started.GetToolCall().GetEditToolCall() == nil {
+		return ""
+	}
+	return firstNonEmptyString(started.GetToolCall().GetToolCallId(), started.GetCallId())
+}
+
+// CursorEditCompletedCallID accepts only terminal upstream Cursor EditToolCall
+// outcomes (success, error, rejected, fileNotFound, or permissionDenied).
+func CursorEditCompletedCallID(completion *agentv1.ToolCallCompletedUpdate) string {
+	card := completion.GetToolCall()
+	if card.GetEditToolCall().GetResult().GetResult() == nil {
+		return ""
+	}
+	return firstNonEmptyString(card.GetToolCallId(), completion.GetCallId())
 }
 
 // ModelAdapter 定义具体 provider 适配器接口。

@@ -45,9 +45,12 @@ type Bridge struct {
 
 // NewBridge 创建一个交互桥实例。
 func NewBridge() *Bridge {
-	return &Bridge{
-		httpClient: netproxy.NewHTTPClient(15 * time.Second),
-	}
+	return NewBridgeWithHTTPClient(netproxy.NewHTTPClient(15 * time.Second))
+}
+
+// NewBridgeWithHTTPClient uses client for locally executed web tools.
+func NewBridgeWithHTTPClient(client *http.Client) *Bridge {
+	return &Bridge{httpClient: client}
 }
 
 // OpenQuery 打开一条交互型工具调用。
@@ -123,7 +126,11 @@ func (bridge *Bridge) ApplyInteractionResponse(msg *agentv1.InteractionResponse,
 				}
 			}
 		}
-		webSearchResult, payload := bridge.applyWebSearchResponse(msg.GetWebSearchRequestResponse(), &args)
+		webSearchResult, payload := bridge.applyWebSearchResponse(msg.GetWebSearchRequestResponse(), &args, pending.NativeCursor)
+		if webSearchResult == nil { // permission only; execution belongs to Cursor
+			result.IsTerminal = false
+			return result, nil
+		}
 		result.ToolResultPayload = payload
 		result.ToolCall = &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_WebSearchToolCall{
@@ -137,7 +144,11 @@ func (bridge *Bridge) ApplyInteractionResponse(msg *agentv1.InteractionResponse,
 	case "web_fetch":
 		var args agentv1.WebFetchArgs
 		_ = UnmarshalProtoJSONArgs(pending.ArgsJSON, &args)
-		webFetchResult, payload := bridge.applyWebFetchResponse(msg.GetWebFetchRequestResponse(), &args)
+		webFetchResult, payload := bridge.applyWebFetchResponse(msg.GetWebFetchRequestResponse(), &args, pending.NativeCursor)
+		if webFetchResult == nil {
+			result.IsTerminal = false
+			return result, nil
+		}
 		result.ToolResultPayload = payload
 		result.ToolCall = &agentv1.ToolCall{
 			Tool: &agentv1.ToolCall_WebFetchToolCall{

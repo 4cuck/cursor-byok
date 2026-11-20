@@ -561,7 +561,8 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 		chunkReadTimeout := providerStreamChunkTimeout(req.ProviderStreamIdleTimeout)
 		// 每流一个复用 timer：见 newStreamChunkDeadline（替代逐行 AfterFunc 的分配）。
 		armChunkReadDeadline, disarmChunkReadDeadline := newStreamChunkDeadline(resp, chunkReadTimeout)
-		for {
+		// Once a framed message_stop is accepted, the socket need not close.
+		for !messageStopped {
 			armChunkReadDeadline()
 			scanOK := scanner.Scan()
 			chunkTimedOut = chunkTimedOut || disarmChunkReadDeadline()
@@ -589,20 +590,24 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 			}
 		}
-		if err := flush(); err != nil {
-			return fail(err)
-		}
-		if err := scanner.Err(); err != nil {
+		if !messageStopped {
+			if err := scanner.Err(); err != nil {
+				if chunkTimedOut {
+					err = streamChunkTimeoutError()
+				}
+				if idleErr := streamIdle.Err(); idleErr != nil {
+					return fail(idleErr)
+				}
+				return fail(err)
+			}
 			if chunkTimedOut {
-				err = streamChunkTimeoutError()
+				return fail(streamChunkTimeoutError())
 			}
-			if idleErr := streamIdle.Err(); idleErr != nil {
-				return fail(idleErr)
+			// Only a dispatched frame takes precedence over a transport error.
+			// Preserve the relay's final undelimited frame on clean EOF.
+			if err := flush(); err != nil {
+				return fail(err)
 			}
-			return fail(err)
-		}
-		if chunkTimedOut {
-			return fail(streamChunkTimeoutError())
 		}
 		if !messageStopped {
 			// Some compatible relays omit only message_stop. Accept that narrow case

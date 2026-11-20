@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -102,7 +103,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 		Index    int    `json:"index"`
 		ID       string `json:"id"`
 		Function struct {
-			Name      string `json:"name"`
+			Name string `json:"name"`
 			// 部分供应商（如 MiniMax）把 arguments 按 JSON 对象下发而非字符串，
 			// 这里用 RawMessage 接住双态，延迟到分片处理时再判定。
 			Arguments json.RawMessage `json:"arguments"`
@@ -453,6 +454,38 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 		}
 		cacheWritePresent = true
 	}
+	// Only an explicit terminator confirms pending native tool calls. Valid JSON
+	// alone does not mean that the relay has finished sending argument shards.
+	flushConfirmedTools := func() error {
+		if tail := argsStripper.Flush(); tail != "" && lastToolIndex >= 0 {
+			if acc := tools[lastToolIndex]; acc != nil {
+				acc.Args.WriteString(tail)
+			}
+		}
+		for _, accumulator := range tools {
+			argsJSON, err := completedOpenAIToolArgsJSON(accumulator)
+			if err != nil {
+				return err
+			}
+			if err := sink(ModelEvent{
+				Kind:       ModelEventKindToolLikeCompleted,
+				OccurredAt: time.Now().UTC(),
+				Provider:   "openai",
+				Model:      currentModel,
+				ToolInvocation: &runtimecore.ToolInvocation{
+					CallID:   strings.TrimSpace(accumulator.CallID),
+					ToolName: strings.TrimSpace(accumulator.Name),
+					ArgsJSON: argsJSON,
+				},
+			}); err != nil {
+				return err
+			}
+			streamIdle.MarkEffectiveContent()
+			emittedToolInvocation = true
+		}
+		clear(tools)
+		return nil
+	}
 	// A2 SSE 逐块读超时：每次 Scan 前设置读 deadline，块到达后清除（不累积）。
 	// 超时阈值按请求空闲超时派生（委派/子代理流放宽，父代理保持 30s）。
 	// 底层连接不支持 SetReadDeadline 时静默 fallback，行为与原来一致。
@@ -493,6 +526,9 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 				return fail(err)
 			}
 			if err := flushTurnFinished(); err != nil {
+				return fail(err)
+			}
+			if err := flushConfirmedTools(); err != nil {
 				return fail(err)
 			}
 			break
@@ -656,7 +692,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 			}
 		}
 
-		if choice.FinishReason != nil {
+		if choice.FinishReason != nil && (len(tools) == 0 || strings.TrimSpace(*choice.FinishReason) != "") {
 			streamTerminated = true
 			if err := flushTaggedContentTail(); err != nil {
 				return fail(err)
@@ -667,67 +703,12 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 			if err := flushThinkingCompleted(); err != nil {
 				return fail(err)
 			}
-			// 剥离器可能仍缓冲着最后一个工具参数的半截标记，先放行再终态校验。
-			if tail := argsStripper.Flush(); tail != "" && lastToolIndex >= 0 {
-				if acc := tools[lastToolIndex]; acc != nil {
-					acc.Args.WriteString(tail)
-				}
+			if err := flushConfirmedTools(); err != nil {
+				return fail(err)
 			}
-			for _, accumulator := range tools {
-				argsJSON, argsErr := completedOpenAIToolArgsJSON(accumulator)
-				if argsErr != nil {
-					return fail(argsErr)
-				}
-				if err := sink(ModelEvent{
-					Kind:       ModelEventKindToolLikeCompleted,
-					OccurredAt: time.Now().UTC(),
-					Provider:   "openai",
-					Model:      currentModel,
-					ToolInvocation: &runtimecore.ToolInvocation{
-						CallID:   strings.TrimSpace(accumulator.CallID),
-						ToolName: strings.TrimSpace(accumulator.Name),
-						ArgsJSON: argsJSON,
-					},
-				}); err != nil {
-					return fail(err)
-				}
-				streamIdle.MarkEffectiveContent()
-				// F-1：只在真正发出 ToolLikeCompleted 后置位；纯文本回合的
-				// stop 不得被提升为 tool_calls（否则下游 forwarder 空 resume
-				// 会重复输出甚至循环）。
-				emittedToolInvocation = true
-			}
-			tools = make(map[int]*openAIToolAccumulator)
 			finishReason = strings.TrimSpace(*choice.FinishReason)
 			turnFinishedPending = true
 		}
-	}
-	// 剥离器可能仍缓冲着最后一个工具参数的半截标记，先放行再终态校验。
-	if tail := argsStripper.Flush(); tail != "" && lastToolIndex >= 0 {
-		if acc := tools[lastToolIndex]; acc != nil {
-			acc.Args.WriteString(tail)
-		}
-	}
-	for _, accumulator := range tools {
-		argsJSON, argsErr := completedOpenAIToolArgsJSON(accumulator)
-		if argsErr != nil {
-			return fail(argsErr)
-		}
-		if err := sink(ModelEvent{
-			Kind:       ModelEventKindToolLikeCompleted,
-			OccurredAt: time.Now().UTC(),
-			Provider:   "openai",
-			Model:      currentModel,
-			ToolInvocation: &runtimecore.ToolInvocation{
-				CallID:   strings.TrimSpace(accumulator.CallID),
-				ToolName: strings.TrimSpace(accumulator.Name),
-				ArgsJSON: argsJSON,
-			},
-		}); err != nil {
-			return fail(err)
-		}
-		streamIdle.MarkEffectiveContent()
-		emittedToolInvocation = true
 	}
 	if err := scanner.Err(); err != nil {
 		if chunkTimedOut {
@@ -741,16 +722,14 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 	if chunkTimedOut {
 		return fail(streamChunkTimeoutError())
 	}
+	if len(tools) != 0 {
+		return fail(fmt.Errorf("openai chat stream ended before tool completion: %w", io.ErrUnexpectedEOF))
+	}
 	if !streamTerminated {
-		// 部分 OpenAI 兼容中转在完整输出后直接关闭 SSE，不发 [DONE]/finish_reason。
-		// 流正常结束（无读错误、无逐块超时）时视为正常收口：补发 TurnFinished，
-		// 避免回合被误判失败并被 router 整体重试（内容已完整展示，重试会重复输出）。
-		if scanner.Err() == nil && !chunkTimedOut {
-			finishReason = "stop"
-			turnFinishedPending = true
-		} else {
-			return fail(fmt.Errorf("provider stream ended before terminal event"))
-		}
+		// Keep the clean-EOF fallback for relays that omit both terminal markers
+		// when there is no native tool call left to confirm.
+		finishReason = "stop"
+		turnFinishedPending = true
 	}
 	// F-2：收尾时放行正文剥离器缓冲的残余。[DONE] 分支 break 与无终止事件的
 	// EOF 两条路径都汇合到此处，若不 Flush，deepseek 剥离器跨分片缓冲的尾部

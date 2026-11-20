@@ -118,6 +118,10 @@ type PendingExec struct {
 	StderrBuffer string
 	// ArtifactPath 保存该 exec 对应的原始桥接工件路径。
 	ArtifactPath string
+	// SilentUI marks internal Cursor-managed execs (such as agent-tools/*.txt
+	// output spill writes) that execute on the IDE without emitting user-facing
+	// tool cards or history entries.
+	SilentUI bool
 }
 
 // PendingInteraction 表示一条尚未收口的交互桥记录。
@@ -192,4 +196,8 @@ type ToolInvocation struct {
 	// NativeInteraction 是 Cursor 账户上游原始 InteractionQuery（AskQuestion、
 	// CreatePlan、SwitchMode 等）。IDE 直接渲染这张卡片，答案写回同一条 RunSSE。
 	NativeInteraction []byte
+	// SilentUI marks internal Cursor-managed execs (such as the pre-read and
+	// disk-write RPCs behind a Cursor-owned EditToolCall) that execute on the
+	// IDE without emitting user-facing tool cards or history entries.
+	SilentUI bool
 }

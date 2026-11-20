@@ -403,13 +403,30 @@ func decodeWriteOperationArgs(raw []byte) (writeOperationArgs, error) {
 		Path:     firstNonEmpty(readStringAny(args["path"]), readStringAny(args["file_path"]), readStringAny(args["filePath"]), readStringAny(args["Path"]), readStringAny(args["FilePath"])),
 		Contents: readWriteContentsAny(args),
 	}
-	if strings.TrimSpace(result.Path) == "" {
-		return writeOperationArgs{}, fmt.Errorf("write path is required")
-	}
-	if !isAbsoluteToolPath(result.Path) {
-		return writeOperationArgs{}, fmt.Errorf("write path must be absolute")
+	if err := validateWritePath(result.Path); err != nil {
+		return writeOperationArgs{}, err
 	}
 	return result, nil
+}
+
+func validateWritePath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("write path is required")
+	}
+	if !isAbsoluteToolPath(path) {
+		return fmt.Errorf("write path must be absolute")
+	}
+	return nil
+}
+
+// Only normalize the local edit card/history view. OpenNativeExec forwards
+// the actual WriteArgs (including binary content and policy flags) untouched.
+func nativeWriteDisplayArgs(args *agentv1.WriteArgs) writeOperationArgs {
+	text := args.GetFileText()
+	if text == "" && utf8.Valid(args.GetFileBytes()) {
+		text = string(args.GetFileBytes())
+	}
+	return writeOperationArgs{Path: args.GetPath(), Contents: text}
 }
 
 func readWriteContentsAny(args map[string]any) string {
@@ -547,11 +564,18 @@ func compactWriteHistoryEditResult(path string, result *agentv1.EditResult) *age
 	if success == nil {
 		return editResultWithoutPath(result)
 	}
+	compactSuccess := &agentv1.EditSuccess{
+		Path: firstNonEmpty(success.GetPath(), path),
+	}
+	if success.LinesAdded != nil {
+		compactSuccess.LinesAdded = int32Ptr(*success.LinesAdded)
+	}
+	if success.LinesRemoved != nil {
+		compactSuccess.LinesRemoved = int32Ptr(*success.LinesRemoved)
+	}
 	return &agentv1.EditResult{
 		Result: &agentv1.EditResult_Success{
-			Success: &agentv1.EditSuccess{
-				Path: firstNonEmpty(success.GetPath(), path),
-			},
+			Success: compactSuccess,
 		},
 	}
 }

@@ -130,6 +130,9 @@ func (service *Service) recoverExecWithoutTerminal(stream *ActiveStream, pending
 		}
 	}
 	markExecCompleted(stream, pending)
+	if pending.SilentUI {
+		return service.continueCursorToolOrReconcile(stream, pending.ToolCallID, silentNativeExecErrorMessage(pending, buildSyntheticExecResultPayload(pending, reason)))
+	}
 	if strings.TrimSpace(pending.ExecKind) == "subagent" {
 		service.updateNativeDelegationStatus(pending.ExecID, delegation.TaskTimedOut, "Cursor 子代理超时", strings.TrimSpace(reason))
 	}

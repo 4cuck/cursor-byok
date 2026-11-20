@@ -88,6 +88,8 @@ type ConversationProviderCall struct {
 }
 
 type HistoryEntry struct {
+	// NativeWebResult marks a Cursor-owned terminal card for reconnect display.
+	NativeWebResult  bool            `json:"native_web_result,omitempty"`
 	Seq              int64           `json:"seq"`
 	TurnSeq          int64           `json:"turn_seq"`
 	RequestID        string          `json:"request_id,omitempty"`
@@ -175,10 +177,19 @@ type ActiveStream struct {
 	// CursorInteractionReplies 把交互卡片的答案写回仍打开的 Cursor 账户 RunSSE。
 	CursorInteractionReplies chan *agentv1.InteractionResponse
 	// CursorInlineToolTurn 表示本次 provider pass 已把工具结果或交互卡片答案写回同一条上游流。
-	CursorInlineToolTurn         bool
-	cursorToolWaiting            bool
-	cursorToolDelivered          bool
-	nativeExecSlots              map[string]nativeExecSlot
+	CursorInlineToolTurn bool
+	cursorToolWaiting    bool
+	cursorToolDelivered  bool
+	nativeExecSlots      map[string]nativeExecSlot
+	// Approved web requests await only a display result, never another local action.
+	approvedCursorWeb map[string]runtimecore.PendingInteraction
+	// activeCursorEdits tracks upstream Cursor-owned EditToolCall cards whose
+	// low-level Read/Write execs run silently on the IDE.
+	activeCursorEdits map[string]cursorPendingEdit
+	// observedFileContents caches complete UTF-8 file snapshots seen via native
+	// Read/Write/Delete execs in this stream so standalone native Write fallback
+	// cards compute real before/after diffs instead of +N full-file adds.
+	observedFileContents map[string]observedFileSnapshot
 	CustomSystemPrompt           string
 	MaxMode                      bool
 	SubagentModelOverrides       map[string]runtimecore.SubagentModelOverrideSelection
