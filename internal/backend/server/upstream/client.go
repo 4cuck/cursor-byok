@@ -362,7 +362,7 @@ func handleMockOAuth(reqCtx *RequestContext, route *Route) error {
 	}{}
 	_ = json.Unmarshal(reqCtx.RequestBody, &payload)
 
-	// crsr_ 用户 API Key 不能直接当 access token 使用，必须先换成 IDE 面 JWT。
+	// crsr_ / grok_ 用户 API Key 不能直接当 access token 使用，必须先换成 IDE 面 JWT。
 	// 客户端把 refreshToken 原样发过来，这里就地完成换取，返回真实 JWT。
 	// refresh_token 必须仍是原始 key：exchange 出来的 JWT 大约一小时过期，
 	// 如果客户端把它存成 refresh token，下一次刷新会拿着过期 JWT 空转。

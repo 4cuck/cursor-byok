@@ -232,7 +232,7 @@ func writeIsolatedCursorAuthState(destinationPath string, values map[string]stri
 // InjectCursorUserInfo synchronizes the Cursor user-level auth cache used by the
 // Settings page. It does not modify the installed Cursor app bundle.
 // access 和 refresh 相同时用于占位会话；API Key 会话必须把短期 JWT 和原始
-// crsr_ key 分开写入，否则客户端一小时后会拿过期 JWT 去刷新。
+// crsr_ / grok_ key 分开写入，否则客户端一小时后会拿过期 JWT 去刷新。
 func InjectCursorUserInfo(email, accessToken, refreshToken string) error {
 	stateDBPath, err := resolveCursorStateDBPath()
 	if err != nil {
@@ -387,7 +387,7 @@ func cursorAuthBackupHasRealValue(backup map[string]any) bool {
 
 // isRotatedInjectedCursorAuth reports a previous cursor-byok injection.
 // Older injections stored the same JWT as access and refresh. API-key sessions
-// now store the short JWT as access and the crsr_ key as refresh. Either form
+// now store the short JWT as access and the crsr_ / grok_ key as refresh. Either form
 // can rotate the access token without becoming a new official login.
 func isRotatedInjectedCursorAuth(stateDBPath, injectedAccess, injectedRefresh string) bool {
 	db, err := sql.Open("sqlite", stateDBPath)

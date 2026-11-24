@@ -137,7 +137,23 @@ func (s *AccountStore) Upsert(value credentials) (CursorAccountSummary, error) {
 	if err := s.migrateIfNeededLocked(); err != nil {
 		return CursorAccountSummary{}, err
 	}
-	return s.upsertLocked(value)
+	return s.upsertLocked(value, false)
+}
+
+// UpsertReplacingCredentials stores credentials from an explicit user import or
+// OAuth login. Unlike Upsert (used by local state/backup readers), it replaces
+// any stale RefreshToken (including clearing it when importing a standalone JWT
+// or switching an account from a revoked API key back to OAuth).
+func (s *AccountStore) UpsertReplacingCredentials(value credentials) (CursorAccountSummary, error) {
+	if s == nil {
+		return CursorAccountSummary{}, fmt.Errorf("account store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.migrateIfNeededLocked(); err != nil {
+		return CursorAccountSummary{}, err
+	}
+	return s.upsertLocked(value, true)
 }
 
 func (s *AccountStore) LoadCurrentCredentials() (credentials, string, error) {
@@ -558,7 +574,7 @@ func (s *AccountStore) scanAccountFilesLocked() ([]accountRecord, error) {
 	return records, nil
 }
 
-func (s *AccountStore) upsertLocked(value credentials) (CursorAccountSummary, error) {
+func (s *AccountStore) upsertLocked(value credentials, replaceCredentials bool) (CursorAccountSummary, error) {
 	value.AccessToken = strings.TrimSpace(value.AccessToken)
 	value.RefreshToken = strings.TrimSpace(value.RefreshToken)
 	value.AuthID = strings.TrimSpace(value.AuthID)
@@ -600,7 +616,9 @@ func (s *AccountStore) upsertLocked(value credentials) (CursorAccountSummary, er
 			records[matched].AuthID = value.AuthID
 		}
 		records[matched].AccessToken = value.AccessToken
-		if value.RefreshToken != "" && (matchedByAuthID || records[matched].RefreshToken == "") && !keepDurableAPIKey(records[matched].RefreshToken, value.RefreshToken) {
+		if replaceCredentials {
+			records[matched].RefreshToken = value.RefreshToken
+		} else if value.RefreshToken != "" && (matchedByAuthID || records[matched].RefreshToken == "") && !keepDurableAPIKey(records[matched].RefreshToken, value.RefreshToken) {
 			records[matched].RefreshToken = value.RefreshToken
 		}
 		records[matched].LastUsedAt = now
@@ -702,7 +720,7 @@ func (s *AccountStore) setCurrentLocked(id string) (CursorAccountSummary, error)
 	return recordToSummary(record, true), nil
 }
 
-// keepDurableAPIKey 拒绝用短期 JWT 覆盖已保存的 crsr_ key。
+// keepDurableAPIKey 拒绝用短期 JWT 覆盖已保存的 crsr_ / grok_ key。
 // 那个 key 是唯一能在一小时后续期的凭据。
 func keepDurableAPIKey(existing, incoming string) bool {
 	return IsCursorAPIKey(existing) && incoming != "" && !IsCursorAPIKey(incoming)

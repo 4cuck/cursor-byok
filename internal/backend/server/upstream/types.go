@@ -46,7 +46,7 @@ type Dependencies struct {
 	// too many devices used the account in 24 hours. Optional.
 	DeviceLimitReporter DeviceLimitReporter
 	// SessionRefresher renews Cursor IDE sessions whose access token expired.
-	// Optional. Without it, /oauth/token echoes a non-crsr_ refresh token.
+	// Optional. Without it, /oauth/token echoes a non-API-key refresh token.
 	SessionRefresher SessionRefresher
 }
 

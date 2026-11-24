@@ -312,6 +312,25 @@ function persistAccountStatus() {
   }
 }
 
+function clearCachedAccountHealth(accountID) {
+  const id = String(accountID || "").trim();
+  if (!id) return;
+  if (healthByID.value[id]) {
+    const next = { ...healthByID.value };
+    delete next[id];
+    healthByID.value = next;
+  }
+  try {
+    const cache = readAccountStatusCache();
+    if (cache[id]?.health) {
+      cache[id] = { ...cache[id], health: null };
+      localStorage.setItem(accountStatusCacheKey, JSON.stringify(cache));
+    }
+  } catch {
+    /* ignore storage quota errors */
+  }
+}
+
 async function refreshAccountPlan(account) {
   if (!account?.id || isAccountLocked(account)) return;
   planLoadingIDs.value = { ...planLoadingIDs.value, [account.id]: true };
@@ -568,6 +587,7 @@ async function handleImport(mode) {
     busy.value = true;
     try {
       const imported = await importCursorAccount({ mode });
+      clearCachedAccountHealth(imported?.id);
       const synced = await syncCursorAccountModels(imported, "merge");
       await afterAccountChanged();
       if (synced.total > 0) {
@@ -600,6 +620,7 @@ async function confirmImport() {
     } else {
       imported = await importCursorAccount({ mode: "recovery_json", jsonContent: value });
     }
+    clearCachedAccountHealth(imported?.id);
     const synced = mode === "recovery_json"
       ? await syncCursorAccountModels(null, "all")
       : await syncCursorAccountModels(imported, "merge");
@@ -869,7 +890,7 @@ onBeforeUnmount(() => {
       >
         <span class="icon-[mdi--account-plus-outline] text-[36px] text-[#4a4a4a]" aria-hidden="true" />
         <p class="mt-3 text-sm text-[#a3a3a3]">No saved Cursor accounts yet</p>
-        <p class="mt-1 max-w-sm text-xs text-[#737373]">Add an OAuth login or crsr_ API key to sync official Cursor models and enable automatic multi-account failover.</p>
+        <p class="mt-1 max-w-sm text-xs text-[#737373]">Add an OAuth login or crsr_ / grok_ API key to sync official Cursor models and enable automatic multi-account failover.</p>
       </div>
 
       <div v-else class="flex flex-col gap-2">
@@ -1120,12 +1141,12 @@ onBeforeUnmount(() => {
       <div class="w-full max-w-[420px] rounded-[8px] border border-[#343434] bg-[#292929] p-5" role="dialog" aria-modal="true" :aria-label="importDialog === 'token' ? 'Import token' : 'Import recovery pack'">
         <h3 class="mb-3 text-base font-medium text-white">{{ importDialog === "token" ? "Import token" : "Import recovery pack" }}</h3>
         <p class="mb-3 text-sm text-[#a3a3a3]">
-          {{ importDialog === "token" ? "Paste a Cursor access token, or a crsr_ user API key from the dashboard (it is exchanged for an IDE session and renewed automatically). Cleared from memory immediately after submitting." : "Paste the recovery pack JSON. Cleared from memory immediately after submitting." }}
+          {{ importDialog === "token" ? "Paste a Cursor access token, or a crsr_ / grok_ user API key from the dashboard (it is exchanged for an IDE session and renewed automatically). Cleared from memory immediately after submitting." : "Paste the recovery pack JSON. Cleared from memory immediately after submitting." }}
         </p>
         <textarea
           v-model="importValue"
           class="mb-4 h-28 w-full rounded-[6px] border border-[#3f3f3f] bg-[#232323] p-2 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
-          :placeholder="importDialog === 'token' ? 'eyJ... or crsr_...' : '{ }'"
+          :placeholder="importDialog === 'token' ? 'eyJ..., crsr_..., or grok_...' : '{ }'"
           autocomplete="off"
         />
         <div class="flex justify-end gap-2">

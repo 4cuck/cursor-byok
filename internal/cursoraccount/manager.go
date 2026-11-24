@@ -249,7 +249,7 @@ func (manager *Manager) ImportFromLocal() (CursorAccountSummary, error) {
 		RefreshToken: creds.RefreshToken,
 		AuthID:       creds.AuthID,
 		Email:        creds.Email,
-	})
+	}, false)
 }
 
 func (manager *Manager) ImportToken(ctx context.Context, raw string) (CursorAccountSummary, error) {
@@ -263,7 +263,10 @@ func (manager *Manager) ImportToken(ctx context.Context, raw string) (CursorAcco
 	if len(raw) > maxImportTokenBytes {
 		return CursorAccountSummary{}, accountError("account_import_too_large", "import token exceeds 8 kib")
 	}
-	// crsr_ 用户 API Key 需要先换成 IDE 面 JWT，原始 key 作为续期凭据保留。
+	if isXAIAPIKey(raw) {
+		return CursorAccountSummary{}, accountError("account_import_xai_api_key", "xai- keys are xAI Console API keys, not Cursor account keys")
+	}
+	// crsr_ / grok_ 用户 API Key 需要先换成 IDE 面 JWT，原始 key 作为续期凭据保留。
 	creds := credentials{AccessToken: raw}
 	if IsCursorAPIKey(raw) {
 		exchanged, err := manager.ExchangeCursorAPIKey(ctx, raw)
@@ -276,6 +279,9 @@ func (manager *Manager) ImportToken(ctx context.Context, raw string) (CursorAcco
 		creds.Email = strings.TrimSpace(profile.GetEmail())
 		creds.AuthID = strings.TrimSpace(profile.GetAuthId())
 	}
+	if creds.AuthID == "" && IsCursorAPIKey(raw) {
+		creds.AuthID = subjectFromJWT(creds.AccessToken)
+	}
 	if creds.Email == "" && creds.AuthID == "" {
 		return CursorAccountSummary{}, accountError("account_import_identity_unavailable", "account identity is unavailable")
 	}
@@ -284,13 +290,16 @@ func (manager *Manager) ImportToken(ctx context.Context, raw string) (CursorAcco
 		RefreshToken: creds.RefreshToken,
 		AuthID:       creds.AuthID,
 		Email:        creds.Email,
-	})
+	}, true)
 }
 
-// normalizeImportedAPIKey 把导入记录里的 crsr_ key 换成 IDE 面 JWT。
+// normalizeImportedAPIKey 把导入记录里的 crsr_ / grok_ key 换成 IDE 面 JWT。
 // 识别位置有两处：accessToken 直接是 key，或 refreshToken 是 key 而
 // accessToken 是派生的短期 JWT。后者已经是可用形态，只需保持原样。
 func (manager *Manager) normalizeImportedAPIKey(ctx context.Context, account importedAccount) (importedAccount, error) {
+	if isXAIAPIKey(account.AccessToken) || isXAIAPIKey(account.RefreshToken) {
+		return importedAccount{}, accountError("account_import_xai_api_key", "xai- keys are xAI Console API keys, not Cursor account keys")
+	}
 	switch {
 	case IsCursorAPIKey(account.AccessToken):
 		exchanged, err := manager.ExchangeCursorAPIKey(ctx, account.AccessToken)
@@ -318,13 +327,13 @@ func (manager *Manager) ImportJSON(content string) ([]CursorAccountSummary, erro
 	ctx := context.Background()
 	summaries := make([]CursorAccountSummary, 0, len(accounts))
 	for _, account := range accounts {
-		// 恢复包里若直接带 crsr_ key，先换成 IDE 面 JWT，避免把原始 key
+		// 恢复包里若直接带 crsr_ / grok_ key，先换成 IDE 面 JWT，避免把原始 key
 		// 当 Bearer 发出去。
 		normalized, err := manager.normalizeImportedAPIKey(ctx, account)
 		if err != nil {
 			return nil, err
 		}
-		summary, err := manager.adoptImported(normalized)
+		summary, err := manager.adoptImported(normalized, true)
 		if err != nil {
 			return nil, err
 		}
@@ -587,7 +596,7 @@ func (manager *Manager) AccountIsLocked(accountID string) bool {
 	return recordToSummary(record, record.ID == manager.store.CurrentAccountID()).IsLocked(time.Now())
 }
 
-// UsesAPIKey reports whether the account's durable credential is a crsr_ key.
+// UsesAPIKey reports whether the account's durable credential is a Cursor API key (crsr_ or grok_).
 func (manager *Manager) UsesAPIKey(accountID string) bool {
 	if manager == nil || manager.store == nil {
 		return false
@@ -605,7 +614,7 @@ func (manager *Manager) UsesAPIKey(accountID string) bool {
 
 // ForceRefresh exchanges a new access token even when the stored JWT has not
 // reached its exp claim. Cursor can reject an api_key_token before it expires;
-// the raw crsr_ key is still able to mint a replacement.
+// the raw crsr_ / grok_ key is still able to mint a replacement.
 func (manager *Manager) ForceRefresh(ctx context.Context, accountID string) (string, error) {
 	if manager == nil || manager.store == nil {
 		return "", ErrNotSignedIn
@@ -661,7 +670,12 @@ func (manager *Manager) forceRefreshCurrent(ctx context.Context) (string, error)
 		return "", fmt.Errorf("current account changed during refresh")
 	}
 	if shouldLogout {
-		manager.invalidateAuthorization(generation, "Cursor session is no longer valid. Sign in again.")
+		// ForceRefresh is invoked speculatively on still-unexpired tokens
+		// (e.g., after a transient dashboard error). Only wipe the active
+		// account if the stored access token itself is already expired.
+		if tokenNeedsRefresh(creds.AccessToken, time.Now()) {
+			manager.invalidateAuthorization(generation, "Cursor session is no longer valid. Sign in again.")
+		}
 		return "", ErrNotSignedIn
 	}
 	if err := manager.store.UpdateCredentials(accountID, updated); err != nil {
@@ -742,7 +756,7 @@ func (manager *Manager) authorizationLocked(ctx context.Context) (string, error)
 }
 
 // CurrentRefreshToken 返回当前账号的长期续期凭据。
-// API Key 账号是原始 crsr_ key，OAuth 账号是 refresh token。它不是短期 access JWT。
+// API Key 账号是原始 crsr_ / grok_ key，OAuth 账号是 refresh token。它不是短期 access JWT。
 func (manager *Manager) CurrentRefreshToken() string {
 	if manager == nil || manager.store == nil {
 		return ""
@@ -770,14 +784,33 @@ func (manager *Manager) RefreshPresentedToken(ctx context.Context, presented str
 	}
 	manager.refreshMu.Lock()
 	defer manager.refreshMu.Unlock()
-	updated, shouldLogout, err := manager.refresh(ctx, matches[0].Creds)
+	match := matches[0]
+	now := time.Now()
+	// Cursor IDE's refresh margin is ~53 days, so any 60-day JWT older than 7
+	// days triggers periodic /oauth/token calls. When the stored access token is
+	// still unexpired, never call upstream /oauth/token or overwrite it on disk:
+	// either hand back the fresher stored token or let the mock echo presented.
+	if match.Creds.AccessToken != "" && !tokenNeedsRefresh(match.Creds.AccessToken, now) {
+		if match.Creds.AccessToken != presented {
+			refresh := strings.TrimSpace(match.Creds.RefreshToken)
+			if refresh == "" {
+				refresh = match.Creds.AccessToken
+			}
+			return match.Creds.AccessToken, refresh, true
+		}
+		return "", "", false
+	}
+	if !IsCursorAPIKey(match.Creds.RefreshToken) && !isRefreshableOAuthToken(match.Creds.RefreshToken) {
+		return "", "", false
+	}
+	updated, shouldLogout, err := manager.refresh(ctx, match.Creds)
 	if err != nil || shouldLogout || strings.TrimSpace(updated.AccessToken) == "" {
 		return "", "", false
 	}
-	if err := manager.store.UpdateCredentials(matches[0].ID, updated); err != nil {
+	if err := manager.store.UpdateCredentials(match.ID, updated); err != nil {
 		return "", "", false
 	}
-	if manager.store.CurrentAccountID() == matches[0].ID {
+	if manager.store.CurrentAccountID() == match.ID {
 		_, generation := manager.snapshotCredentials()
 		manager.syncMemoryCredentials(updated, generation)
 	}
@@ -894,7 +927,7 @@ func (manager *Manager) pollOnce(ctx context.Context, loginID string, verifier s
 }
 
 // refresh 按凭据种类分派续期：
-//   - crsr_ 用户 API Key：用原始 key 重新 exchange，永不调用 /oauth/token
+//   - crsr_ / grok_ 用户 API Key：用原始 key 重新 exchange，永不调用 /oauth/token
 //   - WorkOS OAuth：走 /oauth/token 的 refresh_token 授权
 //
 // 两者语义不同：API Key 没有 shouldLogout 概念（key 被撤销时 exchange 直接 401），
@@ -911,6 +944,9 @@ func (manager *Manager) refresh(ctx context.Context, current credentials) (crede
 }
 
 func (manager *Manager) refreshOAuth(ctx context.Context, current credentials) (credentials, bool, error) {
+	if !isRefreshableOAuthToken(current.RefreshToken) {
+		return credentials{}, false, fmt.Errorf("Cursor session has no refreshable OAuth token")
+	}
 	payload, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
 		"client_id":     authClientID,
@@ -1097,17 +1133,23 @@ func (manager *Manager) readLocalCursorAuth() (credentials, error) {
 	}, nil
 }
 
-func (manager *Manager) adoptImported(account importedAccount) (CursorAccountSummary, error) {
+func (manager *Manager) adoptImported(account importedAccount, replaceCredentials bool) (CursorAccountSummary, error) {
 	tags, err := normalizeTags(account.Tags)
 	if err != nil {
 		return CursorAccountSummary{}, err
 	}
-	summary, err := manager.store.Upsert(credentials{
+	creds := credentials{
 		AccessToken:  account.AccessToken,
 		RefreshToken: account.RefreshToken,
 		AuthID:       account.AuthID,
 		Email:        account.Email,
-	})
+	}
+	var summary CursorAccountSummary
+	if replaceCredentials {
+		summary, err = manager.store.UpsertReplacingCredentials(creds)
+	} else {
+		summary, err = manager.store.Upsert(creds)
+	}
 	if err != nil {
 		return CursorAccountSummary{}, err
 	}
@@ -1117,11 +1159,14 @@ func (manager *Manager) adoptImported(account importedAccount) (CursorAccountSum
 			return CursorAccountSummary{}, err
 		}
 	}
-	if strings.TrimSpace(manager.store.CurrentAccountID()) == "" {
+	currentID := strings.TrimSpace(manager.store.CurrentAccountID())
+	if currentID == "" {
 		summary, err = manager.store.SetCurrent(summary.ID)
 		if err != nil {
 			return CursorAccountSummary{}, err
 		}
+		manager.adoptCurrentFromStore()
+	} else if currentID == summary.ID {
 		manager.adoptCurrentFromStore()
 	}
 	return summary, nil
@@ -1168,18 +1213,21 @@ func (manager *Manager) commitOAuthCredentials(generation uint64, value credenti
 		return ErrNotSignedIn
 	}
 	previous := manager.credentials
-	summary, err := manager.store.Upsert(value)
+	summary, err := manager.store.UpsertReplacingCredentials(value)
 	if err != nil {
 		manager.state = StateError
 		manager.lastError = fmt.Sprintf("Failed to save Cursor login credentials: %v", err)
 		return err
 	}
-	if strings.TrimSpace(manager.store.CurrentAccountID()) == "" {
+	currentID := strings.TrimSpace(manager.store.CurrentAccountID())
+	if currentID == "" {
 		if _, err := manager.store.SetCurrent(summary.ID); err != nil {
 			manager.state = StateError
 			manager.lastError = fmt.Sprintf("Failed to save Cursor login credentials: %v", err)
 			return err
 		}
+		manager.credentials = value
+	} else if currentID == summary.ID {
 		manager.credentials = value
 	} else {
 		manager.credentials = previous
@@ -1262,16 +1310,9 @@ func bearer(token string) string {
 }
 
 func subjectFromJWT(token string) string {
-	parts := strings.Split(strings.TrimSpace(token), ".")
-	if len(parts) < 2 {
+	payload, ok := decodeJWTPayload(token)
+	if !ok {
 		return ""
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		payload, err = base64.URLEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
-		}
 	}
 	claims := struct {
 		Subject string `json:"sub"`
@@ -1280,6 +1321,58 @@ func subjectFromJWT(token string) string {
 		return ""
 	}
 	return strings.TrimSpace(claims.Subject)
+}
+
+// JWTTokenType returns the "type" claim of a Cursor JWT (e.g. "session", "web",
+// "api_key_token"), or "" when absent or not a JWT. Accepts an optional "Bearer " prefix.
+func JWTTokenType(token string) string {
+	value := strings.TrimSpace(token)
+	if len(value) >= 7 && strings.EqualFold(value[:7], "bearer ") {
+		value = strings.TrimSpace(value[7:])
+	}
+	payload, ok := decodeJWTPayload(value)
+	if !ok {
+		return ""
+	}
+	claims := struct {
+		Type string `json:"type"`
+	}{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(claims.Type))
+}
+
+func decodeJWTPayload(token string) ([]byte, bool) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 {
+		return nil, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return nil, false
+		}
+	}
+	return payload, true
+}
+
+// isRefreshableOAuthToken reports whether refreshToken can be presented to
+// api2.cursor.sh/oauth/token. Empty values, raw API keys, browser web-cookie
+// JWTs (type="web"), and short-lived api_key_token JWTs cannot be refreshed via
+// /oauth/token (Cursor responds with shouldLogout=true for those).
+func isRefreshableOAuthToken(refreshToken string) bool {
+	value := strings.TrimSpace(refreshToken)
+	if value == "" || IsCursorAPIKey(value) {
+		return false
+	}
+	switch JWTTokenType(value) {
+	case "web", "api_key_token":
+		return false
+	default:
+		return true
+	}
 }
 
 func tokenNeedsRefresh(token string, now time.Time) bool {

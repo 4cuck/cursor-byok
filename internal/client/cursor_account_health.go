@@ -160,7 +160,11 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 		}
 	case result.Code == "ERROR_NOT_LOGGED_IN" || result.Code == "ERROR_USER_NOT_LOGGED_IN":
 		health.State = HealthStateExpired
-		health.Message = "The session is no longer valid. Re-import the account."
+		if cursoraccount.JWTTokenType(authorization) == "web" {
+			health.Message = "This token is a cursor.com browser cookie (type=web). Dashboard/model listing accepts it, but model calls reject web cookies. Use Official OAuth sign-in, Import from local Cursor (type=session), or a crsr_ / grok_ API key instead."
+		} else {
+			health.Message = "The session is no longer valid. Re-import the account."
+		}
 	case isClientVersionGate(result):
 		health.State = HealthStateError
 		health.Message = cursorVersionGateMessage(result)

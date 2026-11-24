@@ -1,3 +1,19 @@
+## v1.0.52
+
+### Added
+
+- **Support for Cursor's fine-grained `grok_` personal User API keys**:
+  - `grok_` dashboard keys (`grok_<id>_<secret>`) are now recognized alongside legacy `crsr_` keys for import, `/auth/exchange_user_api_key` token exchange, automatic renewal, `/oauth/token` mock refresh, recovery packs, key rotation (`crsr_` → `grok_`), and UI secret redaction.
+  - Added a local guard rejecting xAI Console `xai-...` keys during Cursor account import without sending them to Cursor's servers, directing users to the third-party **xAI (Grok)** supplier instead.
+
+### Fixed
+
+- **Imported Cursor JWTs no longer become invalid or lose their session after ~15 minutes**:
+  - Explicit token/OAuth imports now clear or replace any stale `refreshToken` (such as an older `crsr_` key) instead of keeping it on the account record.
+  - `/oauth/token` session refresh (`RefreshPresentedToken`) no longer overwrites unexpired 60-day JWTs when Cursor IDE's 53-day refresh margin triggers periodic refresh polls.
+  - Speculative `ForceRefresh` no longer wipes the active account (`current.json`) on `shouldLogout` while the stored access token is still unexpired, and non-refreshable tokens (`type=web`, `type=api_key_token`, empty) are never sent to `/oauth/token`.
+  - Plan refreshes now only invoke `ForceRefresh` on HTTP 401/403 or API-key accounts, re-importing clears stale cached health badges, and health checks explain when a pasted token is a `type=web` browser cookie rejected by model endpoints.
+
 ## v1.0.51
 
 ### Fixed
@@ -28,11 +44,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.51-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.51-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.51-windows-arm64-installer.exe` 或 `cursor-byok-1.0.51-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.51-windows-x32-installer.exe` 或 `cursor-byok-1.0.51-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.51-macos-arm64.dmg` 或 `cursor-byok-1.0.51-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.51-macos-x64.dmg` 或 `cursor-byok-1.0.51-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.51-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.52-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.52-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.52-windows-arm64-installer.exe` 或 `cursor-byok-1.0.52-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.52-windows-x32-installer.exe` 或 `cursor-byok-1.0.52-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.52-macos-arm64.dmg` 或 `cursor-byok-1.0.52-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.52-macos-x64.dmg` 或 `cursor-byok-1.0.52-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.52-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

@@ -39,7 +39,8 @@ const ACCOUNT_ERROR_MESSAGES = new Map([
   ["account_import_api_key_unreachable", "Could not reach Cursor. Check your network or proxy."],
   ["account_import_api_key_invalid_response", "Cursor returned an unexpected response for this API key."],
   ["account_import_identity_unavailable", "Could not read this account's identity. Verify the credential is valid."],
-  ["account_import_invalid_api_key", "API key format is invalid. It must start with crsr_."],
+  ["account_import_invalid_api_key", "API key format is invalid. It must start with crsr_ or grok_."],
+  ["account_import_xai_api_key", "This is an xAI Console API key (xai-...). Add it under Third-party suppliers → xAI (Grok) instead; Cursor accounts use a crsr_ or grok_ dashboard key or OAuth sign-in."],
   ["account_import_empty", "No credential was provided."],
   ["account_import_too_large", "The credential is too large."],
   ["account_import_invalid_schema", "The import file does not match the expected format."],
@@ -92,6 +93,8 @@ function redactTechnicalText(raw) {
   return text
     .replace(/(authorization\s*[=:]\s*)(?:bearer\s+)?[^\s,;&?#]+/gi, "$1[redacted]")
     .replace(/\bcrsr_[A-Za-z0-9_-]+/g, "crsr_[redacted]")
+    .replace(/\bgrok_(?:[0-9a-fA-F]{16,}(?:_[0-9a-fA-F]{16,})+|(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{12,})/g, "grok_[redacted]")
+    .replace(/\bxai-[A-Za-z0-9]{20,}\b/g, "xai-[redacted]")
     .replace(/([?&](?:api[_-]?key|token|secret|password)=)[^&\s]*/gi, "$1[redacted]")
     .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;&?#]+/gi, "$1[redacted]")
     .slice(0, 1000);

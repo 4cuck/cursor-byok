@@ -109,7 +109,7 @@ func (s *ProxyService) StartProxy() (ProxyState, error) {
 	logPhase("proxy-ensure")
 
 	// 启动时注入账号信息。
-	// 已导入 Cursor 账号（OAuth 或 crsr_ API Key）时注入真实身份：官方上游模式下
+	// 已导入 Cursor 账号（OAuth 或 crsr_ / grok_ API Key）时注入真实身份：官方上游模式下
 	// Cursor 客户端会用这个 token 直连 api2.cursor.sh，占位 token 会被拒绝并弹出登录页。
 	// 只有完全未配置账号时才退回本地模拟身份。注入失败不改写已有凭据。
 	if err := s.reinjectActiveCursorAccount(); err != nil {
@@ -179,7 +179,7 @@ func (s *ProxyService) reinjectActiveCursorAccount() error {
 		if accessToken == "" {
 			return fmt.Errorf("cursor account has no access token")
 		}
-		// 续期凭据必须和短期 access token 分开写入。API Key 的 refresh 是 crsr_ key，
+		// 续期凭据必须和短期 access token 分开写入。API Key 的 refresh 是 crsr_ / grok_ key，
 		// OAuth 的 refresh 是长期 refresh token。两者都写成 access token 时，
 		// Cursor 大约一小时后会拿过期 JWT 调 /oauth/token，模型随之失效。
 		if durable := strings.TrimSpace(s.cursorAccount.CurrentRefreshToken()); durable != "" {

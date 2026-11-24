@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"cursor/internal/backend/server/upstream"
 )
 
-// Cursor 用户 API Key（Dashboard → API Keys，前缀 crsr_）不是 IDE 直接可用的
-// Bearer 凭据：api2.cursor.sh 的 aiserver.v1.* 只接受 WorkOS JWT。
+// Cursor 用户 API Key（Dashboard → API Keys，旧版前缀 crsr_，新版细粒度前缀 grok_）
+// 不是 IDE 直接可用的 Bearer 凭据：api2.cursor.sh 的 aiserver.v1.* 只接受 WorkOS JWT。
 //
 // 两者之间的桥是 /auth/exchange_user_api_key：Authorization 用原始 key，
 // body 是空 JSON 对象，换一对
@@ -18,18 +20,27 @@ import (
 // 有效期约 1 小时。该 JWT 可直接作为 IDE 控制面与模型面的 Bearer 身份。
 //
 // 关键约束：/oauth/token 无法续期这类 token（返回 shouldLogout=true），
-// 所以续期只能「用原始 key 重新 exchange」。因此账号库里把原始 crsr_ key
+// 所以续期只能「用原始 key 重新 exchange」。因此账号库里把原始 API Key
 // 存进 RefreshToken 字段——它是唯一可长期复用的续期凭据，而 AccessToken
 // 保存派生出的短期 JWT。
 const (
-	cursorAPIKeyPrefix        = "crsr_"
+	xaiAPIKeyPrefix           = "xai-"
 	apiKeyExchangePath        = "/auth/exchange_user_api_key"
 	maxAPIKeyExchangeRespSize = 64 * 1024
 )
 
-// IsCursorAPIKey 判断一个字符串是否是 Cursor 用户 API Key。
+// IsCursorAPIKey 判断一个字符串是否是 Cursor 用户 API Key（crsr_ 或 grok_）。
 func IsCursorAPIKey(raw string) bool {
-	return strings.HasPrefix(strings.TrimSpace(raw), cursorAPIKeyPrefix)
+	return upstream.IsCursorAPIKey(raw)
+}
+
+func isXAIAPIKey(raw string) bool {
+	value := strings.TrimSpace(raw)
+	if !strings.HasPrefix(value, xaiAPIKeyPrefix) {
+		return false
+	}
+	suffix := value[len(xaiAPIKeyPrefix):]
+	return suffix != "" && !strings.ContainsAny(suffix, " \t\r\n")
 }
 
 type apiKeyExchangeResponse struct {
@@ -37,12 +48,12 @@ type apiKeyExchangeResponse struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
-// ExchangeCursorAPIKey 把 crsr_ key 换成 IDE 面可用的短期 JWT。
+// ExchangeCursorAPIKey 把 crsr_ / grok_ key 换成 IDE 面可用的短期 JWT。
 // 返回的 credentials 保留原始 key 作为续期凭据。
 func (manager *Manager) ExchangeCursorAPIKey(ctx context.Context, apiKey string) (credentials, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if !IsCursorAPIKey(apiKey) {
-		return credentials{}, accountError("account_import_invalid_api_key", "cursor api key must start with crsr_")
+		return credentials{}, accountError("account_import_invalid_api_key", "cursor api key must start with crsr_ or grok_")
 	}
 	// The agent host sends Authorization: Bearer <api key> and an empty JSON
 	// object. The key is not a body field. See loginWithApiKey in

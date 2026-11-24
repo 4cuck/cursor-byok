@@ -165,3 +165,67 @@ func TestMockOAuthRenewsExpiredSessionToken(t *testing.T) {
 		t.Fatalf("refresh_token = %v, want durable api key", response["refresh_token"])
 	}
 }
+
+func TestMockOAuthExchangesGrokAPIKey(t *testing.T) {
+	const exchangedJWT = "eyJhbGciOiJIUzI1NiJ9.grok-exchanged.sig"
+	grokKey := "grok_" + strings.Repeat("a", 32) + "_" + strings.Repeat("b", 64)
+	var calledExchange bool
+	client := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		if !strings.Contains(req.URL.Path, "exchange_user_api_key") {
+			t.Fatalf("unexpected upstream call: %s", req.URL)
+		}
+		calledExchange = true
+		if got := req.Header.Get("authorization"); got != "Bearer "+grokKey {
+			t.Fatalf("authorization = %q", got)
+		}
+		payload, err := json.Marshal(map[string]string{
+			"accessToken":  exchangedJWT,
+			"refreshToken": exchangedJWT,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(string(payload))),
+			Request:    req,
+		}, nil
+	})
+
+	reqCtx, recorder := newOAuthTestContext(client, `{"grant_type":"refresh_token","refresh_token":"`+grokKey+`"}`)
+	if err := handleMockOAuth(reqCtx, &Route{}); err != nil {
+		t.Fatalf("handleMockOAuth: %v", err)
+	}
+	if !calledExchange {
+		t.Fatal("grok_ refresh token must trigger an exchange")
+	}
+	response := decodeOAuthResponse(t, recorder)
+	if response["access_token"] != exchangedJWT {
+		t.Fatalf("access_token = %v, want exchanged JWT", response["access_token"])
+	}
+	if response["refresh_token"] != grokKey {
+		t.Fatalf("refresh_token = %v, want the original grok_ api key", response["refresh_token"])
+	}
+	if response["shouldLogout"] != false {
+		t.Fatalf("shouldLogout = %v, want false", response["shouldLogout"])
+	}
+}
+
+func TestIsCursorAPIKeyUpstream(t *testing.T) {
+	cases := map[string]bool{
+		"crsr_abcdef":                                                    true,
+		"grok_abcdef":                                                    true,
+		"grok_" + strings.Repeat("1", 32) + "_" + strings.Repeat("2", 64): true,
+		"crsr_":                                                          false,
+		"grok_":                                                          false,
+		"grok_st|sub_123":                                                false,
+		"xai-" + strings.Repeat("A", 80):                                 false,
+		"opaque-refresh":                                                 false,
+	}
+	for input, want := range cases {
+		if got := IsCursorAPIKey(input); got != want {
+			t.Fatalf("IsCursorAPIKey(%q) = %v, want %v", input, got, want)
+		}
+	}
+}

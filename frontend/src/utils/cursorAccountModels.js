@@ -1,7 +1,7 @@
 // Turns the models exposed by the signed-in Cursor account into
 // `cursor_account` model adapters.
 //
-// Why this exists: importing a `crsr_` API key gives cursor-byok a usable
+// Why this exists: importing a `crsr_` or `grok_` API key gives cursor-byok a usable
 // upstream identity, but the model list is empty, so nothing can be routed to
 // it. Once the account's catalog is known, adapters can be materialized and the
 // user can pick between the official upstream and third-party suppliers in the

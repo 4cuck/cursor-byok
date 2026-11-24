@@ -45,3 +45,14 @@ test("toUserError maps rejected API keys to readable English", () => {
 
   assert.equal(text, "This API key is invalid or has been revoked.");
 });
+
+test("toUserError maps invalid Cursor API key and xAI Console key errors", () => {
+  assert.equal(
+    toUserError(new Error("account_import_invalid_api_key: cursor api key must start with crsr_ or grok_")),
+    "API key format is invalid. It must start with crsr_ or grok_.",
+  );
+  assert.match(
+    toUserError(new Error("account_import_xai_api_key: xai- keys are xAI Console API keys, not Cursor account keys")),
+    /xAI Console API key.*Third-party suppliers.*crsr_ or grok_/,
+  );
+});

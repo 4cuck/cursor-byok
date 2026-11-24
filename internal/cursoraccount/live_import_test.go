@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// 用真实 api2.cursor.sh 验证「导入 crsr_ key → 可用身份 → 自动续期」整条链路。
-// 运行：$env:CURSOR_LIVE_API_KEY='crsr_...'; go test -tags liveprobe -run TestLiveImport -v ./internal/cursoraccount/
+// 用真实 api2.cursor.sh 验证「导入 crsr_ / grok_ key → 可用身份 → 自动续期」整条链路。
+// 运行：$env:CURSOR_LIVE_API_KEY='grok_...'; go test -tags liveprobe -run TestLiveImport -v ./internal/cursoraccount/
 func TestLiveImport(t *testing.T) {
 	apiKey := os.Getenv("CURSOR_LIVE_API_KEY")
 	if apiKey == "" {

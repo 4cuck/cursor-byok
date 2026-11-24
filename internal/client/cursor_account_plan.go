@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 )
+
+var errPlanAuthRejected = errors.New("cursor plan lookup rejected credentials")
 
 // CursorAccountPlan is the non-secret plan and included-usage snapshot for one
 // Cursor account. Amounts are cents, matching Cursor's dashboard fields, plus
@@ -95,7 +98,7 @@ func (s *ProxyService) loadCursorAccountPlan(ctx context.Context, accountID stri
 		return CursorAccountPlan{Message: "Could not authorize this account."}, nil
 	}
 	plan, err := fetchCursorAccountPlan(ctx, authorization)
-	if err != nil && resolvedID != "" {
+	if err != nil && resolvedID != "" && (errors.Is(err, errPlanAuthRejected) || s.cursorAccount.UsesAPIKey(resolvedID)) {
 		if renewed, refreshErr := s.cursorAccount.ForceRefresh(ctx, resolvedID); refreshErr == nil {
 			plan, err = fetchCursorAccountPlan(ctx, renewed)
 		}
@@ -121,10 +124,14 @@ func fetchCursorAccountPlan(ctx context.Context, authorization string) (CursorAc
 	var usage *aiserverv1.GetCurrentPeriodUsageResponse
 	var stripe cursorStripeProfile
 	var failures int
+	var authRejected bool
 
 	info := &aiserverv1.GetPlanInfoResponse{}
 	if err := postCursorDashboard(ctx, authorization, "/aiserver.v1.DashboardService/GetPlanInfo", &aiserverv1.GetPlanInfoRequest{}, info); err != nil {
 		failures++
+		if errors.Is(err, errPlanAuthRejected) {
+			authRejected = true
+		}
 	} else {
 		planInfo = info
 	}
@@ -132,15 +139,24 @@ func fetchCursorAccountPlan(ctx context.Context, authorization string) (CursorAc
 	period := &aiserverv1.GetCurrentPeriodUsageResponse{}
 	if err := postCursorDashboard(ctx, authorization, "/aiserver.v1.DashboardService/GetCurrentPeriodUsage", &aiserverv1.GetCurrentPeriodUsageRequest{}, period); err != nil {
 		failures++
+		if errors.Is(err, errPlanAuthRejected) {
+			authRejected = true
+		}
 	} else {
 		usage = period
 	}
 
 	if err := getCursorStripeProfile(ctx, authorization, &stripe); err != nil {
 		failures++
+		if errors.Is(err, errPlanAuthRejected) {
+			authRejected = true
+		}
 	}
 
 	if failures == 3 {
+		if authRejected {
+			return CursorAccountPlan{}, fmt.Errorf("cursor plan lookup failed: %w", errPlanAuthRejected)
+		}
 		return CursorAccountPlan{}, fmt.Errorf("cursor plan lookup failed")
 	}
 	return buildCursorAccountPlan(planInfo, usage, stripe), nil
@@ -180,6 +196,9 @@ func postCursorDashboard(ctx context.Context, authorization, path string, reques
 	if err != nil {
 		return err
 	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("cursor dashboard returned HTTP %d: %w", resp.StatusCode, errPlanAuthRejected)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("cursor dashboard returned HTTP %d", resp.StatusCode)
 	}
@@ -201,6 +220,9 @@ func getCursorStripeProfile(ctx context.Context, authorization string, profile *
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, cursorHealthMaxBytes))
 	if err != nil {
 		return err
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("stripe profile returned HTTP %d: %w", resp.StatusCode, errPlanAuthRejected)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("stripe profile returned HTTP %d", resp.StatusCode)
