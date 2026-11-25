@@ -93,24 +93,11 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 			return lastErr
 		}
 
-		err := gateway.streamAuthorizedForAccount(ctx, req, accountID, authorization, output)
+		err := gateway.streamAccountAttempt(ctx, req, accountID, authorization, modelID, output)
 		if err == nil {
 			// A served turn proves this account has usage left for this model again.
 			ClearCursorAccountModelExhausted(accountID, modelID)
 			return nil
-		}
-
-		// A turn that already streamed text or a tool call is not replayed:
-		// the caller would see that output twice.
-		if !output.forwarded && cursorAccountAuthRejected(err) && cursorAccountUsesAPIKey(gateway.auth, accountID) {
-			if renewed, refreshErr := cursorAccountForceRefresh(ctx, gateway.auth, accountID); refreshErr == nil {
-				if retryErr := gateway.streamAuthorizedForAccount(ctx, req, accountID, renewed, output); retryErr == nil {
-					ClearCursorAccountModelExhausted(accountID, modelID)
-					return nil
-				} else {
-					err = retryErr
-				}
-			}
 		}
 
 		lastErr = err
@@ -128,7 +115,7 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 			if alt := unlockedCurrentCursorAccount(gateway.auth, accountID); alt != "" {
 				logger.Infof("cursor account model skipped device-locked account=%s using current=%s", accountID, alt)
 				if altAuth, altErr := gateway.authorize(ctx, alt); altErr == nil {
-					if retryErr := gateway.streamAuthorizedForAccount(ctx, req, alt, altAuth, output); retryErr == nil {
+					if retryErr := gateway.streamAccountAttempt(ctx, req, alt, altAuth, modelID, output); retryErr == nil {
 						ClearCursorAccountModelExhausted(alt, modelID)
 						return nil
 					}
@@ -150,7 +137,7 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 			if alt := alternateCursorAccountForModel(gateway.auth, accountID, modelID); alt != "" {
 				logger.Infof("cursor account model refused account=%s model=%s; retrying with account=%s", accountID, modelID, alt)
 				if altAuth, altErr := gateway.authorize(ctx, alt); altErr == nil {
-					if retryErr := gateway.streamAuthorizedForAccount(ctx, req, alt, altAuth, output); retryErr == nil {
+					if retryErr := gateway.streamAccountAttempt(ctx, req, alt, altAuth, modelID, output); retryErr == nil {
 						ClearCursorAccountModelExhausted(alt, modelID)
 						return nil
 					}
@@ -167,6 +154,39 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 		return lastErr
 	}
 	return lastErr
+}
+
+// streamAccountAttempt runs one turn on a single Cursor account with in-place
+// recovery for expired API-key JWTs and unacknowledged model data-retention
+// policies (such as Claude Fable 5 / 5.1 / 5.2 under Privacy Mode).
+func (gateway *cursorAccountGateway) streamAccountAttempt(ctx context.Context, req StreamRequest, accountID, authorization, modelID string, output *cursorAccountOutput) error {
+	err := gateway.streamAuthorizedForAccount(ctx, req, accountID, authorization, output)
+	if err == nil {
+		return nil
+	}
+
+	// A turn that already streamed text or a tool call is not replayed:
+	// the caller would see that output twice.
+	if !output.forwarded && cursorAccountAuthRejected(err) && cursorAccountUsesAPIKey(gateway.auth, accountID) {
+		if renewed, refreshErr := cursorAccountForceRefresh(ctx, gateway.auth, accountID); refreshErr == nil {
+			authorization = renewed
+			if retryErr := gateway.streamAuthorizedForAccount(ctx, req, accountID, renewed, output); retryErr == nil {
+				return nil
+			} else {
+				err = retryErr
+			}
+		}
+	}
+
+	if !output.forwarded && cursorAccountNeedsDataRetentionConsent(err) {
+		if recovered, retryErr := gateway.retryAfterDataRetentionConsent(ctx, req, accountID, authorization, modelID, output, err); recovered {
+			return nil
+		} else if retryErr != nil {
+			err = retryErr
+		}
+	}
+
+	return err
 }
 
 // cursorAccountOutput forwards model events and records whether the caller
@@ -252,7 +272,7 @@ func (gateway *cursorAccountGateway) streamAuthorizedOnce(ctx context.Context, r
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return fmt.Errorf("cursor agent stream returned HTTP %d: %s", resp.StatusCode, cursorAccountErrorText(raw))
+		return newCursorAccountRefusalError(fmt.Sprintf("cursor agent stream returned HTTP %d: ", resp.StatusCode), raw)
 	}
 
 	appendFrame := gateway.newStreamAppender(accountID, requestID, authorization).append
@@ -368,7 +388,7 @@ func cursorAccountShouldResetSavedState(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if cursorAccountAuthRejected(err) || cursorAccountDeviceLimited(err) {
+	if cursorAccountAuthRejected(err) || cursorAccountDeviceLimited(err) || cursorAccountNeedsDataRetentionConsent(err) {
 		return false
 	}
 	var appendErr *cursorAccountAppendError
@@ -788,10 +808,13 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 					return finishTurn()
 				}
 				if denial := cursorAccountAccessDenial(payload); denial != "" {
-					return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
+					return &cursorAccountRefusalError{
+						message:          fmt.Sprintf("this account does not have access to %s: %s", modelID, denial),
+						dashboardActions: extractCursorDashboardActions(payload),
+					}
 				}
 				if text := cursorAccountErrorText(payload); text != "" {
-					return fmt.Errorf("cursor refused the model call: %s", text)
+					return newCursorAccountRefusalError("cursor refused the model call: ", payload)
 				}
 				return finishTurn()
 			}
@@ -799,10 +822,13 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			if err := proto.Unmarshal(payload, msg); err != nil {
 				if !sawTurnEnded {
 					if denial := cursorAccountAccessDenial(payload); denial != "" {
-						return fmt.Errorf("this account does not have access to %s: %s", modelID, denial)
+						return &cursorAccountRefusalError{
+							message:          fmt.Sprintf("this account does not have access to %s: %s", modelID, denial),
+							dashboardActions: extractCursorDashboardActions(payload),
+						}
 					}
 					if text := cursorAccountErrorText(payload); text != "" {
-						return fmt.Errorf("cursor refused the model call: %s", text)
+						return newCursorAccountRefusalError("cursor refused the model call: ", payload)
 					}
 				}
 				cursorAccountNoteFrame(fmt.Sprintf("unmarshal_fail flags=%02x bytes=%d", flags, len(payload)))

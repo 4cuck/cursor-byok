@@ -213,7 +213,7 @@ func CursorAccountQuotaRefusalText(text string) bool {
 // cannot serve this model right now", covering both usage/plan refusals and
 // per-model access denials so the gateway can fail over to another account.
 func cursorAccountRefusesModelText(text string) bool {
-	if CursorAccountQuotaRefusalText(text) {
+	if CursorAccountQuotaRefusalText(text) || cursorAccountNeedsDataRetentionConsentText(text) {
 		return true
 	}
 	lower := strings.ToLower(text)

@@ -1,3 +1,13 @@
+## v1.0.53
+
+### Added
+
+- **Automatic data-retention policy acknowledgment for Claude Fable 5 / 5.1 / 5.2**:
+  - When a Cursor account with Privacy Mode enabled rejects a Fable turn with a data-retention policy error (e.g. `"You must acknowledge Claude Fable 5's data retention policy to use the model."`), `cursor-byok` now automatically calls Cursor's `DashboardService/SetUserNoZdrModelConsent` API (`model_id: "claude-fable-5"`, `consent_version: "fable-data-retention-v1"`) and retries the turn seamlessly without failing the request.
+  - Supports both OAuth (`session`) and `crsr_`/`grok_` API-key (`api_key_token`) accounts, falls back to `SetTeamMemberNoZdrModelConsent` for teams allowing per-member opt-in and to safe consent `DashboardAction` CTAs via `DashboardService/ClientAction`, preserves saved conversation checkpoints on consent refusals, and fails over cleanly to another saved account when Enterprise/Team admin approval is required.
+- **Cross-platform local + WSL build guide (`BUILD_ALL_PLATFORMS.md`)**:
+  - Documented the full local release workflow covering frontend builds, Windows (`x64`/`arm64`/`x32` ZIP + NSIS installers), Linux (`x64` `.tar.gz`), and macOS (`arm64`/`x64` `.tar.gz` + `.dmg`) via Debian WSL + `osxcross`, `update.json` manifest generation, and `gh release create`.
+
 ## v1.0.52
 
 ### Added
@@ -44,11 +54,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.52-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.52-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.52-windows-arm64-installer.exe` 或 `cursor-byok-1.0.52-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.52-windows-x32-installer.exe` 或 `cursor-byok-1.0.52-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.52-macos-arm64.dmg` 或 `cursor-byok-1.0.52-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.52-macos-x64.dmg` 或 `cursor-byok-1.0.52-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.52-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.53-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.53-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.53-windows-arm64-installer.exe` 或 `cursor-byok-1.0.53-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.53-windows-x32-installer.exe` 或 `cursor-byok-1.0.53-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.53-macos-arm64.dmg` 或 `cursor-byok-1.0.53-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.53-macos-x64.dmg` 或 `cursor-byok-1.0.53-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.53-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。
