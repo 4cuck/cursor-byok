@@ -1,3 +1,27 @@
+## v1.0.56
+
+### Fixed
+
+- **Tool calls sent in the same step no longer freeze the turn**:
+  - Every exec sent to the IDE was named from the clock alone. On Windows the clock advances about once per millisecond, so two execs opened back to back got the same id: the second replaced the first as the awaited one, the first result was dropped as unmatched, and the turn waited until it was canceled. Exec ids are now unique within the process.
+  - Applies to Cursor-account models and to BYOK models; both wait on the same table of pending execs.
+- **`Delete` works on Cursor accounts**:
+  - The tool card was created under the exec's id while the IDE looked it up by the request's tool call id, so every delete ended in `Failed to find tool call context: Timeout waiting for bubble creation`. The card now carries the request's id.
+- **Cursor-account usage counts cached tokens once**:
+  - Cursor reports a turn's input as the whole prompt, cache read and cache write included. Stored unchanged, those turns counted their cached tokens twice, showed about half their real cache hit rate and were priced as if the cached part had also been sent at the input rate. Input is now stored without cache tokens, as for every other provider; the IDE still receives the figures Cursor sent.
+  - An existing `usage.json` is converted the first time this version writes to it. The file as it was is kept next to it as `usage.json.schema-2.bak`.
+  - A turn's usage is no longer read back doubled while its provider call is still in the write buffer.
+- **Max Mode keeps Cursor's default options**:
+  - The model list served to the IDE marked a max-only variant as the Max Mode default: the larger context window for some models, Fast serving and the lowest effort for others. Cursor's own default is passed through now, so the larger window and Fast stay something you pick. A chat on a larger window re-reads that much more context on every tool step.
+  - A request with Max Mode on and no explicit options is completed from Cursor's default as well, instead of from the first max-only variant.
+  - Options already chosen in the model picker are remembered by the IDE per model and stay as they are.
+- **A refusal from Cursor is shown as the refusal**:
+  - When Cursor declines a call after part of the response went out (a billing notice, an exhausted limit), the message used to open with `upstream stream interrupted mid-response`. It now shows Cursor's own text.
+- **Settings save reliably on Windows**:
+  - A save no longer fails with `Access is denied` when the config file is briefly open elsewhere; the replace is retried for a moment.
+  - Each save writes its own temporary file. Two parts of the app sharing `config.yaml.tmp` could fail each other's saves.
+- **Vision delegation**: images described in parallel no longer share one request id in logs and debug artifacts.
+
 ## v1.0.55
 
 ### Fixed
@@ -95,11 +119,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.55-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.55-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.55-windows-arm64-installer.exe` 或 `cursor-byok-1.0.55-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.55-windows-x32-installer.exe` 或 `cursor-byok-1.0.55-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.55-macos-arm64.dmg` 或 `cursor-byok-1.0.55-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.55-macos-x64.dmg` 或 `cursor-byok-1.0.55-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.55-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.56-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.56-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.56-windows-arm64-installer.exe` 或 `cursor-byok-1.0.56-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.56-windows-x32-installer.exe` 或 `cursor-byok-1.0.56-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.56-macos-arm64.dmg` 或 `cursor-byok-1.0.56-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.56-macos-x64.dmg` 或 `cursor-byok-1.0.56-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.56-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

@@ -47,7 +47,7 @@ func (bridge *Bridge) openSubagentAwait(toolCall runtimecore.ToolInvocation) (*a
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode SubagentAwait args failed: %w", err)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-subagent-await-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-subagent-await-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{

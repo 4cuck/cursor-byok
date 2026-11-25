@@ -69,7 +69,7 @@ func (bridge *Bridge) openSearchConversations(toolCall runtimecore.ToolInvocatio
 	}
 	limit := input.Limit
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-conversation-search-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-conversation-search-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{

@@ -177,7 +177,7 @@ func (service *Service) handleAwaitShellToolInvocation(stream *ActiveStream, inv
 	now := time.Now()
 	key := strings.TrimSpace(invocation.CallID)
 	if key == "" {
-		key = fmt.Sprintf("anonymous-%d", now.UnixNano())
+		key = execbridge.NewExecID("anonymous-")
 	}
 	wait := &pendingAwaitShell{
 		Key:        key,

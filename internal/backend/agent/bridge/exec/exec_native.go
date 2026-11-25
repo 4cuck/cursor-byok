@@ -134,7 +134,7 @@ func (bridge *Bridge) OpenNativeExec(exec *agentv1.ExecServerMessage, toolCall r
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("native exec clone failed")
 	}
 	cloned.Id = bridge.nextID()
-	cloned.ExecId = fmt.Sprintf("%s%d", nativeExecIDPrefix, time.Now().UnixNano())
+	cloned.ExecId = NewExecID(nativeExecIDPrefix)
 	return &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{ExecServerMessage: cloned},
 	}, runtimecore.PendingExec{

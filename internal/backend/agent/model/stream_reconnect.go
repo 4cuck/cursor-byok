@@ -22,7 +22,30 @@ func midStreamInterruptedError(err error) error {
 	if err == nil {
 		return nil
 	}
+	var refusal *cursorAccountRefusalError
+	if errors.As(err, &refusal) {
+		return &refusedMidStreamError{cause: err}
+	}
 	return fmt.Errorf("upstream stream interrupted mid-response (already forwarded partial content, will not reconnect to avoid duplicates): %w: %w", ErrMidStreamInterrupted, err)
+}
+
+// refusedMidStreamError is a refusal from Cursor's server that arrived after
+// part of the response had been forwarded. It carries ErrMidStreamInterrupted,
+// so the call is not sent again, but it reads as the refusal alone. Nothing
+// was interrupted: the server declined the call, and its text is what tells
+// the user what to do (pay an invoice, raise a limit, accept a policy). Behind
+// the wording for a lost connection that text is easy to miss, and retrying
+// only gets the same refusal.
+type refusedMidStreamError struct {
+	cause error
+}
+
+func (e *refusedMidStreamError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *refusedMidStreamError) Unwrap() []error {
+	return []error{ErrMidStreamInterrupted, e.cause}
 }
 
 // streamWithReconnect 提供通用的 pre-output 流式透明重连：

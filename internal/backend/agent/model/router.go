@@ -154,7 +154,13 @@ func classifyRouterError(req StreamRequest, err error) error {
 		return nil
 	}
 	options := []apperror.Option{apperror.WithTraceID(req.RequestID)}
-	if errors.Is(err, ErrMidStreamInterrupted) {
+	var refused *refusedMidStreamError
+	if errors.As(err, &refused) {
+		// Declined by the server after partial output. It is final, but it is
+		// not an interruption: "the response was cut off, retry the turn" is
+		// the wrong advice for an unpaid invoice or an exhausted limit.
+		options = append(options, apperror.WithDisposition(apperror.DispositionFatal))
+	} else if errors.Is(err, ErrMidStreamInterrupted) {
 		options = append(options,
 			apperror.WithCode(apperror.CodeStreamInterrupted),
 			apperror.WithKind(apperror.KindStream),

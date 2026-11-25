@@ -156,7 +156,7 @@ func (bridge *Bridge) openShell(openContext OpenExecContext, toolCall runtimecor
 		}
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-shell-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-shell-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -228,7 +228,7 @@ func (bridge *Bridge) openWriteShellStdin(toolCall runtimecore.ToolInvocation) (
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode WriteShellStdin args failed: %w", err)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-write-shell-stdin-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-write-shell-stdin-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -276,7 +276,7 @@ func (bridge *Bridge) openForceBackgroundShell(toolCall runtimecore.ToolInvocati
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode ForceBackgroundShell args failed: %w", err)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-force-background-shell-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-force-background-shell-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{

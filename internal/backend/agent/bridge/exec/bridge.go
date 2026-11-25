@@ -131,7 +131,7 @@ func (bridge *Bridge) OpenExecuteHook(request *agentv1.ExecuteHookRequest, execK
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("execute hook request is required")
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-hook-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-hook-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{

@@ -231,21 +231,35 @@ func ensureCursorContextOptionDisplayNames(definitions []map[string]any) {
 	}
 }
 
+// ensureCursorDefaultVariant makes sure one variant the mode can run carries
+// flag. Max mode runs every variant; normal mode runs only those that are not
+// max-only.
+//
+// Cursor's own choice is kept whenever the mode can run it. For several models
+// Cursor's default for max mode is the normal default, on the smaller window:
+// the larger window and fast serving are things the user opts into. Moving
+// that default onto a max-only variant makes every max mode chat start on the
+// larger window and re-read that much more context on each tool step.
+//
+// Only a choice the mode cannot run is replaced, by the variant of that mode
+// that keeps the most of its parameter values.
 func ensureCursorDefaultVariant(kept []map[string]any, original []map[string]any, flag string, maxMode bool) {
 	for _, variant := range kept {
-		if variant[flag] == true && (variant["isMaxMode"] == true) == maxMode {
+		if variant[flag] == true && (maxMode || variant["isMaxMode"] != true) {
 			return
 		}
 	}
-	for _, variant := range kept {
-		delete(variant, flag)
-	}
+	// kept and original can hold the same maps, so Cursor's choice has to be
+	// read before the flag is cleared.
 	var reference map[string]string
 	for _, variant := range original {
 		if variant[flag] == true {
 			reference = cursorVariantValues(variant)
 			break
 		}
+	}
+	for _, variant := range kept {
+		delete(variant, flag)
 	}
 	candidates := make([]map[string]any, 0, len(kept))
 	for _, variant := range kept {

@@ -868,9 +868,23 @@ func TestWebpackUnqualifiedAliasCannotFallBackToAnotherModule(t *testing.T) {
 	}
 }
 
+// verifierShell returns the PowerShell to run the verifier script with:
+// PowerShell 7 when it is installed, otherwise the Windows PowerShell that
+// ships with Windows. The script runs on both.
+func verifierShell(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"pwsh", "powershell"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+	}
+	t.Skip("no PowerShell on PATH to run the verifier script")
+	return ""
+}
+
 func TestVerifierComparisonIsCaseSensitive(t *testing.T) {
 	script := filepath.Join("cmd", "verify-extraction.ps1")
-	command := exec.Command("pwsh", "-NoProfile", "-File", script, "-SelfTestComparison")
+	command := exec.Command(verifierShell(t), "-NoProfile", "-File", script, "-SelfTestComparison")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("verifier comparison self-test failed: %v\n%s", err, output)

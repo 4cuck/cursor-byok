@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"cursor/gen/agentv1"
+	execbridge "cursor/internal/backend/agent/bridge/exec"
 	runtimecore "cursor/internal/backend/agent/core"
 	"cursor/internal/backend/delegation"
 )
@@ -151,7 +152,7 @@ func (service *Service) tryStartDelegatedTask(stream *ActiveStream, invocation r
 	}
 	now := time.Now().UTC()
 	pending := runtimecore.PendingExec{
-		ExecID:                   fmt.Sprintf("exec-delegation-%d", now.UnixNano()),
+		ExecID:                   execbridge.NewExecID("exec-delegation-"),
 		ProviderPass:             providerPass,
 		ModelCallID:              modelCallID,
 		ToolCallID:               strings.TrimSpace(invocation.CallID),

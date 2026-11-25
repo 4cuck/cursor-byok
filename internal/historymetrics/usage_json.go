@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// UsageFileSchemaVersion is the layout of usage.json that this build writes.
+//
+// From version 3 a provider call's input_tokens never includes its cache read
+// or cache write tokens, whichever provider served it. Up to version 2, calls
+// served by a Cursor account were stored with the whole prompt as input. The
+// forwarder's usage store converts an older file the next time it writes one.
+const UsageFileSchemaVersion = 3
+
 type usageFileDocument struct {
 	Totals struct {
 		ProviderCalls     int64 `json:"provider_calls"`
@@ -345,7 +353,7 @@ func ResetUsageFile(path string) error {
 		Daily         json.RawMessage `json:"daily"`
 		RecentEvents  json.RawMessage `json:"recent_events"`
 	}{
-		SchemaVersion: 2,
+		SchemaVersion: UsageFileSchemaVersion,
 		UpdatedAt:     time.Now().UTC(),
 		Totals:        json.RawMessage(`{}`),
 		Daily:         json.RawMessage(`[]`),

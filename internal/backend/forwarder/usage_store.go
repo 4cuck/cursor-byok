@@ -10,12 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"cursor/internal/historymetrics"
 	"cursor/internal/logger"
 )
 
 const (
-	usageFileName          = "usage.json"
-	usageFileSchemaVersion = 2
+	usageFileName = "usage.json"
+	// See convertCursorAccountInputs for files written before this schema.
+	usageFileSchemaVersion = historymetrics.UsageFileSchemaVersion
 	usageRecentEventLimit  = 10_000
 
 	usageEventKindProvider = "provider_call"
@@ -45,6 +47,9 @@ type usageFileDocument struct {
 	Daily         []usageFileDaily          `json:"daily"`
 	RecentEvents  []usageFileEvent          `json:"recent_events"`
 	EventIndex    map[string]usageFileEvent `json:"-"`
+	// convertedFromSchema is the schema the file on disk still has when this
+	// document was converted while reading it; zero when nothing was converted.
+	convertedFromSchema int
 }
 
 type usageFileTotals struct {
@@ -227,6 +232,13 @@ func (store *UsageFileStore) flushPendingEventsLocked() error {
 		restoreOnFailure()
 		return err
 	}
+	if doc.convertedFromSchema != 0 {
+		// This write replaces a file of an older schema with its converted form.
+		if err := keepUsageFileCopy(store.path, doc.convertedFromSchema); err != nil {
+			restoreOnFailure()
+			return err
+		}
+	}
 	if doc.EventIndex == nil {
 		doc.EventIndex = make(map[string]usageFileEvent)
 	}
@@ -340,17 +352,23 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 		aggregate.TotalTokens += nonNegativeInt64(event.TotalTokens)
 		aggregate.UsagePresent = aggregate.UsagePresent || event.UsagePresent
 	}
-	for _, event := range events {
-		matchAggregate(event)
-	}
+	// A buffered write replaces the saved event of the same id, and a later
+	// buffered write replaces an earlier one: that is how a flush applies them.
+	// Adding them up instead counts a call once per write. A provider call is
+	// written when its pass completes and again when the turn is finalized, so
+	// the turn total read right after came out doubled.
+	buffered := make(map[string]usageFileEvent, len(pending))
 	for _, event := range pending {
-		// 快照后防抖落盘可能已把同一批事件写入磁盘：EventID 已在磁盘索引里的
-		// pending 事件跳过，避免 token/调用数被累计两次。
 		if eventID := strings.TrimSpace(event.EventID); eventID != "" {
-			if _, onDisk := events[eventID]; onDisk {
-				continue
-			}
+			buffered[eventID] = event
 		}
+	}
+	for eventID, event := range events {
+		if _, replaced := buffered[eventID]; !replaced {
+			matchAggregate(event)
+		}
+	}
+	for _, event := range buffered {
 		matchAggregate(event)
 	}
 	if found {
@@ -379,11 +397,83 @@ func readUsageFileDocument(path string) (usageFileDocument, error) {
 	if doc.SchemaVersion == 0 {
 		doc.SchemaVersion = 1
 	}
+	if doc.SchemaVersion < usageFileSchemaVersion {
+		doc.convertedFromSchema = doc.SchemaVersion
+		convertCursorAccountInputs(&doc)
+		doc.SchemaVersion = usageFileSchemaVersion
+	}
 	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
 	if len(doc.EventIndex) == 0 {
 		doc.EventIndex = buildUsageEventIndex(doc.RecentEvents)
 	}
 	return doc, nil
+}
+
+// convertCursorAccountInputs rewrites the provider calls of a file written
+// before schema 3.
+//
+// A call served by a Cursor account was stored with Cursor's input figure,
+// which is the whole prompt with cache read and cache write inside it. Every
+// other provider's input is stored without its cache tokens, and totals, cache
+// hit rate and cost add the cache tokens on top. Those rows therefore counted
+// their cache tokens twice, showed about half their cache hit rate, and were
+// priced as if the cached part had also been sent at the input rate.
+//
+// Each such call keeps its cache figures and has them taken out of its input.
+// Totals and the day it belongs to are lowered by the same amount. Calls of
+// other providers, and calls whose input is too small to contain the cache
+// tokens, are left as recorded. So is the share of the totals that belongs to
+// calls no longer in the recent list: without the call there is nothing to
+// work the correction out from.
+func convertCursorAccountInputs(doc *usageFileDocument) {
+	for index := range doc.RecentEvents {
+		event := &doc.RecentEvents[index]
+		if normalizeUsageEventKind(event.Kind) != usageEventKindProvider || !isCursorAccountUsageProvider(event.Provider) {
+			continue
+		}
+		cached := nonNegativeInt64(event.CacheReadTokens) + nonNegativeInt64(event.CacheWriteTokens)
+		if cached == 0 || event.InputTokens < cached {
+			continue
+		}
+		applyUsageFileDelta(doc, event.At, usageFileDelta{inputTokens: -cached, totalTokens: -cached})
+		event.InputTokens -= cached
+		event.TotalTokens = event.InputTokens + nonNegativeInt64(event.OutputTokens) + cached
+	}
+}
+
+// isCursorAccountUsageProvider reports whether provider is a label the Cursor
+// account gateway records: cursor_account, or cursor_account followed by the
+// number of an account slot. Calls on the user's own keys carry the protocol
+// name instead.
+func isCursorAccountUsageProvider(provider string) bool {
+	slot, ok := strings.CutPrefix(strings.TrimSpace(provider), "cursor_account")
+	if !ok {
+		return false
+	}
+	for _, char := range slot {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// keepUsageFileCopy saves the usage file as it is on disk, still in the given
+// schema, before a converted document replaces it. The copy is made once and
+// never overwritten, so the figures as first recorded stay recoverable.
+func keepUsageFileCopy(path string, schemaVersion int) error {
+	copyPath := fmt.Sprintf("%s.schema-%d.bak", path, schemaVersion)
+	if _, err := os.Stat(copyPath); err == nil {
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read usage file for its pre-conversion copy: %w", err)
+	}
+	if err := os.WriteFile(copyPath, body, 0o600); err != nil {
+		return fmt.Errorf("keep pre-conversion copy of usage file: %w", err)
+	}
+	return nil
 }
 
 func upsertRecentUsageEvent(items []usageFileEvent, event usageFileEvent) []usageFileEvent {

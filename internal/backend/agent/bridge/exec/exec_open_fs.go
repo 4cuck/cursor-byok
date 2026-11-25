@@ -48,7 +48,7 @@ func (bridge *Bridge) openRead(toolCall runtimecore.ToolInvocation) (*agentv1.Ag
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode Read args failed: %w", err)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-read-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-read-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -88,7 +88,7 @@ func (bridge *Bridge) openWrite(toolCall runtimecore.ToolInvocation) (*agentv1.A
 	writePath := strings.TrimSpace(readStringArg(args, "path", "file_path", "filePath"))
 	contents := readStringArg(args, "contents", "content", "fileText", "file_text")
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-write-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-write-")
 	encodingHint := "utf-8"
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
@@ -125,7 +125,7 @@ func (bridge *Bridge) openDelete(toolCall runtimecore.ToolInvocation) (*agentv1.
 	}
 	deletePath := strings.TrimSpace(readStringArg(args, "path", "file_path", "filePath"))
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-delete-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-delete-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -161,7 +161,7 @@ func (bridge *Bridge) openGlob(toolCall runtimecore.ToolInvocation) (*agentv1.Ag
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("glob pattern is required")
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-glob-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-glob-")
 	outputMode := "files_with_matches"
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{

@@ -1154,7 +1154,7 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 				}
 			}
 			if ended := update.GetTurnEnded(); ended != nil {
-				inputTokens = ended.GetInputTokens()
+				inputTokens = cursorAccountUncachedInputTokens(ended)
 				outputTokens = ended.GetOutputTokens()
 				cacheRead = ended.GetCacheReadTokens()
 				cacheWrite = ended.GetCacheWriteTokens()
@@ -1176,6 +1176,23 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 			return readErr
 		}
 	}
+}
+
+// cursorAccountUncachedInputTokens returns the part of a turn's prompt that
+// was neither read from the prompt cache nor written to it.
+//
+// Cursor reports input_tokens as the whole prompt with both cache figures
+// inside it. ModelEvent.InputTokens means input without them, as the other
+// provider adapters report it; totals, cache hit rate and cost add the cache
+// figures on top. An input smaller than the cache figures cannot contain them
+// and is returned as reported.
+func cursorAccountUncachedInputTokens(ended *agentv1.TurnEndedUpdate) int64 {
+	input := ended.GetInputTokens()
+	cached := ended.GetCacheReadTokens() + ended.GetCacheWriteTokens()
+	if cached <= 0 || input < cached {
+		return input
+	}
+	return input - cached
 }
 
 // serveCursorAccountInteractionReplies writes the answers to interaction
@@ -2653,6 +2670,11 @@ func cursorAccountExecTool(exec *agentv1.ExecServerMessage) (string, string, []b
 		}
 	case exec.GetDeleteArgs() != nil:
 		name, msg = "Delete", exec.GetDeleteArgs()
+		// The IDE runs a delete only once it finds the tool card named by
+		// tool_call_id, and the card is created under this id.
+		if id := strings.TrimSpace(exec.GetDeleteArgs().GetToolCallId()); id != "" {
+			callID = id
+		}
 	case exec.GetGrepArgs() != nil:
 		args := exec.GetGrepArgs()
 		name, msg = cursorAccountGrepToolName(args), args

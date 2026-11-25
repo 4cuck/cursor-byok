@@ -246,6 +246,17 @@ func (service *Service) completeSuccessfulTurn(stream *ActiveStream, completion 
 	return nil
 }
 
+// turnEndedInputTokens is the input figure the IDE is told for a finished turn.
+// Usage keeps input apart from cache read and cache write. Cursor's server
+// reports a turn's input as the whole prompt, so a Cursor account turn has the
+// cache figures added back and reaches the IDE as Cursor sent it.
+func (service *Service) turnEndedInputTokens(stream *ActiveStream, usage turnUsageSnapshot) int64 {
+	if service.cursorAccountModel(activeStreamModelID(stream)) {
+		return usage.promptTokensTotal()
+	}
+	return usage.InputTokens
+}
+
 func (service *Service) finishSuccessfulTurnAfterCheckpoint(stream *ActiveStream, completion pendingTurnCompletion) error {
 	if stream == nil {
 		return nil
@@ -253,7 +264,7 @@ func (service *Service) finishSuccessfulTurnAfterCheckpoint(stream *ActiveStream
 	requestID := firstNonEmpty(strings.TrimSpace(completion.RequestID), strings.TrimSpace(stream.RequestID))
 	usage := completion.Usage
 	if err := service.broker.Publish(requestID, StreamEvent{
-		Message: buildTurnEndedMessage(usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheWriteTokens),
+		Message: buildTurnEndedMessage(service.turnEndedInputTokens(stream, usage), usage.OutputTokens, usage.CacheReadTokens, usage.CacheWriteTokens),
 	}); err != nil {
 		return err
 	}

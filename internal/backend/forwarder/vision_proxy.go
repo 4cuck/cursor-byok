@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
 	modeladapter "cursor/internal/backend/agent/model"
@@ -551,6 +553,14 @@ func truncateErr(message string) string {
 // describeImageOnce 对单张图片发起一次识图子调用，返回识图文本。
 // 内部构造一条带 [文本 prompt + 图片块] 的 user 消息发给识图模型，累积 TextDelta。
 // userContext 是用户随图片发出的需求文本，注入识图 prompt 让识别结果贴合用户意图。
+// newVisionProxyRequestID names one image description call. The images of a
+// message are described in parallel, and each call's log lines and debug
+// artifacts are filed under this id. The clock cannot tell apart calls that
+// start together, so the id is random.
+func newVisionProxyRequestID() string {
+	return "vision-proxy-" + uuid.NewString()
+}
+
 func (service *Service) describeImageOnce(ctx context.Context, image *modeladapter.ImageContent, config visionProxyConfig, userContext string, extraQuestion ...string) (string, error) {
 	if service.provider == nil {
 		vdbg("[describe] provider NIL")
@@ -577,7 +587,7 @@ func (service *Service) describeImageOnce(ctx context.Context, image *modeladapt
 	callCtx, cancel := context.WithTimeout(ctx, visionProxyCallTimeout)
 	defer cancel()
 
-	requestID := fmt.Sprintf("vision-proxy-%d", time.Now().UnixNano())
+	requestID := newVisionProxyRequestID()
 	modelCallID := requestID + "-model"
 	accumulated := ""
 	vdbg("[describe] StartStream call vision_id=%s model_call_id=%s", config.visionID, modelCallID)

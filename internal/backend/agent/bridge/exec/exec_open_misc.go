@@ -17,7 +17,7 @@ func (bridge *Bridge) openGrep(toolCall runtimecore.ToolInvocation) (*agentv1.Ag
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode Grep args failed: %w", err)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-grep-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-grep-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -52,7 +52,7 @@ func (bridge *Bridge) openReadLints(toolCall runtimecore.ToolInvocation) (*agent
 		path = strings.TrimSpace(paths[0])
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-diagnostics-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-diagnostics-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -92,7 +92,7 @@ func (bridge *Bridge) openCanvasDiagnostics(toolCall runtimecore.ToolInvocation)
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("CanvasDiagnostics path is required")
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-canvas-diagnostics-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-canvas-diagnostics-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -128,7 +128,7 @@ func (bridge *Bridge) openLs(toolCall runtimecore.ToolInvocation) (*agentv1.Agen
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode Ls args failed: %w", err)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-ls-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-ls-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -173,7 +173,7 @@ func (bridge *Bridge) openMcp(toolCall runtimecore.ToolInvocation) (*agentv1.Age
 		serverIdentifier = runtimecore.InferMCPServerIdentifier(input.Name)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-mcp-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-mcp-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -210,7 +210,7 @@ func (bridge *Bridge) openListMcpResources(toolCall runtimecore.ToolInvocation) 
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode ListMcpResources args failed: %w", err)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-list-mcp-resources-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-list-mcp-resources-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -245,7 +245,7 @@ func (bridge *Bridge) openReadMcpResource(toolCall runtimecore.ToolInvocation) (
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode FetchMcpResource args failed: %w", err)
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-read-mcp-resource-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-read-mcp-resource-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{

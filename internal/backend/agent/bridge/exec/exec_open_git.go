@@ -78,7 +78,7 @@ func (bridge *Bridge) openGitDiff(openContext OpenExecContext, toolCall runtimec
 		SubmoduleRecurseDepth: 0,
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-git-diff-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-git-diff-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{

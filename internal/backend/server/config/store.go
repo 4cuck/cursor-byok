@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -143,21 +145,88 @@ func (store *Store) saveLocked(normalized Config) error {
 		return fmt.Errorf("序列化用户配置失败: %w", err)
 	}
 
-	tempPath := store.path + ".tmp"
-	if err := os.WriteFile(tempPath, data, configFilePerm); err != nil {
+	// Each save writes a temporary file of its own. The app opens several
+	// Stores on this path, each with its own lock, and a shared temporary file
+	// lets one of them rename what another is still writing.
+	removeStaleConfigTemps(store.path)
+	tempPath, err := writeConfigTemp(store.path, data)
+	if err != nil {
 		return fmt.Errorf("写入临时配置失败: %w", err)
 	}
-	// WriteFile 只在创建时应用 perm，残留的临时文件可能带着更宽的权限，
-	// 因此重命名前显式收紧一次。
 	if err := os.Chmod(tempPath, configFilePerm); err != nil {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("设置临时配置权限失败: %w", err)
 	}
-	if err := os.Rename(tempPath, store.path); err != nil {
+	if err := replaceConfigFile(tempPath, store.path); err != nil {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("保存用户配置失败: %w", err)
 	}
 	return nil
+}
+
+// configTempPattern names the temporary files of saves to path.
+func configTempPattern(path string) string {
+	return filepath.Base(path) + ".tmp-*"
+}
+
+// writeConfigTemp writes data to a new temporary file next to path and
+// returns its name. The file is created readable by the current user only.
+func writeConfigTemp(path string, data []byte) (string, error) {
+	temp, err := os.CreateTemp(filepath.Dir(path), configTempPattern(path))
+	if err != nil {
+		return "", err
+	}
+	_, writeErr := temp.Write(data)
+	closeErr := temp.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(temp.Name())
+		return "", err
+	}
+	return temp.Name(), nil
+}
+
+// staleConfigTempAge is how old a temporary config file must be before it is
+// taken for the leftover of a crashed save. A save finishes within seconds.
+const staleConfigTempAge = time.Minute
+
+// removeStaleConfigTemps deletes temporary files that crashed saves left next
+// to path. They hold the same credentials as the config itself.
+func removeStaleConfigTemps(path string) {
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(path), configTempPattern(path)))
+	if err != nil {
+		return
+	}
+	for _, leftover := range leftovers {
+		if info, err := os.Stat(leftover); err == nil && time.Since(info.ModTime()) > staleConfigTempAge {
+			_ = os.Remove(leftover)
+		}
+	}
+}
+
+// replaceConfigFile moves tempPath over path.
+//
+// Windows refuses the move with "Access is denied" while anything has the
+// destination open: a virus scanner reading the file that was just written,
+// or another reader of the config. Such handles close within milliseconds, so
+// the move is retried briefly before the save is reported as failed. Other
+// systems replace an open file without complaint and get a single attempt.
+func replaceConfigFile(tempPath string, path string) error {
+	attempts := 1
+	if runtime.GOOS == "windows" {
+		attempts = 12
+	}
+	delay := 10 * time.Millisecond
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err = os.Rename(tempPath, path); err == nil || os.IsNotExist(err) || attempt == attempts {
+			return err
+		}
+		time.Sleep(delay)
+		if delay < 200*time.Millisecond {
+			delay *= 2
+		}
+	}
+	return err
 }
 
 // restrictExistingPermissions 收紧已存在配置文件与所在目录的权限。

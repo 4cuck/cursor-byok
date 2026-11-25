@@ -335,12 +335,21 @@ func withCursorContextValue(parameters []ModelParameter, value string) []ModelPa
 	return pinned
 }
 
+// defaultVariant returns the variant a request starts from in the given mode.
+// Cursor's default for max mode need not be a max-only variant: for several
+// models it is the normal default, which keeps fast serving and the larger
+// window something the user picks. It is therefore looked up among all
+// variants. Without a flagged default the first variant of the mode stands in.
 func (catalog cursorRegistryCatalog) defaultVariant(maxMode bool) (cursorRegistryVariant, bool) {
+	if maxMode {
+		for _, variant := range catalog.variants {
+			if variant.defaultMax {
+				return variant, true
+			}
+		}
+	}
 	pool := catalog.variantsForMode(maxMode)
 	for _, variant := range pool {
-		if maxMode && variant.defaultMax {
-			return variant, true
-		}
 		if !maxMode && variant.defaultNonMax {
 			return variant, true
 		}

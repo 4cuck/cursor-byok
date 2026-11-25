@@ -28,7 +28,7 @@ func (bridge *Bridge) openTask(openContext OpenExecContext, toolCall runtimecore
 	}
 	messageID := bridge.nextID()
 	now := time.Now().UTC()
-	execID := fmt.Sprintf("exec-subagent-%d", now.UnixNano())
+	execID := NewExecID("exec-subagent-")
 	readonly := capability.Readonly
 	runInBackground := readBoolArg(args, "run_in_background", "runInBackground")
 	interrupt := readBoolArg(args, "interrupt")
@@ -133,7 +133,7 @@ func (bridge *Bridge) openFetch(toolCall runtimecore.ToolInvocation) (*agentv1.A
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("Fetch url is required")
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-fetch-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-fetch-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -171,7 +171,7 @@ func (bridge *Bridge) openRecordScreen(toolCall runtimecore.ToolInvocation) (*ag
 	}
 	mode := recordingModeFromString(args.Mode)
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-record-screen-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-record-screen-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -208,7 +208,7 @@ func (bridge *Bridge) openComputerUse(toolCall runtimecore.ToolInvocation) (*age
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("ComputerUse actions are required")
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-computer-use-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-computer-use-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
@@ -241,7 +241,7 @@ func (bridge *Bridge) openForceBackgroundSubagent(toolCall runtimecore.ToolInvoc
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("ForceBackgroundSubagent tool_call_id is required")
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-force-background-subagent-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-force-background-subagent-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{

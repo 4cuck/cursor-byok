@@ -87,7 +87,7 @@ func (bridge *Bridge) openGetMcpTools(toolCall runtimecore.ToolInvocation) (*age
 		serverIdentifiers = []string{input.Server}
 	}
 	messageID := bridge.nextID()
-	execID := fmt.Sprintf("exec-mcp-state-%d", time.Now().UnixNano())
+	execID := NewExecID("exec-mcp-state-")
 	serverMessage := &agentv1.AgentServerMessage{
 		Message: &agentv1.AgentServerMessage_ExecServerMessage{
 			ExecServerMessage: &agentv1.ExecServerMessage{
