@@ -53,10 +53,10 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 		if service.observeMissingShellExecClientMessage(stream, intent.ExecClientMessage) {
 			return nil
 		}
-		if shouldIgnoreMissingExecResult(intent.ExecClientMessage, stream) {
-			return nil
-		}
-		return fmt.Errorf("pending exec not found")
+		// Returning an error here fails the whole turn, and a message that
+		// matches no pending exec is never worth that.
+		service.dropUnmatchedExecResult(stream, intent.ExecClientMessage)
+		return nil
 	}
 	if execID := strings.TrimSpace(intent.ExecClientMessage.GetExecId()); execID != "" &&
 		intent.ExecClientMessage.GetId() != 0 && pending.MessageID != 0 &&
@@ -77,6 +77,9 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 	service.observeShellExecClientMessage(stream, pending, intent.ExecClientMessage)
 	service.markConversationActivity(stream.ConversationID)
 	pending = service.applyExecProgress(stream, pending, intent.ExecClientMessage)
+	if strings.TrimSpace(pending.ExecKind) == awaitShellReadExecKind {
+		return service.handleAwaitShellReadResult(stream, pending, intent.ExecClientMessage)
+	}
 	if isHiddenPatchEditExecKind(pending.ExecKind) {
 		return service.handleHiddenPatchEditExecResult(stream, pending, intent.ExecClientMessage)
 	}
@@ -99,6 +102,7 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 		}
 		return err
 	}
+	nameBackgroundedShellOutput(stream, pending, intent.ExecClientMessage, &result)
 	// 捕获点：MCP 执行结果（含失败模式），便于后续读取日志针对性修复执行层问题。
 	// 对应已知限制：MCP 执行仍依赖 Cursor 客户端；server_not_found/tool_not_found/超时等需要日志证据。
 	if strings.TrimSpace(pending.ExecKind) == "mcp" && result.IsTerminal {
@@ -210,9 +214,7 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 	if err := service.publishToolCallCompleted(intent.RequestID, result.ToolCallID, pending.ModelCallID, result.ToolCall); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(identity.ConversationID, intent.RequestID, pending.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(identity.ConversationID, intent.RequestID, pending.ModelCallID)
 	if err := service.publishExecCheckpoint(stream, pending); err != nil {
 		return err
 	}
@@ -318,16 +320,19 @@ func (service *Service) handleExecControl(intent InboundIntent) error {
 	}
 	pending, found := selectPendingExecByControl(intent.ExecClientControlMessage, stream)
 	if !found {
-		if shouldIgnoreMissingExecControl(intent.ExecClientControlMessage, stream) {
-			return nil
-		}
-		return fmt.Errorf("pending exec not found for control message")
+		// An error here goes back to the client as a failed append, which the
+		// client treats as fatal for its stream.
+		service.dropUnmatchedExecControl(stream, intent.ExecClientControlMessage)
+		return nil
 	}
 	if service.ignoreStaleExecProviderPass(stream, pending, "exec_client_control") {
 		return nil
 	}
 	service.markConversationActivity(stream.ConversationID)
 	pending = service.applyExecControlProgress(stream, pending, intent.ExecClientControlMessage)
+	if strings.TrimSpace(pending.ExecKind) == awaitShellReadExecKind {
+		return service.handleAwaitShellReadControl(stream, pending, intent.ExecClientControlMessage)
+	}
 	if isHiddenPatchEditExecKind(pending.ExecKind) {
 		return service.handleHiddenPatchEditExecControl(stream, pending, intent.ExecClientControlMessage)
 	}
@@ -382,9 +387,7 @@ func (service *Service) handleExecControl(intent InboundIntent) error {
 		}
 	}
 	identity := snapshotStreamConversationIdentity(stream)
-	if err := service.syncSummaryCarryForward(identity.ConversationID, intent.RequestID, pending.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(identity.ConversationID, intent.RequestID, pending.ModelCallID)
 	if err := service.publishToolCallCompleted(intent.RequestID, result.ToolCallID, pending.ModelCallID, nil); err != nil {
 		return err
 	}
@@ -582,9 +585,7 @@ func (service *Service) recoverNonStreamingExecAfterStreamClose(stream *ActiveSt
 	}); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, pending.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, stream.RequestID, pending.ModelCallID)
 	if err := service.publishToolCallCompleted(stream.RequestID, pending.ToolCallID, pending.ModelCallID, nil); err != nil {
 		return err
 	}
@@ -698,22 +699,43 @@ func execControlMessageID(message *agentv1.ExecClientControlMessage) (uint32, bo
 	}
 }
 
-func shouldIgnoreMissingExecResult(message *agentv1.ExecClientMessage, stream *ActiveStream) bool {
+// dropUnmatchedExecResult handles a result for an exec that is not pending.
+// Late messages are normal: the exec was closed here (finished, recovered,
+// aborted, or its turn ended) while the client was still working on it. A
+// message that matches nothing at all cannot be acted on either. Neither may
+// fail the turn that happens to be running when it arrives.
+func (service *Service) dropUnmatchedExecResult(stream *ActiveStream, message *agentv1.ExecClientMessage) {
 	if message == nil {
-		return false
+		return
 	}
-	return recentlyCompletedExecExists(stream, message.GetId())
+	known := execWasRetired(stream, message.GetExecId(), message.GetId())
+	service.logUnmatchedExecMessage(stream, "exec_client_message", message.GetExecId(), message.GetId(), known)
 }
 
-func shouldIgnoreMissingExecControl(message *agentv1.ExecClientControlMessage, stream *ActiveStream) bool {
+func (service *Service) dropUnmatchedExecControl(stream *ActiveStream, message *agentv1.ExecClientControlMessage) {
 	if shouldIgnoreStaleExecControl(message) {
-		return true
+		return
 	}
-	messageID, ok := execControlMessageID(message)
-	if !ok {
-		return false
+	messageID, _ := execControlMessageID(message)
+	known := execWasRetired(stream, "", messageID)
+	service.logUnmatchedExecMessage(stream, "exec_client_control", "", messageID, known)
+}
+
+func (service *Service) logUnmatchedExecMessage(stream *ActiveStream, source string, execID string, messageID uint32, known bool) {
+	reason := "late message for an exec that is no longer awaited"
+	if !known {
+		reason = "message for an exec this stream never tracked"
+		logger.Warnf("forwarder dropped unmatched exec message request_id=%s source=%s exec_id=%s message_id=%d", strings.TrimSpace(stream.RequestID), source, strings.TrimSpace(execID), messageID)
 	}
-	return recentlyCompletedExecExists(stream, messageID)
+	if service != nil && service.debug != nil {
+		service.debug.LogRuntime(context.Background(), stream.RequestID, stream.ConversationID, "unmatched_exec_message_dropped", map[string]any{
+			"source":     source,
+			"exec_id":    strings.TrimSpace(execID),
+			"message_id": messageID,
+			"known":      known,
+			"reason":     reason,
+		})
+	}
 }
 
 func shouldIgnoreStaleExecControl(message *agentv1.ExecClientControlMessage) bool {
@@ -893,15 +915,25 @@ func pendingAssistantToolShape(pending runtimecore.PendingExec) (string, []byte,
 	}
 }
 
-// markExecCompleted 保留一个短时 tombstone，避免迟到的 transport-level control 被误判为协议错误。
+// retiredExecLimit bounds how many retired execs one stream remembers. A turn
+// rarely opens more than a few hundred; the bound only guards against a
+// runaway stream growing these maps without limit.
+const retiredExecLimit = 8192
+
+// markExecCompleted stops waiting for an exec and remembers that it existed,
+// so whatever the client still sends for it is recognized as late.
 func markExecCompleted(stream *ActiveStream, pending runtimecore.PendingExec) {
 	if stream == nil {
 		return
 	}
-	now := time.Now().UTC()
-	cutoff := now.Add(-completedExecRetention)
-
 	stream.mu.Lock()
+	markExecCompletedLocked(stream, pending, time.Now().UTC())
+	stream.mu.Unlock()
+}
+
+// markExecCompletedLocked is markExecCompleted for callers that already hold
+// stream.mu.
+func markExecCompletedLocked(stream *ActiveStream, pending runtimecore.PendingExec, now time.Time) {
 	delete(stream.PendingExecs, pending.ExecID)
 	// Close the completion signal to wake any waiting non-streaming
 	// recovery goroutine; idempotent under stream.mu.
@@ -911,19 +943,56 @@ func markExecCompleted(stream *ActiveStream, pending runtimecore.PendingExec) {
 			close(ch)
 		}
 	}
+	retireExecLocked(stream, pending, now)
+	stream.UpdatedAt = now
+}
+
+// retireExecLocked records an exec as no longer awaited. The record is kept
+// for the life of the stream: a shell closed by a synthetic recovery keeps
+// running in the IDE and reports minutes later, and an aborted exec is
+// acknowledged after the turn that owned it is gone. Caller holds stream.mu.
+func retireExecLocked(stream *ActiveStream, pending runtimecore.PendingExec, now time.Time) {
 	if pending.MessageID != 0 {
 		if stream.RecentCompletedExecs == nil {
 			stream.RecentCompletedExecs = make(map[uint32]time.Time)
 		}
-		for messageID, completedAt := range stream.RecentCompletedExecs {
-			if completedAt.Before(cutoff) {
-				delete(stream.RecentCompletedExecs, messageID)
-			}
-		}
 		stream.RecentCompletedExecs[pending.MessageID] = now
+		if len(stream.RecentCompletedExecs) > retiredExecLimit {
+			trimOldestRetired(stream.RecentCompletedExecs)
+		}
 	}
-	stream.UpdatedAt = now
-	stream.mu.Unlock()
+	if execID := strings.TrimSpace(pending.ExecID); execID != "" {
+		if stream.RetiredExecIDs == nil {
+			stream.RetiredExecIDs = make(map[string]time.Time)
+		}
+		stream.RetiredExecIDs[execID] = now
+		if len(stream.RetiredExecIDs) > retiredExecLimit {
+			trimOldestRetired(stream.RetiredExecIDs)
+		}
+	}
+}
+
+// retireAllPendingExecsLocked retires every pending exec at once. It is used
+// where a turn drops its pending work wholesale. Caller holds stream.mu.
+func retireAllPendingExecsLocked(stream *ActiveStream, now time.Time) {
+	for _, pending := range stream.PendingExecs {
+		retireExecLocked(stream, pending, now)
+	}
+}
+
+// trimOldestRetired drops the older half of the records.
+func trimOldestRetired[K comparable](records map[K]time.Time) {
+	stamps := make([]time.Time, 0, len(records))
+	for _, at := range records {
+		stamps = append(stamps, at)
+	}
+	sort.Slice(stamps, func(i, j int) bool { return stamps[i].Before(stamps[j]) })
+	cutoff := stamps[len(stamps)/2]
+	for key, at := range records {
+		if at.Before(cutoff) {
+			delete(records, key)
+		}
+	}
 }
 
 // ignoreStaleExecProviderPass ignores only an exec whose exact identity is no
@@ -973,30 +1042,23 @@ func (service *Service) ignoreStaleExecProviderPass(stream *ActiveStream, pendin
 	return false
 }
 
-func recentlyCompletedExecExists(stream *ActiveStream, messageID uint32) bool {
-	if stream == nil || messageID == 0 {
+// execWasRetired reports whether this stream once awaited the exec named by
+// either identity and has since stopped.
+func execWasRetired(stream *ActiveStream, execID string, messageID uint32) bool {
+	if stream == nil {
 		return false
 	}
-	now := time.Now().UTC()
-	cutoff := now.Add(-completedExecRetention)
-
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	if len(stream.RecentCompletedExecs) == 0 {
-		return false
-	}
-	completedAt, ok := stream.RecentCompletedExecs[messageID]
-	for id, ts := range stream.RecentCompletedExecs {
-		if ts.Before(cutoff) {
-			delete(stream.RecentCompletedExecs, id)
+	if trimmed := strings.TrimSpace(execID); trimmed != "" {
+		if _, ok := stream.RetiredExecIDs[trimmed]; ok {
+			return true
 		}
 	}
-	if !ok {
-		return false
+	if messageID != 0 {
+		if _, ok := stream.RecentCompletedExecs[messageID]; ok {
+			return true
+		}
 	}
-	if completedAt.Before(cutoff) {
-		delete(stream.RecentCompletedExecs, messageID)
-		return false
-	}
-	return true
+	return false
 }

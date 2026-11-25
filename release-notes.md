@@ -1,3 +1,35 @@
+## v1.0.55
+
+### Fixed
+
+- **`AwaitShell` rewritten to match the Cursor client's own tool**:
+  - The shell's terminal file is now the source of truth: completion, exit code and run time come from its footer, `pattern` is matched against the command's output only, and the call really blocks until the command ends, the pattern matches or `block_until_ms` runs out.
+  - Works on remote workspaces (WSL, SSH, containers), where the terminal file is read through the IDE. Output containing `---` lines no longer hides a finished command, and the file's header lines are no longer matched as output.
+  - A wait now counts as outstanding work for the turn and is bounded only by its own `block_until_ms`: watchdogs no longer answer it early, and a cancel or a new turn drops it cleanly.
+  - When a `Shell` command moves to the background, the result the model reads now carries the output collected so far and the terminals folder that holds the rest.
+- **Long-running commands no longer end the turn with `pending exec not found`**:
+  - A foreground shell is no longer replaced by a synthetic result about 30 seconds after it was requested. The foreground window now starts when the command starts running (not while it waits for approval), honors the `timeout` of Cursor-account shells, and is extended by up to 2 minutes while the IDE still heartbeats for the command.
+  - The turn-stale watchdog no longer force-completes a turn while the IDE is still reporting in on a pending tool; heartbeats are now tracked for every tool kind, not only shells.
+  - Results and acknowledgements that arrive for an exec that was already closed (after a recovery, a cancel or a new turn) are recognized and dropped instead of failing the turn.
+- **Each chat keeps its own shell**:
+  - The IDE keeps a shell's working directory and environment per conversation id. Shell commands from BYOK models carried no id, so every chat and subagent in a window shared one shell; they now carry the chat's id.
+  - Cursor-account shells are pinned to the local chat's id, so the shell no longer resets to the workspace root when a turn continues on a fresh upstream conversation.
+- **Chats that cursor-byok has no history for can be continued**:
+  - Todos, the plan and the summary that the IDE sends as blob references are now resolved instead of failing every turn with `decode imported todo: proto: cannot parse invalid wire-format data`; a reference that cannot be found is dropped.
+- **Checkpoints and message ordering**:
+  - A checkpoint blob that the IDE confirms late no longer fails a running turn with `checkpoint_sync_error`; mid-turn it is skipped and retried.
+  - History entries appended while a checkpoint was being written are no longer counted as saved without reaching the store.
+  - The append sequencer keeps its place for a request that is still running; after 10 quiet minutes, later IDE messages could previously wait on one that would never arrive.
+
+### Improved
+
+- **Faster Cursor-account turns**:
+  - Replies to Cursor's servers (tool results, blob acknowledgements) now travel side by side in a 32-frame window, as the IDE's own transport sends them, instead of one round trip at a time.
+  - The agent host is remembered for 10 minutes per credential instead of being looked up before every model pass.
+- **Less work per tool call for every model**:
+  - Checkpoint requests inside the send interval are deferred without building the checkpoint, the metadata sync after each tool result moved off the stream's actor into the debounced checkpoint persist, and client heartbeats are no longer written to history.
+  - The local proxy keeps up to 64 idle connections to the backend instead of 2, so bursts of IDE messages no longer reopen connections.
+
 ## v1.0.54
 
 ### Added
@@ -63,11 +95,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.54-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.54-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.54-windows-arm64-installer.exe` 或 `cursor-byok-1.0.54-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.54-windows-x32-installer.exe` 或 `cursor-byok-1.0.54-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.54-macos-arm64.dmg` 或 `cursor-byok-1.0.54-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.54-macos-x64.dmg` 或 `cursor-byok-1.0.54-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.54-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.55-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.55-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.55-windows-arm64-installer.exe` 或 `cursor-byok-1.0.55-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.55-windows-x32-installer.exe` 或 `cursor-byok-1.0.55-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.55-macos-arm64.dmg` 或 `cursor-byok-1.0.55-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.55-macos-x64.dmg` 或 `cursor-byok-1.0.55-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.55-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

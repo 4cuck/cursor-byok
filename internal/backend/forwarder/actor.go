@@ -361,7 +361,7 @@ func (service *Service) prepareStreamForForcedTurn(intent InboundIntent) error {
 	stream.mu.Unlock()
 
 	for _, pending := range cleanupAllPendingExecs(stream) {
-		if strings.TrimSpace(pending.ExecKind) == "delegation_aggregate" {
+		if strings.TrimSpace(pending.ExecKind) == "delegation_aggregate" || strings.TrimSpace(pending.ExecKind) == awaitShellExecKind {
 			continue
 		}
 		if err := service.broker.Publish(intent.RequestID, StreamEvent{

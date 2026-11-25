@@ -61,6 +61,33 @@ func decodeImportedTurn(raw []byte, blobs importedBlobStore) (*agentv1.Conversat
 	return nil, nil, fmt.Errorf("decode imported inline turn")
 }
 
+// decodeImportedStateField decodes one field of an imported conversation state
+// into message and reports whether it holds something usable.
+//
+// The current client keeps these fields (todos, plan, summary) in its blob
+// store, like turns and prompt messages, and sends only the 32-byte id. Older
+// clients, and this backend's own checkpoints, carry the encoded message
+// inline. An id is random bytes: it usually fails to parse and can, rarely,
+// parse into nonsense, so accept judges what was decoded.
+//
+// false means the field is an id whose blob is not available, or cannot be
+// decoded. The caller drops it. What a conversation was tracking is never a
+// reason to refuse the conversation.
+func decodeImportedStateField(raw []byte, blobs importedBlobStore, message proto.Message, accept func() bool) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	data := raw
+	if resolved, ok := blobs.resolve(raw); ok {
+		data = resolved
+	}
+	if err := proto.Unmarshal(data, message); err != nil || !accept() {
+		proto.Reset(message)
+		return false
+	}
+	return true
+}
+
 func decodeImportedUserMessage(raw []byte, blobs importedBlobStore) (*agentv1.UserMessage, error) {
 	data := raw
 	if resolved, ok := blobs.resolve(raw); ok {

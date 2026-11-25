@@ -119,14 +119,18 @@ func (service *Service) syncConversationRecord(conversationID string, conversati
 	if err != nil {
 		return err
 	}
-	if _, err := service.store.CreateConversation(
-		conversationID,
-		mode,
-		conversation.ParentConversationID,
-		conversation.ParentToolCallID,
-		conversation.RootConversationID,
-	); err != nil {
-		return err
+	// Creating is only needed once. For a conversation that already exists it
+	// changes nothing, yet it reads the whole history and writes it back.
+	if !service.store.ConversationExists(conversationID) {
+		if _, err := service.store.CreateConversation(
+			conversationID,
+			mode,
+			conversation.ParentConversationID,
+			conversation.ParentToolCallID,
+			conversation.RootConversationID,
+		); err != nil {
+			return err
+		}
 	}
 	_, err = service.store.UpdateConversationMeta(conversationID, func(item *ConversationFile) error {
 		if item == nil {
@@ -159,6 +163,28 @@ func (service *Service) syncConversationRecord(conversationID string, conversati
 		return nil
 	})
 	return err
+}
+
+// deferSummaryCarryForward is syncSummaryCarryForward for the paths that run
+// once per tool result. Those run on the stream's actor, where the model's
+// output and every other tool result wait behind them, so they must not read
+// and write the history store inline. The debounced checkpoint persist writes
+// the pending entries and then performs this same metadata sync a moment
+// later, and a turn that ends flushes it synchronously.
+func (service *Service) deferSummaryCarryForward(conversationID string, requestID string, modelCallID string) {
+	if service == nil || service.store == nil || strings.TrimSpace(requestID) == "" || strings.TrimSpace(modelCallID) == "" {
+		return
+	}
+	stream, ok := service.broker.Get(requestID)
+	if !ok || stream == nil {
+		return
+	}
+	if strings.TrimSpace(conversationID) == "" {
+		stream.mu.Lock()
+		conversationID = stream.ConversationID
+		stream.mu.Unlock()
+	}
+	service.scheduleCheckpointPersist(stream, conversationID)
 }
 
 func (service *Service) syncSummaryCarryForward(_ string, requestID string, modelCallID string) error {

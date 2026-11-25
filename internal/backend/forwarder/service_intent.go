@@ -337,6 +337,11 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	stream.ManualCompaction = intent.ManualCompaction
 	stream.PendingProviderAction = providerActionNone
 	stream.PendingCompaction = nil
+	dropAwaitShellsLocked(stream)
+	// Execs left over from the previous turn on this stream may still be
+	// answered by the client. Retire them (and keep earlier retirements) so
+	// those answers are dropped instead of failing this new turn.
+	retireAllPendingExecsLocked(stream, time.Now().UTC())
 	stream.PendingExecs = make(map[string]runtimecore.PendingExec)
 	stream.PendingInteractions = make(map[string]runtimecore.PendingInteraction)
 	// Close any leftover completion signals from previous turn, then allocate a fresh map.
@@ -349,7 +354,9 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	if stream.ExecCompletionSignals == nil {
 		stream.ExecCompletionSignals = make(map[string]chan struct{})
 	}
-	stream.RecentCompletedExecs = make(map[uint32]time.Time)
+	if stream.RecentCompletedExecs == nil {
+		stream.RecentCompletedExecs = make(map[uint32]time.Time)
+	}
 	stream.approvedCursorWeb = nil
 	stream.activeCursorEdits = nil
 	stream.observedFileContents = nil
@@ -532,7 +539,8 @@ func (service *Service) handleCancelIntent(intent InboundIntent) error {
 			service.updateNativeDelegationStatus(pending.ExecID, delegation.TaskCanceled, "Cursor 子代理已取消", "subagent canceled")
 			service.interruptNativeChildConversation(pending.ExecID, followUpCancel)
 		}
-		if strings.TrimSpace(pending.ExecKind) == "delegation_aggregate" {
+		if strings.TrimSpace(pending.ExecKind) == "delegation_aggregate" || strings.TrimSpace(pending.ExecKind) == awaitShellExecKind {
+			// Nothing runs in the client for these; there is no exec to abort.
 			continue
 		}
 		if err := service.broker.Publish(intent.RequestID, StreamEvent{
@@ -592,6 +600,12 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 		if intent.HasExplicitMode || intent.StartsRun {
 			return fmt.Errorf("metadata intent requires active request context: %s", intent.RequestID)
 		}
+		return nil
+	}
+	// The client heartbeats every few seconds while a run is open. A heartbeat
+	// carries nothing about the conversation; recording one as a history entry
+	// only grows the history and makes the store rewrite it.
+	if intent.ClientMessage.GetClientHeartbeat() != nil {
 		return nil
 	}
 	// AsyncAskQuestionCompletionAction：客户端异步 AskQuestion UI 完成时通过

@@ -456,7 +456,7 @@ func applyBackgroundShellSpawn(result ExecApplyResult, pending runtimecore.Pendi
 			WorkingDirectory: success.GetWorkingDirectory(),
 			Pid:              success.Pid,
 		}
-		result.ToolCall = buildShellBackgroundedToolCall(pending.ToolCallID, pending.ArgsJSON, backgrounded)
+		result.ToolCall = buildShellBackgroundedToolCall(pending.ToolCallID, pending.ArgsJSON, backgrounded, "", "")
 		result.ToolResultPayload = fmt.Sprintf("shell backgrounded: shell_id=%d pid=%d command=%s", success.GetShellId(), success.GetPid(), strings.TrimSpace(success.GetCommand()))
 		return result, nil
 	}
@@ -479,7 +479,12 @@ func applyBackgroundShellSpawn(result ExecApplyResult, pending runtimecore.Pendi
 }
 
 // buildShellBackgroundedToolCall 构造 Shell 被转入后台时的完成态 ToolCall。
-func buildShellBackgroundedToolCall(toolCallID string, argsJSON []byte, backgrounded *agentv1.ShellStreamBackgrounded) *agentv1.ToolCall {
+//
+// This card is also what the model reads as the tool result, so it carries
+// what the client's own result carries: the output collected before the
+// command was backgrounded (stdout and stderr are what was captured so far)
+// and why it was backgrounded.
+func buildShellBackgroundedToolCall(toolCallID string, argsJSON []byte, backgrounded *agentv1.ShellStreamBackgrounded, stdout string, stderr string) *agentv1.ToolCall {
 	args := decodeShellArgsForResult(argsJSON)
 	shellArgs := &agentv1.ShellArgs{
 		Command:          args.Command,
@@ -494,6 +499,12 @@ func buildShellBackgroundedToolCall(toolCallID string, argsJSON []byte, backgrou
 		ExitCode:          0,
 		ShellId:           uint32Ptr(backgrounded.GetShellId()),
 		InterleavedOutput: stringPtr(""),
+	}
+	if collected := buildShellInterleavedOutput(stdout, stderr); collected != nil {
+		successPayload.InterleavedOutput = collected
+	}
+	if backgrounded.Reason != nil {
+		successPayload.BackgroundReason = backgrounded.Reason
 	}
 	if workingDirectory := strings.TrimSpace(backgrounded.GetWorkingDirectory()); workingDirectory != "" {
 		successPayload.WorkingDirectory = workingDirectory

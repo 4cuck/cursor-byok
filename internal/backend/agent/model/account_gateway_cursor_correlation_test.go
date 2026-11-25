@@ -33,14 +33,16 @@ func runCursorWireExchange(t *testing.T, requests, results []string, answerQueri
 	queries := make(chan *agentv1.InteractionResponse)
 	queryAppended := make(chan struct{}, 1)
 	var calls []ModelEvent
-	var frames []*agentv1.AgentClientMessage
-	appendFrame := func(_ context.Context, _ int64, payload []byte) error {
-		m := &agentv1.AgentClientMessage{}
-		if err := proto.Unmarshal(payload, m); err != nil {
+	// Frames are sent without waiting for one another and may arrive in any
+	// order. They are recorded with their sequence number and read back in
+	// that order, which is the order the server processes them in.
+	recorder := &appendRecorder{}
+	appendFrame := func(ctx context.Context, seq int64, payload []byte) error {
+		if err := recorder.append(ctx, seq, payload); err != nil {
 			return err
 		}
-		frames = append(frames, m)
-		if m.GetInteractionResponse() != nil {
+		m := &agentv1.AgentClientMessage{}
+		if proto.Unmarshal(payload, m) == nil && m.GetInteractionResponse() != nil {
 			queryAppended <- struct{}{}
 		}
 		return nil
@@ -91,6 +93,14 @@ func runCursorWireExchange(t *testing.T, requests, results []string, answerQueri
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	delivered := recorder.delivered()
+	frames := make([]*agentv1.AgentClientMessage, 0, len(delivered))
+	for index, frame := range delivered {
+		if want := int64(index + 1); frame.seq != want {
+			t.Fatalf("frame %d has sequence number %d, want %d", index, frame.seq, want)
+		}
+		frames = append(frames, frame.msg)
 	}
 	return calls, frames
 }

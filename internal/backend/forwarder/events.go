@@ -521,10 +521,8 @@ func buildStartedToolCall(invocation runtimecore.ToolInvocation) *agentv1.ToolCa
 			},
 		}
 	case "AwaitShell":
-		args, err := decodeAwaitShellArgs(invocation.ArgsJSON)
-		if err != nil {
-			args = awaitShellArgs{}
-		}
+		// Invalid arguments still decode partially; show what was understood.
+		args, _ := decodeAwaitShellArgs(invocation.ArgsJSON)
 		return buildAwaitShellToolCall(buildAwaitArgsFromAwaitShellArgs(args), nil)
 	case "WriteShellStdin":
 		var input struct {

@@ -1130,6 +1130,12 @@ func pollWillActuallyBlock(name string, argsJSON []byte) bool {
 	if !isPollingAwaitTool(name) {
 		return false // not a polling tool: always counts toward doom-loop
 	}
+	if strings.TrimSpace(name) == "AwaitShell" {
+		// Same normalization the tool itself applies: a missing, negative or
+		// malformed block_until_ms falls back to the 30s default and blocks.
+		args, err := decodeAwaitShellArgs(argsJSON)
+		return err == nil && args.BlockUntilMS > 0
+	}
 	argsMap, err := runtimecore.DecodeArgsMap(argsJSON)
 	if err != nil {
 		return false

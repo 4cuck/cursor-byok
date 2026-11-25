@@ -615,9 +615,45 @@ func TestCursorAccountGatewayAcksBlobWriteBeforeText(t *testing.T) {
 	}
 }
 
+// cursorAppendOrder puts the appends of each stream back in sequence order, as
+// Cursor's server does: the client sends frames without waiting for one
+// another, so they can arrive in any order. Every stream starts with its run
+// request at sequence number 0.
+type cursorAppendOrder struct {
+	mu      sync.Mutex
+	streams map[string]*cursorAppendStream
+}
+
+type cursorAppendStream struct {
+	next    int64
+	arrived map[int64]bool
+}
+
+// arrive records one append and calls process for every frame of that stream
+// that is now next in sequence.
+func (order *cursorAppendOrder) arrive(requestID string, seq int64, process func(int64)) {
+	order.mu.Lock()
+	defer order.mu.Unlock()
+	if order.streams == nil {
+		order.streams = make(map[string]*cursorAppendStream)
+	}
+	stream := order.streams[requestID]
+	if stream == nil {
+		stream = &cursorAppendStream{arrived: make(map[int64]bool)}
+		order.streams[requestID] = stream
+	}
+	stream.arrived[seq] = true
+	for stream.arrived[stream.next] {
+		delete(stream.arrived, stream.next)
+		process(stream.next)
+		stream.next++
+	}
+}
+
 func runCursorAccountFixture(t *testing.T, results chan *agentv1.ExecClientMessage, play func(http.ResponseWriter, http.Flusher, <-chan int64)) []ModelEvent {
 	t.Helper()
 	appended := make(chan int64, 4)
+	order := &cursorAppendOrder{}
 	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != cursorAccountRunPath {
 			http.NotFound(w, r)
@@ -647,7 +683,9 @@ func runCursorAccountFixture(t *testing.T, results chan *agentv1.ExecClientMessa
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			appended <- msg.GetAppendSeqno()
+			// The script below sees frames in the order the server would
+			// process them, not the order they happened to arrive in.
+			order.arrive(msg.GetRequestId().GetRequestId(), msg.GetAppendSeqno(), func(seq int64) { appended <- seq })
 			w.WriteHeader(http.StatusOK)
 		default:
 			http.NotFound(w, r)
@@ -826,23 +864,21 @@ func TestCursorAccountConversationSearchResultClosesOriginalExec(t *testing.T) {
 		ConversationSearchResult: &agentv1.ConversationSearchResult{Result: &agentv1.ConversationSearchResult_Success{Success: &agentv1.ConversationSearchSuccess{}}},
 	}}
 	close(results)
-	var frames []*agentv1.AgentClientMessage
-	serveCursorAccountToolResults(context.Background(), func(_ context.Context, payload []byte) error {
-		msg := &agentv1.AgentClientMessage{}
-		if err := proto.Unmarshal(payload, msg); err != nil {
-			t.Fatal(err)
-		}
-		frames = append(frames, msg)
-		return nil
-	}, results, pending, nil, nil)
+	// Frames are delivered without waiting for one another; the sequence
+	// number is what puts the stream_close after its result.
+	recorder := &appendRecorder{}
+	sender := newCursorAccountFrameSender(recorder.append)
+	serveCursorAccountToolResults(context.Background(), sender, results, pending, nil, nil)
+	sender.drain(5 * time.Second)
+	frames := recorder.delivered()
 	if len(frames) != 2 {
 		t.Fatalf("got %d frames; want a search result followed by one stream_close", len(frames))
 	}
-	result := frames[0].GetExecClientMessage()
+	result := frames[0].msg.GetExecClientMessage()
 	if result.GetConversationSearchResult().GetSuccess() == nil || result.GetId() != id || result.GetExecId() != "search-exec" {
 		t.Fatalf("unexpected search result: %v", result)
 	}
-	if got := frames[1].GetExecClientControlMessage().GetStreamClose().GetId(); got != id {
+	if got := frames[1].msg.GetExecClientControlMessage().GetStreamClose().GetId(); got != id {
 		t.Fatalf("stream_close ID = %d, want %d", got, id)
 	}
 }
@@ -865,19 +901,18 @@ func TestCursorAccountPrechecksAndContextSendStreamClose(t *testing.T) {
 	} {
 		writeCursorAgentFrame(&input, msg)
 	}
-	var seqs []int64
-	var frames []*agentv1.AgentClientMessage
-	err := readCursorAccountStream(context.Background(), func(_ context.Context, seq int64, raw []byte) error {
-		seqs = append(seqs, seq)
-		m := &agentv1.AgentClientMessage{}
-		if err := proto.Unmarshal(raw, m); err != nil {
-			return err
-		}
-		frames = append(frames, m)
-		return nil
-	}, "req", "conv", "model", "cursor", 0, &input, nil, nil, nil, nil, func(ModelEvent) error { return nil })
+	// Frames are sent without waiting for one another; read them back in
+	// sequence order, which is the order the server processes them in.
+	recorder := &appendRecorder{}
+	err := readCursorAccountStream(context.Background(), recorder.append, "req", "conv", "model", "cursor", 0, &input, nil, nil, nil, nil, func(ModelEvent) error { return nil })
 	if err != nil {
 		t.Fatal(err)
+	}
+	var seqs []int64
+	var frames []*agentv1.AgentClientMessage
+	for _, frame := range recorder.delivered() {
+		seqs = append(seqs, frame.seq)
+		frames = append(frames, frame.msg)
 	}
 	if len(frames) != 6 {
 		t.Fatalf("got %d frames, want 6 (3 results + 3 stream_close)", len(frames))

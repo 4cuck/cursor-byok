@@ -86,6 +86,10 @@ func (service *Service) persistCheckpointDelta(stream *ActiveStream, conversatio
 	}
 	conversation := cloneConversationFile(stream.CheckpointConversation)
 	lastPersisted := stream.CheckpointLastPersistedEntrySeq
+	// Everything up to snapshotMaxSeq is what this run can account for. The
+	// actor keeps appending while the store is being written; those entries
+	// have higher sequence numbers and belong to the next run.
+	snapshotMaxSeq := maxEntrySeq(conversation.Entries)
 	var pending []HistoryEntry
 	for _, entry := range conversation.Entries {
 		if entry.Seq > lastPersisted {
@@ -108,12 +112,8 @@ func (service *Service) persistCheckpointDelta(stream *ActiveStream, conversatio
 			}
 		}
 		stream.CheckpointLastPersistedEntrySeq = maxEntrySeq(assigned)
-		if stream.CheckpointPersistTimer != nil {
-			stream.CheckpointPersistTimer.Stop()
-			stream.CheckpointPersistTimer = nil
-		}
-		stream.mu.Unlock()
 		conversation = cloneConversationFile(stream.CheckpointConversation)
+		stream.mu.Unlock()
 	}
 
 	if conversation == nil {
@@ -124,13 +124,24 @@ func (service *Service) persistCheckpointDelta(stream *ActiveStream, conversatio
 	}
 
 	stream.mu.Lock()
-	defer stream.mu.Unlock()
-	if stream.CheckpointPersistTimer != nil {
+	if len(pending) == 0 {
+		// Re-baseline (a compaction may have renumbered the entries), but only
+		// up to what this run saw. Using the current maximum here would count
+		// entries appended during the write as persisted, and they would never
+		// reach the store.
+		stream.CheckpointLastPersistedEntrySeq = snapshotMaxSeq
+	}
+	appendedDuringRun := maxEntrySeq(conversationEntries(stream.CheckpointConversation)) > snapshotMaxSeq
+	timerArmed := stream.CheckpointPersistTimer != nil
+	if !appendedDuringRun && timerArmed {
 		stream.CheckpointPersistTimer.Stop()
 		stream.CheckpointPersistTimer = nil
 	}
-	if len(pending) == 0 {
-		stream.CheckpointLastPersistedEntrySeq = maxEntrySeq(conversationEntries(stream.CheckpointConversation))
+	stream.mu.Unlock()
+	if appendedDuringRun {
+		// Those entries scheduled their own run; make sure it happens. The
+		// timer that led to this run has fired and does not count.
+		service.scheduleCheckpointPersist(stream, conversationID)
 	}
 	return nil
 }

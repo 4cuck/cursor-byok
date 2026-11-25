@@ -9,6 +9,24 @@ func (service *Service) registerStreamLifecycleHooks() {
 		return
 	}
 	service.broker.SetStreamRemovedHook(service.handleStreamRemoved)
+	if service.appendSeq != nil {
+		service.appendSeq.live = service.requestStreamIsOpen
+	}
+}
+
+// requestStreamIsOpen reports whether the request has a stream that has not
+// ended. The append sequence of such a request must not be forgotten.
+func (service *Service) requestStreamIsOpen(requestID string) bool {
+	if service == nil || service.broker == nil {
+		return false
+	}
+	stream, ok := service.broker.Get(requestID)
+	if !ok || stream == nil {
+		return false
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return !isTerminalStreamStatus(stream.Status)
 }
 
 func (service *Service) handleStreamRemoved(info StreamRemovedInfo) {

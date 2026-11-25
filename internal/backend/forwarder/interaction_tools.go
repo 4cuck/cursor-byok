@@ -478,9 +478,7 @@ func (service *Service) handleInteractionResult(intent InboundIntent) error {
 			return err
 		}
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, intent.RequestID, pending.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, intent.RequestID, pending.ModelCallID)
 	if err := service.publishCheckpoint(intent.RequestID, stream.ConversationID); err != nil {
 		return err
 	}
@@ -1045,9 +1043,7 @@ func (service *Service) completeImmediateToolResult(stream *ActiveStream, invoca
 	if err := service.publishToolCallCompleted(stream.RequestID, invocation.CallID, invocation.ModelCallID, toolCall); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, invocation.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, stream.RequestID, invocation.ModelCallID)
 	if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 		return err
 	}
@@ -1099,9 +1095,7 @@ func (service *Service) recoverStaleInteractionWithoutResponse(stream *ActiveStr
 	}); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, pending.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, stream.RequestID, pending.ModelCallID)
 	if err := service.publishToolCallCompleted(stream.RequestID, pending.ToolCallID, pending.ModelCallID, nil); err != nil {
 		return err
 	}

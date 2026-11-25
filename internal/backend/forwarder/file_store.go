@@ -112,6 +112,20 @@ func (store *ConversationFileStore) CreateConversation(conversationID string, mo
 	})
 }
 
+// ConversationExists reports whether the conversation already has a state
+// file. It does not read or lock anything.
+func (store *ConversationFileStore) ConversationExists(conversationID string) bool {
+	if store == nil {
+		return false
+	}
+	normalizedConversationID, err := validateConversationID(conversationID)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(store.statePath(normalizedConversationID))
+	return err == nil && !info.IsDir()
+}
+
 // LoadConversation 读取 state.json + context.json。
 func (store *ConversationFileStore) LoadConversation(conversationID string) (*ConversationFile, error) {
 	if store == nil {

@@ -385,9 +385,7 @@ func (service *Service) finishWriteOperationWithNotice(stream *ActiveStream, too
 	if err := service.publishToolCallCompleted(stream.RequestID, strings.TrimSpace(toolCallID), strings.TrimSpace(modelCallID), toolCall); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, strings.TrimSpace(modelCallID)); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, stream.RequestID, strings.TrimSpace(modelCallID))
 	if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 		return err
 	}

@@ -92,6 +92,27 @@ func (service *Service) handleTurnStaleTimeout(stream *ActiveStream, payload *st
 		return nil
 	}
 
+	// A turn is stale when the client has stopped working on it, not when a
+	// tool is slow. While the client still reports in on a pending exec (it
+	// heartbeats every few seconds for as long as it is running the tool), the
+	// real result is coming and a synthetic one would replace it. Each exec
+	// kind keeps its own upper bound: the exec watchdog, and for shells the
+	// foreground recovery.
+	if execID, heardAgo, alive := pendingExecClientIsAlive(stream, time.Now().UTC()); alive {
+		stream.mu.Lock()
+		stream.TurnStaleGraceStartedAt = time.Time{}
+		stream.mu.Unlock()
+		if service.debug != nil {
+			service.debug.LogRuntime(context.Background(), requestID, conversationID, "turn_stale_deferred_client_alive", map[string]any{
+				"exec_id":       execID,
+				"heard_ago":     heardAgo.String(),
+				"pending_execs": pendingExecCount,
+			})
+		}
+		service.scheduleTurnStaleWatchdog(stream)
+		return nil
+	}
+
 	if !inGrace {
 		// 阶段一：进入宽限期，给真实工具结果一次机会。
 		// 注意：不再调用 appendSeq.Reset()。旧实现把 next 强制重置为 1，
@@ -118,12 +139,41 @@ func (service *Service) handleTurnStaleTimeout(stream *ActiveStream, payload *st
 	return service.forceCompleteTurnStale(stream, requestID, conversationID, pendingExecCount)
 }
 
+// pendingExecClientIsAlive reports whether the client has been heard from
+// recently on any pending exec that this watchdog would otherwise close.
+func pendingExecClientIsAlive(stream *ActiveStream, now time.Time) (string, time.Duration, bool) {
+	if stream == nil {
+		return "", 0, false
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	for _, pending := range stream.PendingExecs {
+		if isTurnStaleProtectedExecKind(pending.ExecKind) {
+			continue
+		}
+		// OpenedAt alone is not a sign of life: only what the client sent counts.
+		heard := pending.LastShellHeartbeatAt
+		if pending.LastShellActivityAt.After(heard) && pending.LastShellActivityAt.After(pending.OpenedAt) {
+			heard = pending.LastShellActivityAt
+		}
+		if heard.IsZero() {
+			continue
+		}
+		if ago := now.Sub(heard); ago < shellClientLivenessWindow {
+			return pending.ExecID, ago, true
+		}
+	}
+	return "", 0, false
+}
+
 func isTurnStaleProtectedExecKind(kind string) bool {
 	switch strings.TrimSpace(kind) {
 	case "subagent", "delegation_aggregate":
 		return true
 	default:
-		return false
+		// An AwaitShell wait is bounded by its own block_until_ms; answering it
+		// early here would tell the model a wait happened that did not.
+		return isAwaitShellExecKind(kind)
 	}
 }
 

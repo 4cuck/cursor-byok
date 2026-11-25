@@ -718,7 +718,14 @@ func (service *Service) applyExecProgress(stream *ActiveStream, pending runtimec
 }
 
 func (service *Service) applyExecControlProgress(stream *ActiveStream, pending runtimecore.PendingExec, message *agentv1.ExecClientControlMessage) runtimecore.PendingExec {
-	if stream == nil || message == nil || strings.TrimSpace(pending.ExecKind) != "shell" {
+	if stream == nil || message == nil {
+		return pending
+	}
+	_, isHeartbeat := message.GetMessage().(*agentv1.ExecClientControlMessage_Heartbeat)
+	// The client heartbeats for every exec it is handling, whatever the tool.
+	// Remember it for all kinds: it is the only sign that a slow tool is still
+	// being worked on. Everything else below is shell stream bookkeeping.
+	if !isHeartbeat && strings.TrimSpace(pending.ExecKind) != "shell" {
 		return pending
 	}
 	stream.mu.Lock()

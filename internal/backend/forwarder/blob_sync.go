@@ -327,6 +327,16 @@ func (service *Service) discardPendingCheckpoint(stream *ActiveStream, cause err
 	}
 }
 
+// abandonPendingCheckpoint gives up on the checkpoint whose blobs the client
+// did not take (a write was rejected or never acknowledged). The checkpoint is
+// never published: it would point at blobs the client does not have.
+//
+// What happens to the turn depends on whether anything waits for that
+// checkpoint. At the end of a turn the turn's end does, so the turn is ended
+// with an error rather than left in the checkpointing phase. In the middle of
+// a turn nothing does: the turn goes on and the next checkpoint writes the
+// blobs again. The exception is a turn nobody is attending any more, which is
+// ended as before so that whatever is queued behind it can start.
 func (service *Service) abandonPendingCheckpoint(stream *ActiveStream, cause error) error {
 	if service == nil || stream == nil {
 		return nil
@@ -336,16 +346,38 @@ func (service *Service) abandonPendingCheckpoint(stream *ActiveStream, cause err
 	stream.PendingCheckpoint = nil
 	stream.PendingCheckpointBlobWrites = make(map[uint32]pendingCheckpointBlobWrite)
 	stream.PendingCheckpointBlobRequests = make(map[string]uint32)
+	// The abandoned checkpoint was never sent. Forget its hash, or an
+	// unchanged conversation would be skipped as already sent.
+	stream.LastCheckpointWireHash = ""
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
 	clearStreamTimer(stream, providerTimerKey(streamTimerCheckpointBlobs, ""))
-	if cause != nil {
-		logger.Infof("forwarder checkpoint blob sync abandoned request_id=%s conversation_id=%s err=%v", stream.RequestID, stream.ConversationID, cause)
+	if pending == nil {
+		if cause != nil {
+			logger.Infof("forwarder checkpoint blob sync abandoned request_id=%s conversation_id=%s err=%v", stream.RequestID, stream.ConversationID, cause)
+		}
+		return nil
 	}
-	if pending != nil {
+	endsTurn := pending.TerminalAction.kind != checkpointTerminalActionNone || !service.turnIsAttended(stream)
+	logger.Infof("forwarder checkpoint blob sync abandoned request_id=%s conversation_id=%s ends_turn=%t err=%v", stream.RequestID, stream.ConversationID, endsTurn, cause)
+	if endsTurn {
 		return service.failTerminalCheckpointSync(stream, cause)
 	}
 	return nil
+}
+
+// turnIsAttended reports whether someone is still there for the turn to go on
+// for: the client is subscribed to its stream, and no newer run of the same
+// conversation is waiting for this one to end.
+func (service *Service) turnIsAttended(stream *ActiveStream) bool {
+	stream.mu.Lock()
+	subscribers := len(stream.Subscribers)
+	conversationID := stream.ConversationID
+	stream.mu.Unlock()
+	if subscribers == 0 {
+		return false
+	}
+	return service.runQueue == nil || service.runQueue.Len(conversationID) == 0
 }
 
 func (service *Service) finishCanceledTurnAfterCheckpoint(stream *ActiveStream, message string) error {

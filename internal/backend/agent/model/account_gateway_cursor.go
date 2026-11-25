@@ -45,6 +45,8 @@ var cursorAccountHTTPClient = &http.Client{}
 
 type cursorAccountGateway struct {
 	auth CursorAccountAuthorizer
+	// agentHosts remembers where each account's agent stream lives.
+	agentHosts cursorAccountAgentHostCache
 }
 
 // OpenCursorAccountGateway returns the live Cursor agent relay.
@@ -253,7 +255,7 @@ func (gateway *cursorAccountGateway) streamAuthorizedOnce(ctx context.Context, r
 	if modelID == "" {
 		modelID = strings.TrimSpace(req.ModelID)
 	}
-	host := cursorAccountAgentHost(ctx, authorization)
+	host := gateway.agentHosts.host(ctx, authorization)
 	requestID := uuid.NewString()
 	run := cursorAccountRunMessageFor(req, modelID, stateConversationID, historyBudget)
 	if env := run.GetRunRequest().GetAction().GetUserMessageAction().GetRequestContext().GetEnv(); env != nil {
@@ -267,10 +269,13 @@ func (gateway *cursorAccountGateway) streamAuthorizedOnce(ctx context.Context, r
 	applyCursorAccountHeaders(httpReq, authorization, "application/connect+proto")
 	resp, err := cursorAccountHTTPClient.Do(httpReq)
 	if err != nil {
+		// The remembered host may be the reason; ask again next time.
+		gateway.agentHosts.forget(authorization)
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		gateway.agentHosts.forget(authorization)
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return newCursorAccountRefusalError(fmt.Sprintf("cursor agent stream returned HTTP %d: ", resp.StatusCode), raw)
 	}
@@ -541,33 +546,50 @@ func (routes *cursorExecRoutes) correlate(msg *agentv1.ExecClientMessage) (*agen
 	return msg, closeStream && routes.openByID[key.id] == 0
 }
 
+// cursorAccountReplyFailure is a frame the stream reader answered with that
+// could not be delivered.
+type cursorAccountReplyFailure struct {
+	err error
+	// blobAck marks a blob acknowledgement: losing one after the turn ended
+	// only costs the trailing checkpoint, not the turn.
+	blobAck bool
+}
+
 func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppendFunc, requestID, conversationID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, toolResults <-chan *agentv1.ExecClientMessage, interactionReplies <-chan *agentv1.InteractionResponse, requestContext *agentv1.RequestContext, sink func(ModelEvent) error) error {
+	sender := newCursorAccountFrameSender(appendFrame)
+	// Frames are sent under streamCtx so that they outlive the read loop: a
+	// stream that ended cleanly gives the frames still on their way a moment
+	// to arrive (the last blob acknowledgements of a turn are among them), and
+	// only then cancels whatever is left.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	err := readCursorAccountFrames(ctx, streamCtx, sender, requestID, conversationID, modelID, providerLabel, silentTimeout, body, appendErr, toolResults, interactionReplies, requestContext, sink)
+	if err == nil {
+		sender.drain(cursorAccountAppendDrain)
+	}
+	return err
+}
+
+func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sender *cursorAccountFrameSender, requestID, conversationID, modelID, providerLabel string, silentTimeout time.Duration, body io.Reader, appendErr <-chan error, toolResults <-chan *agentv1.ExecClientMessage, interactionReplies <-chan *agentv1.InteractionResponse, requestContext *agentv1.RequestContext, sink func(ModelEvent) error) error {
 	cursorAccountResetFrameLog()
 	var pending []byte
 	tmp := make([]byte, 8192)
-	var appendMu sync.Mutex
-	seq := int64(1)
-	sendFrame := func(sendCtx context.Context, payload []byte) error {
-		appendMu.Lock()
-		defer appendMu.Unlock()
-		n := seq
-		seq++
-		return appendFrame(sendCtx, n, payload)
+	// reply sends frames the reader itself answers with: blob
+	// acknowledgements, request context, allowlist prechecks. The reader does
+	// not wait for them; a frame that could not be delivered comes back through
+	// replyFailed and ends the stream as it did when it was sent inline.
+	replyFailed := make(chan cursorAccountReplyFailure, 1)
+	reply := func(blobAck bool, payloads ...[]byte) {
+		sender.send(streamCtx, func(err error) {
+			if !cursorAccountFrameWasLost(streamCtx, err) {
+				return
+			}
+			select {
+			case replyFailed <- cursorAccountReplyFailure{err: err, blobAck: blobAck}:
+			default:
+			}
+		}, payloads...)
 	}
-	sendExecClose := func(sendCtx context.Context, id uint32) error {
-		control := &agentv1.AgentClientMessage{
-			Message: &agentv1.AgentClientMessage_ExecClientControlMessage{
-				ExecClientControlMessage: &agentv1.ExecClientControlMessage{
-					Message: &agentv1.ExecClientControlMessage_StreamClose{
-						StreamClose: &agentv1.ExecClientStreamClose{Id: id},
-					},
-				},
-			},
-		}
-		return sendFrame(sendCtx, mustCursorProto(control))
-	}
-	streamCtx, cancelStream := context.WithCancel(ctx)
-	defer cancelStream()
 	var finishInline <-chan struct{}
 	var toolContinued <-chan struct{}
 	execRoutes := newCursorExecRoutes()
@@ -577,10 +599,10 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 		continued := make(chan struct{}, 8)
 		toolContinued = continued
 		if toolResults != nil {
-			go serveCursorAccountToolResults(streamCtx, sendFrame, toolResults, execRoutes, signal, continued)
+			go serveCursorAccountToolResults(streamCtx, sender, toolResults, execRoutes, signal, continued)
 		}
 		if interactionReplies != nil {
-			go serveCursorAccountInteractionReplies(streamCtx, sendFrame, interactionReplies, signal, continued)
+			go serveCursorAccountInteractionReplies(streamCtx, sender, interactionReplies, signal, continued)
 		}
 	}
 	thinkingActive := false
@@ -762,6 +784,11 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			return finishTurn()
 		case <-turnEndDrain.C:
 			return finishTurn()
+		case failure := <-replyFailed:
+			if failure.blobAck && sawTurnEnded {
+				return finishTurn()
+			}
+			return failure.err
 		case err := <-appendErr:
 			appendErr = nil
 			if err != nil {
@@ -837,12 +864,7 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			cursorAccountNoteFrame(cursorAccountServerMessageKind(msg))
 			if kv := msg.GetKvServerMessage(); kv != nil {
 				armSilent()
-				if err := sendFrame(ctx, mustCursorProto(cursorAccountKVReply(kv))); err != nil {
-					if sawTurnEnded {
-						return finishTurn()
-					}
-					return err
-				}
+				reply(true, mustCursorProto(cursorAccountKVReply(kv)))
 				// The IDE's KV store only records (blob_id, blob_data). The prompt
 				// root list comes from conversationCheckpointUpdate alone; adding
 				// message blobs here re-inflated compacted turns.
@@ -907,21 +929,13 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 			}
 			if exec := msg.GetExecServerMessage(); exec != nil {
 				if exec.GetRequestContextArgs() != nil {
-					if err := sendFrame(ctx, mustCursorProto(cursorAccountContextReply(exec.GetId(), exec.GetExecId(), requestContext))); err != nil {
-						return err
-					}
-					if err := sendExecClose(ctx, exec.GetId()); err != nil {
-						return err
-					}
+					reply(false,
+						mustCursorProto(cursorAccountContextReply(exec.GetId(), exec.GetExecId(), requestContext)),
+						cursorAccountStreamClosePayload(exec.GetId()))
 					continue
 				}
-				if reply, ok := cursorAccountExecReply(exec); ok {
-					if err := sendFrame(ctx, mustCursorProto(reply)); err != nil {
-						return err
-					}
-					if err := sendExecClose(ctx, exec.GetId()); err != nil {
-						return err
-					}
+				if answer, ok := cursorAccountExecReply(exec); ok {
+					reply(false, mustCursorProto(answer), cursorAccountStreamClosePayload(exec.GetId()))
 					continue
 				}
 				name, callID, args, ok := cursorAccountExecTool(exec)
@@ -1164,7 +1178,11 @@ func readCursorAccountStream(ctx context.Context, appendFrame cursorAccountAppen
 	}
 }
 
-func serveCursorAccountInteractionReplies(ctx context.Context, sendFrame func(context.Context, []byte) error, replies <-chan *agentv1.InteractionResponse, finish, continued chan<- struct{}) {
+// serveCursorAccountInteractionReplies writes the answers to interaction
+// cards back to the open stream. An answer that cannot be delivered ends the
+// pass: the server is still waiting for it, so the turn resumes in a fresh
+// pass rather than waiting for a frame that will not come.
+func serveCursorAccountInteractionReplies(ctx context.Context, sender *cursorAccountFrameSender, replies <-chan *agentv1.InteractionResponse, finish, continued chan<- struct{}) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -1176,37 +1194,33 @@ func serveCursorAccountInteractionReplies(ctx context.Context, sendFrame func(co
 			wrapped := &agentv1.AgentClientMessage{
 				Message: &agentv1.AgentClientMessage_InteractionResponse{InteractionResponse: msg},
 			}
-			if err := sendFrame(ctx, mustCursorProto(wrapped)); err != nil {
-				logger.Warnf("cursor account interaction reply was not delivered: %v", err)
-				// The server is still waiting for this reply. Resume in a fresh pass,
-				// as for an undeliverable exec result, rather than waiting for a frame.
-				select {
-				case finish <- struct{}{}:
-				default:
+			sender.send(ctx, func(err error) {
+				if err == nil {
+					signalCursorAccountPass(continued)
+					return
 				}
-				return
-			}
-			if continued != nil {
-				select {
-				case continued <- struct{}{}:
-				default:
+				if cursorAccountFrameWasLost(ctx, err) {
+					logger.Warnf("cursor account interaction reply was not delivered: %v", err)
+					signalCursorAccountPass(finish)
 				}
-			}
+			}, mustCursorProto(wrapped))
 		}
 	}
 }
 
-func serveCursorAccountToolResults(ctx context.Context, sendFrame func(context.Context, []byte) error, toolResults <-chan *agentv1.ExecClientMessage, routes *cursorExecRoutes, finish chan<- struct{}, continued chan<- struct{}) {
+// serveCursorAccountToolResults writes tool results back to the open stream.
+// Each result is handed to the sender as soon as it arrives, together with
+// the stream_close that ends its exec, and the next result is taken without
+// waiting for the round trip: the results of one batch of tool calls travel
+// together, as they do from the IDE.
+func serveCursorAccountToolResults(ctx context.Context, sender *cursorAccountFrameSender, toolResults <-chan *agentv1.ExecClientMessage, routes *cursorExecRoutes, finish chan<- struct{}, continued chan<- struct{}) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case msg, ok := <-toolResults:
 			if !ok || msg == nil {
-				select {
-				case finish <- struct{}{}:
-				default:
-				}
+				signalCursorAccountPass(finish)
 				return
 			}
 			reply, closeStream := routes.correlate(msg)
@@ -1214,47 +1228,47 @@ func serveCursorAccountToolResults(ctx context.Context, sendFrame func(context.C
 				logger.Warnf("cursor account ignored tool result without an unambiguous outstanding exec id=%d", msg.GetId())
 				continue
 			}
-			wrapped := &agentv1.AgentClientMessage{
+			payloads := [][]byte{mustCursorProto(&agentv1.AgentClientMessage{
 				Message: &agentv1.AgentClientMessage_ExecClientMessage{ExecClientMessage: reply},
-			}
-			if err := sendFrame(ctx, mustCursorProto(wrapped)); err != nil {
-				logger.Warnf("cursor account tool result was not delivered: %v", err)
-				select {
-				case finish <- struct{}{}:
-				default:
-				}
-				return
-			}
+			})}
 			if closeStream {
-				id := reply.GetId()
 				// The IDE closes a finished exec with stream_close. Without it
 				// the upstream tool stays open and the model sits silent after
-				// a Read, Grep, or background shell spawn.
-				control := &agentv1.AgentClientMessage{
-					Message: &agentv1.AgentClientMessage_ExecClientControlMessage{
-						ExecClientControlMessage: &agentv1.ExecClientControlMessage{
-							Message: &agentv1.ExecClientControlMessage_StreamClose{
-								StreamClose: &agentv1.ExecClientStreamClose{Id: id},
-							},
-						},
-					},
-				}
-				if err := sendFrame(ctx, mustCursorProto(control)); err != nil {
-					logger.Warnf("cursor account shell stream was not closed: %v", err)
-					select {
-					case finish <- struct{}{}:
-					default:
-					}
+				// a Read, Grep, or background shell spawn. It is numbered right
+				// after its result.
+				payloads = append(payloads, cursorAccountStreamClosePayload(reply.GetId()))
+			}
+			sender.send(ctx, func(err error) {
+				if err == nil {
+					signalCursorAccountPass(continued)
 					return
 				}
-			}
-			if continued != nil {
-				select {
-				case continued <- struct{}{}:
-				default:
+				if cursorAccountFrameWasLost(ctx, err) {
+					logger.Warnf("cursor account tool result was not delivered: %v", err)
+					signalCursorAccountPass(finish)
 				}
-			}
+			}, payloads...)
 		}
+	}
+}
+
+// cursorAccountFrameWasLost reports whether err is a frame of a live stream
+// that the server did not get. Two outcomes are not: a frame that was never
+// sent because an earlier one was already lost (that loss is reported by its
+// own frame), and a frame abandoned because the stream is over.
+func cursorAccountFrameWasLost(streamCtx context.Context, err error) bool {
+	return err != nil && !errors.Is(err, errCursorAccountFrameNotSent) && streamCtx.Err() == nil
+}
+
+// signalCursorAccountPass wakes the stream reader without ever blocking the
+// goroutine that reports.
+func signalCursorAccountPass(signal chan<- struct{}) {
+	if signal == nil {
+		return
+	}
+	select {
+	case signal <- struct{}{}:
+	default:
 	}
 }
 
@@ -2744,34 +2758,44 @@ func cursorAccountGrepToolName(args *agentv1.GrepArgs) string {
 	return "Grep"
 }
 
+// cursorAccountAgentHost asks api2 for the agent host, falling back to the
+// default. The gateway keeps the answer between passes (agentHosts).
 func cursorAccountAgentHost(ctx context.Context, authorization string) string {
+	host, ok := lookupCursorAccountAgentHost(ctx, authorization)
+	if !ok {
+		return cursorAccountAgentHostDefault
+	}
+	return host
+}
+
+func lookupCursorAccountAgentHost(ctx context.Context, authorization string) (string, bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cursorAccountBackendRoot, "/")+cursorAccountServerConfigPath,
 		bytes.NewReader(mustCursorProto(&aiserverv1.GetServerConfigRequest{})))
 	if err != nil {
-		return cursorAccountAgentHostDefault
+		return "", false
 	}
 	applyCursorAccountHeaders(req, authorization, "application/proto")
 	resp, err := cursorAccountHTTPClient.Do(req)
 	if err != nil {
-		return cursorAccountAgentHostDefault
+		return "", false
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return cursorAccountAgentHostDefault
+		return "", false
 	}
 	cfg := &aiserverv1.GetServerConfigResponse{}
 	if err := proto.Unmarshal(raw, cfg); err != nil {
-		return cursorAccountAgentHostDefault
+		return "", false
 	}
 	host := strings.TrimSpace(cfg.GetAgentUrlConfig().GetAgentnUrl())
 	if host == "" {
 		host = strings.TrimSpace(cfg.GetAgentUrlConfig().GetAgentUrl())
 	}
 	if host == "" {
-		return cursorAccountAgentHostDefault
+		return "", false
 	}
-	return strings.TrimRight(host, "/")
+	return strings.TrimRight(host, "/"), true
 }
 
 func appendCursorAccount(ctx context.Context, authorization, requestID string, seq int64, payload []byte) error {

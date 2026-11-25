@@ -89,9 +89,7 @@ func (service *Service) completePreDispatchToolError(
 	if err := service.publishToolCallCompleted(stream.RequestID, invocation.CallID, invocation.ModelCallID, nil); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, invocation.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, stream.RequestID, invocation.ModelCallID)
 	if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 		return err
 	}

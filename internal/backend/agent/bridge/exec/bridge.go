@@ -91,7 +91,7 @@ func (bridge *Bridge) OpenExec(openContext OpenExecContext, toolCall runtimecore
 	case "ls":
 		return bridge.openLs(toolCall)
 	case "shell":
-		return bridge.openShell(toolCall)
+		return bridge.openShell(openContext, toolCall)
 	case "write_shell_stdin":
 		return bridge.openWriteShellStdin(toolCall)
 	case "force_background_shell":
@@ -425,8 +425,10 @@ func (bridge *Bridge) ApplyExecClientMessage(msg *agentv1.ExecClientMessage, pen
 			result.IsTerminal = true
 			return result, nil
 		case *agentv1.ShellStream_Backgrounded:
-			result.ToolResultPayload = fmt.Sprintf("shell backgrounded: %d", event.Backgrounded.GetShellId())
-			result.ToolCall = buildShellBackgroundedToolCall(pending.ToolCallID, pending.ArgsJSON, event.Backgrounded)
+			// The terminals folder is not known here; the forwarder, which
+			// knows it, renders the same text with the real file path.
+			result.ToolResultPayload = ShellBackgroundedText(event.Backgrounded, pending, "")
+			result.ToolCall = buildShellBackgroundedToolCall(pending.ToolCallID, pending.ArgsJSON, event.Backgrounded, pending.StdoutBuffer, pending.StderrBuffer)
 			result.IsTerminal = true
 			return result, nil
 		case *agentv1.ShellStream_HookContext:

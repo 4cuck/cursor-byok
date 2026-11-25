@@ -142,7 +142,7 @@ func buildShellOutputNotificationConfig(input *shellOutputNotificationArgs) *age
 }
 
 // openShell 构造 Shell 对应的流式执行桥请求。
-func (bridge *Bridge) openShell(toolCall runtimecore.ToolInvocation) (*agentv1.AgentServerMessage, runtimecore.PendingExec, error) {
+func (bridge *Bridge) openShell(openContext OpenExecContext, toolCall runtimecore.ToolInvocation) (*agentv1.AgentServerMessage, runtimecore.PendingExec, error) {
 	args, err := decodeShellArgs(toolCall.ArgsJSON)
 	if err != nil {
 		return nil, runtimecore.PendingExec{}, fmt.Errorf("decode Shell args failed: %w", err)
@@ -176,6 +176,8 @@ func (bridge *Bridge) openShell(toolCall runtimecore.ToolInvocation) (*agentv1.A
 						Description:              stringPtr(args.Description),
 						OutputNotification:       buildShellOutputNotificationConfig(args.NotifyOnOutput),
 						RequestedSandboxPolicy:   args.RequestedSandboxPolicy,
+						// The client keeps shell state per conversation id.
+						ConversationId: shellConversationID(openContext.ConversationID),
 					},
 				},
 			},

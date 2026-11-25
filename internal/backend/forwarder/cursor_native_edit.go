@@ -520,9 +520,7 @@ func (service *Service) applyCursorEditCompleted(stream *ActiveStream, completio
 	if err := service.publishToolCallCompleted(stream.RequestID, id, effectiveModelCallID, card); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, effectiveModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, stream.RequestID, effectiveModelCallID)
 	return service.publishCheckpoint(stream.RequestID, stream.ConversationID)
 }
 

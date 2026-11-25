@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"google.golang.org/protobuf/proto"
-
 	"cursor/gen/agentv1"
 	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/logger"
@@ -49,12 +47,10 @@ func (service *Service) importConversationState(item *ConversationFile, state *a
 			}
 		}
 	}
+	// Todos, the plan and the summary are kept in the client's blob store too.
+	blobs = enrichImportedBlobsFromDisk(blobs, append([][]byte{state.GetPlan(), state.GetSummary()}, state.GetTodos()...))
 	if len(entries) == 0 {
-		summary, ok, err := importedConversationStateSummary(state)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
+		if summary, ok := importedConversationStateSummary(state, blobs); ok {
 			payload, err := json.Marshal(compactionSummaryEntryPayload{
 				Summary: strings.TrimSpace(summary),
 				Trigger: "imported_conversation_state",
@@ -70,11 +66,7 @@ func (service *Service) importConversationState(item *ConversationFile, state *a
 			})
 		}
 	}
-	runtimeState, ok, err := runtimeStatePayloadFromConversationState(state)
-	if err != nil {
-		return nil, err
-	}
-	if ok {
+	if runtimeState, ok := runtimeStatePayloadFromConversationState(state, blobs); ok {
 		payload, err := json.Marshal(runtimeState)
 		if err != nil {
 			return nil, fmt.Errorf("encode imported runtime state context: %w", err)
@@ -182,16 +174,20 @@ func importedTurnsNestedRefs(turns [][]byte, blobs importedBlobStore) [][]byte {
 	return refs
 }
 
-func importedConversationStateSummary(state *agentv1.ConversationStateStructure) (string, bool, error) {
+// importedConversationStateSummary returns the conversation summary carried by
+// an imported state, if it can be read.
+func importedConversationStateSummary(state *agentv1.ConversationStateStructure, blobs importedBlobStore) (string, bool) {
 	if state == nil || len(state.GetSummary()) == 0 {
-		return "", false, nil
+		return "", false
 	}
 	item := &agentv1.ConversationSummary{}
-	if err := proto.Unmarshal(state.GetSummary(), item); err != nil {
-		return "", false, fmt.Errorf("decode imported summary: %w", err)
+	if !decodeImportedStateField(state.GetSummary(), blobs, item, func() bool {
+		return strings.TrimSpace(item.GetSummary()) != ""
+	}) {
+		logger.Warnf("forwarder imported conversation summary skipped: not inline and its blob is unavailable")
+		return "", false
 	}
-	text := strings.TrimSpace(item.GetSummary())
-	return text, text != "", nil
+	return strings.TrimSpace(item.GetSummary()), true
 }
 
 func newModelMessageEntry(turnSeq int64, requestID string, message modeladapter.Message) (HistoryEntry, bool, error) {
@@ -220,34 +216,47 @@ func newModelMessageEntry(turnSeq int64, requestID string, message modeladapter.
 	}, true, nil
 }
 
-func runtimeStatePayloadFromConversationState(state *agentv1.ConversationStateStructure) (runtimeStateEntryPayload, bool, error) {
+// runtimeStatePayloadFromConversationState collects the plan and the todos an
+// imported conversation was working with. Each of them is restored when it can
+// be read and left out when it cannot; none of them stops the import.
+func runtimeStatePayloadFromConversationState(state *agentv1.ConversationStateStructure, blobs importedBlobStore) (runtimeStateEntryPayload, bool) {
 	if state == nil {
-		return runtimeStateEntryPayload{}, false, nil
+		return runtimeStateEntryPayload{}, false
 	}
 	payload := runtimeStateEntryPayload{
 		Plans: clonePlanRegistryEntries(state.GetPlans()),
 	}
 	if len(state.GetPlan()) > 0 {
 		plan := &agentv1.ConversationPlan{}
-		if err := proto.Unmarshal(state.GetPlan(), plan); err != nil {
-			return runtimeStateEntryPayload{}, false, fmt.Errorf("decode imported plan: %w", err)
+		if decodeImportedStateField(state.GetPlan(), blobs, plan, func() bool {
+			return strings.TrimSpace(plan.GetPlan()) != ""
+		}) {
+			payload.PlanText = strings.TrimSpace(plan.GetPlan())
+		} else {
+			logger.Infof("forwarder imported conversation plan skipped: not inline and its blob is unavailable")
 		}
-		payload.PlanText = strings.TrimSpace(plan.GetPlan())
 	}
 	if len(state.GetTodos()) > 0 {
 		todos := make([]*agentv1.TodoItem, 0, len(state.GetTodos()))
+		skipped := 0
 		for _, raw := range state.GetTodos() {
 			if len(raw) == 0 {
 				continue
 			}
 			item := &agentv1.TodoItem{}
-			if err := proto.Unmarshal(raw, item); err != nil {
-				return runtimeStateEntryPayload{}, false, fmt.Errorf("decode imported todo: %w", err)
+			if !decodeImportedStateField(raw, blobs, item, func() bool {
+				return strings.TrimSpace(item.GetId()) != "" || strings.TrimSpace(item.GetContent()) != ""
+			}) {
+				skipped++
+				continue
 			}
 			todos = append(todos, cloneTodoItem(item))
+		}
+		if skipped > 0 {
+			logger.Infof("forwarder imported conversation todos restored with gaps total=%d skipped=%d", len(state.GetTodos()), skipped)
 		}
 		payload.Todos = todos
 	}
 	ok := strings.TrimSpace(payload.PlanText) != "" || len(payload.Plans) > 0 || len(payload.Todos) > 0
-	return payload, ok, nil
+	return payload, ok
 }

@@ -122,6 +122,10 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 	if err := execbridge.RewriteNativeSubagentModel(original, parentModel); err != nil {
 		return service.completePreDispatchToolError(stream, invocation, nil, false, false, err)
 	}
+	// The client keeps a shell's working directory and environment per
+	// conversation id. Upstream names its own conversation, which changes when
+	// a turn continues on a fresh one; this chat's shell must not change with it.
+	execbridge.PinNativeShellConversation(original, parentModel.ConversationID)
 	serverMessage, pendingExec, err := service.execBridge.OpenNativeExec(original, invocation)
 	if err != nil {
 		return service.completePreDispatchToolError(stream, invocation, nil, false, false, err)

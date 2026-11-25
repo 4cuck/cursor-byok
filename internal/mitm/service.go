@@ -32,6 +32,10 @@ const (
 	HeaderServerUpstreamURL = "X-Server-Upstream-URL"
 )
 
+// backendIdleConnections is how many idle connections to the backend are kept
+// for reuse.
+const backendIdleConnections = 64
+
 // ProxyServer 定义了当前模块中的 ProxyServer 类型。
 type ProxyServer struct {
 	// addr 表示当前声明中的 addr。
@@ -211,9 +215,14 @@ func newProxyServer(addr, baseURL, historyRoot string, mirror MirrorCaptureConfi
 		baseEndpoint: u,
 		upstreamClient: &http.Client{
 			Transport: &http.Transport{
-				DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-				ForceAttemptHTTP2:     true,
-				MaxIdleConns:          200,
+				DialContext:       (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				ForceAttemptHTTP2: true,
+				MaxIdleConns:      200,
+				// Everything is forwarded to one host, the backend, over plain
+				// HTTP: one request per connection. The client sends up to 32
+				// frames of a stream at once, so keep that many connections
+				// (for a couple of streams) instead of the default of two.
+				MaxIdleConnsPerHost:   backendIdleConnections,
 				IdleConnTimeout:       90 * time.Second,
 				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,

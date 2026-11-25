@@ -160,9 +160,7 @@ func (service *Service) recoverExecWithoutTerminal(stream *ActiveStream, pending
 	}); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, pending.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, stream.RequestID, pending.ModelCallID)
 	if err := service.publishToolCallCompleted(stream.RequestID, pending.ToolCallID, pending.ModelCallID, nil); err != nil {
 		return err
 	}
@@ -225,6 +223,11 @@ func cleanupAllPendingExecs(stream *ActiveStream) []runtimecore.PendingExec {
 	}
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
+	// Unanswered AwaitShell calls belong to the turn being torn down.
+	dropAwaitShellsLocked(stream)
+	// The client still answers execs dropped here (an abort is acknowledged, a
+	// command finishes anyway); remember them so those answers are ignored.
+	retireAllPendingExecsLocked(stream, time.Now().UTC())
 	pending := make([]runtimecore.PendingExec, 0, len(stream.PendingExecs))
 	for execID, item := range stream.PendingExecs {
 		pending = append(pending, item)

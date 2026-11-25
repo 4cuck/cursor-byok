@@ -272,13 +272,10 @@ type ActiveStream struct {
 	// 达到 orphanCancelMaxDeferrals 后不再延期，按 interrupted 收口并释放流。
 	OrphanCancelDeferrals int
 
-	// PendingAwaits 保存尚未完成的 AwaitShell 延迟等待（key = shell_id）。
-	// 当 shell 仍在运行且 block_until_ms 尚未到期时，工具调用挂起于此，
-	// 由 streamTimerAwaitShell 定期唤醒检查，完成后再发 tool_result。
-	PendingAwaits map[string]pendingAwaitShell
-	// AwaitDeadlines 保存每个 shell_id 对应的绝对截止时刻，
-	// 仅在第一次 defer 时写入，后续复查不重置。
-	AwaitDeadlines map[string]time.Time
+	// PendingAwaits holds AwaitShell calls that have not returned yet, keyed by
+	// tool call id. Each one also owns a PendingExec (kind await_shell) so the
+	// turn treats it as outstanding work until its result is written.
+	PendingAwaits map[string]*pendingAwaitShell
 	// TurnStaleGraceStartedAt 记录 turn-staleness 看门狗「阶段一（重对齐 append 序列）」的触发时刻。
 	// 零值表示尚未进入宽限期；非零值表示已重对齐过序列并进入宽限，再次触发即走「阶段二强制收口」。
 	TurnStaleGraceStartedAt time.Time
@@ -344,12 +341,18 @@ type ActiveStream struct {
 	WorkspacePaths                  []string
 	TerminalsFolder                 string
 	RequestFileContents             map[string]string
-	RecentCompletedExecs            map[uint32]time.Time
-	RecentCompletedInteractions     map[string]time.Time
-	BackgroundShells                map[string]*BackgroundShellState
-	BackgroundShellsByMessageID     map[uint32]string
-	BackgroundShellsByExecID        map[string]string
-	BackgroundShellActions          map[string]time.Time
+	// RecentCompletedExecs and RetiredExecIDs remember every exec this stream
+	// stopped waiting for, by bridge message id and by exec id. The client can
+	// answer long after an exec was closed here (a shell keeps running after a
+	// synthetic recovery, an abort is acknowledged after a cancel); those late
+	// messages are recognized through these and dropped.
+	RecentCompletedExecs        map[uint32]time.Time
+	RetiredExecIDs              map[string]time.Time
+	RecentCompletedInteractions map[string]time.Time
+	BackgroundShells            map[string]*BackgroundShellState
+	BackgroundShellsByMessageID map[uint32]string
+	BackgroundShellsByExecID    map[string]string
+	BackgroundShellActions      map[string]time.Time
 	// ExecCompletionSignals 为每个非流式 exec 提供事件驱动完成信号。
 	// key = exec_id。当终端结果到达时 closed；wait goroutine 通过 select
 	// 信号/超时/取消来避免盲等固定时间窗口。
@@ -375,8 +378,6 @@ type BackgroundShellState struct {
 	ExitCode           *int32
 	StdoutBuffer       string
 	StderrBuffer       string
-	AwaitStdoutOffset  int
-	AwaitStderrOffset  int
 	CreatedAt          time.Time
 	LastActivityAt     time.Time
 	CompletedAt        time.Time

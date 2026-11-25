@@ -1,7 +1,9 @@
 package forwarder
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +13,18 @@ import (
 )
 
 const shellTerminalRecoveryGrace = 1500 * time.Millisecond
+
+const (
+	// shellClientLivenessWindow is how long the client may stay silent about
+	// an exec it is still handling. It sends an exec heartbeat every three
+	// seconds for as long as its handler runs, approval prompt included.
+	shellClientLivenessWindow = 20 * time.Second
+	// shellOverdueLimit bounds how far past its foreground window a started
+	// shell may go without a terminal event while the client still heartbeats.
+	shellOverdueLimit = 2 * time.Minute
+	// shellRecoveryMinRecheck keeps a re-armed stall check from spinning.
+	shellRecoveryMinRecheck = 250 * time.Millisecond
+)
 
 const (
 	shellRecoveryReasonForegroundDeadline = "foreground_deadline_exceeded"
@@ -34,18 +48,103 @@ func initializePendingExecForTracking(pending runtimecore.PendingExec) runtimeco
 	return pending
 }
 
+// shellForegroundTimeoutDuration is the foreground window the client was given
+// for this shell: after it, the client backgrounds (or aborts) the command and
+// reports a terminal event.
+//
+// Tool calls made by a BYOK model carry block_until_ms. A Cursor-account exec
+// carries the client's own ShellArgs instead, where the window is `timeout`;
+// reading only block_until_ms treated every such shell as a 30 second one.
 func shellForegroundTimeoutDuration(argsJSON []byte) time.Duration {
-	timeoutMS := int64(30000)
+	const fallback = 30 * time.Second
 	args, err := runtimecore.DecodeArgsMap(argsJSON)
-	if err == nil {
-		if blockUntilMS, found, err := runtimecore.ReadFloat64Arg(args, "block_until_ms", "blockUntilMS"); err == nil && found {
-			if blockUntilMS <= 0 {
-				return 0
-			}
-			timeoutMS = int64(blockUntilMS)
+	if err != nil {
+		return fallback
+	}
+	if blockUntilMS, found, err := runtimecore.ReadFloat64Arg(args, "block_until_ms", "blockUntilMS"); err == nil && found {
+		if blockUntilMS <= 0 {
+			return 0
+		}
+		return time.Duration(blockUntilMS) * time.Millisecond
+	}
+	if timeoutMS, found, err := runtimecore.ReadFloat64Arg(args, "timeout"); err == nil && found && timeoutMS > 0 {
+		return time.Duration(timeoutMS) * time.Millisecond
+	}
+	if nativeShellStartsInBackground(args) {
+		return 0
+	}
+	return fallback
+}
+
+// nativeShellStartsInBackground mirrors the client: with no timeout, a shell
+// that is flagged background, backgrounds on timeout, or has a hard timeout is
+// backgrounded as soon as it starts.
+func nativeShellStartsInBackground(args map[string]any) bool {
+	if runtimecore.ReadBoolArg(args, "isBackground", "is_background") {
+		return true
+	}
+	switch behavior := args["timeoutBehavior"].(type) {
+	case string:
+		if behavior == agentv1.TimeoutBehavior_TIMEOUT_BEHAVIOR_BACKGROUND.String() {
+			return true
+		}
+	case json.Number:
+		if behavior.String() == strconv.Itoa(int(agentv1.TimeoutBehavior_TIMEOUT_BEHAVIOR_BACKGROUND)) {
+			return true
 		}
 	}
-	return time.Duration(timeoutMS) * time.Millisecond
+	hardTimeout, found, err := runtimecore.ReadFloat64Arg(args, "hardTimeout", "hard_timeout")
+	return err == nil && found && hardTimeout > 0
+}
+
+// shellClientLastHeardAt is the last time the client said anything about this
+// shell: output, a lifecycle event or a heartbeat.
+func shellClientLastHeardAt(pending runtimecore.PendingExec) time.Time {
+	last := pending.OpenedAt
+	if pending.LastShellActivityAt.After(last) {
+		last = pending.LastShellActivityAt
+	}
+	if pending.LastShellHeartbeatAt.After(last) {
+		last = pending.LastShellHeartbeatAt
+	}
+	return last
+}
+
+// shellForegroundRecoveryDelay reports how much longer to wait before a shell
+// without a terminal event is closed with a synthetic result. Zero means now.
+//
+// The client's foreground window starts when the command starts running, not
+// when it was requested: until the user approves a command the client holds it
+// and only heartbeats. A synthetic result discards the real one, so a shell is
+// only given up on once the window is over and the client has gone quiet, or
+// once it is far past the window.
+func shellForegroundRecoveryDelay(pending runtimecore.PendingExec, now time.Time) time.Duration {
+	window := shellForegroundTimeoutDuration(pending.ArgsJSON) + shellTerminalRecoveryGrace
+	quietAt := shellClientLastHeardAt(pending).Add(shellClientLivenessWindow)
+	alive := now.Before(quietAt)
+
+	if pending.FirstChunkAt.IsZero() {
+		// Not started: waiting for approval, or the request never arrived.
+		if alive {
+			return quietAt.Sub(now)
+		}
+		if deadline := pending.OpenedAt.Add(window); now.Before(deadline) {
+			return deadline.Sub(now)
+		}
+		return 0
+	}
+	deadline := pending.FirstChunkAt.Add(window)
+	if now.Before(deadline) {
+		return deadline.Sub(now)
+	}
+	if limit := deadline.Add(shellOverdueLimit); alive && now.Before(limit) {
+		// The terminal event is due from a client that is still there.
+		if untilLimit := limit.Sub(now); untilLimit < quietAt.Sub(now) {
+			return untilLimit
+		}
+		return quietAt.Sub(now)
+	}
+	return 0
 }
 
 func shellForegroundTimeoutMS(argsJSON []byte) int64 {
@@ -138,8 +237,23 @@ func (service *Service) recoverShellWithoutTerminalIfNeeded(stream *ActiveStream
 	case "exited", "backgrounded", "rejected", "permission_denied":
 		return nil
 	}
-	if reason == shellRecoveryReasonForegroundDeadline && !current.ShellForegroundDeadline.IsZero() && time.Now().UTC().Before(current.ShellForegroundDeadline) {
-		return nil
+	if reason == shellRecoveryReasonForegroundDeadline {
+		if wait := shellForegroundRecoveryDelay(current, time.Now().UTC()); wait > 0 {
+			// Not stalled yet. Look again once it could be.
+			if wait < shellRecoveryMinRecheck {
+				wait = shellRecoveryMinRecheck
+			}
+			service.scheduleStreamTimer(
+				stream,
+				providerTimerKey(streamTimerShellForeground, current.ExecID),
+				wait,
+				streamTimerShellForeground,
+				current.ExecID,
+				current.MessageID,
+				shellRecoveryReasonForegroundDeadline,
+			)
+			return nil
+		}
 	}
 	return service.recoverShellWithoutTerminal(stream, current, reason)
 }
@@ -189,9 +303,7 @@ func (service *Service) recoverShellWithoutTerminal(stream *ActiveStream, pendin
 	}); err != nil {
 		return err
 	}
-	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, pending.ModelCallID); err != nil {
-		return err
-	}
+	service.deferSummaryCarryForward(stream.ConversationID, stream.RequestID, pending.ModelCallID)
 	if err := service.publishToolCallCompleted(stream.RequestID, pending.ToolCallID, pending.ModelCallID, nil); err != nil {
 		return err
 	}

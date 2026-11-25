@@ -324,6 +324,13 @@ func (service *Service) publishCheckpointWithOptionsAndAction(requestID string, 
 	if !ok || stream == nil {
 		return fmt.Errorf("request is not active: %s", requestID)
 	}
+	// Every tool dispatch and every tool result asks for a checkpoint. Inside
+	// the send interval the answer is always "later", and building the
+	// checkpoint to find that out walks the whole conversation on the stream's
+	// actor goroutine. Decide first; the deferred publish does the work once.
+	if !force && service.deferCheckpointInsideSendInterval(stream, requestID, time.Now().UTC()) {
+		return nil
+	}
 	conversation, pendingExecs, pendingInteractions, err := service.snapshotCheckpointConversation(stream)
 	if err != nil {
 		return err
@@ -399,28 +406,9 @@ func (service *Service) publishCheckpointWithOptionsAndAction(requestID string, 
 		return nil
 	}
 	if !force && !lastSentAt.IsZero() && now.Sub(lastSentAt) < checkpointMinSendInterval {
-		remaining := checkpointMinSendInterval - now.Sub(lastSentAt)
-		if stream.CheckpointPublishTimer == nil {
-			stream.CheckpointPublishPending = true
-			stream.CheckpointPublishTimer = time.AfterFunc(remaining, func() {
-				if delayedStream, delayedOK := service.broker.Get(requestID); delayedOK && delayedStream != nil {
-					delayedStream.mu.Lock()
-					delayedStream.CheckpointPublishTimer = nil
-					delayedStream.CheckpointPublishPending = false
-					delayedStream.mu.Unlock()
-				}
-				if service.debug != nil {
-					service.debug.LogRuntime(context.Background(), requestID, "", "checkpoint_delayed_publish_fired", map[string]any{
-						"delay": remaining.String(),
-					})
-				}
-				if err := service.publishCheckpoint(requestID, ""); err != nil {
-					logger.Errorf("forwarder checkpoint delayed publish failed request_id=%s err=%v", strings.TrimSpace(requestID), err)
-				}
-			})
-		}
+		// Another checkpoint went out while this one was being built.
+		service.armDeferredCheckpointLocked(stream, requestID, checkpointMinSendInterval-now.Sub(lastSentAt))
 		stream.mu.Unlock()
-		logger.Infof("forwarder checkpoint skipped request_id=%s reason=rate_limited hash=%s wire_size=%d elapsed=%s min_interval=%s", strings.TrimSpace(requestID), wireHash[:12], wireSize, now.Sub(lastSentAt).Round(time.Millisecond), checkpointMinSendInterval)
 		if service.debug != nil {
 			service.debug.LogRuntime(context.Background(), requestID, stream.ConversationID, "checkpoint_skipped_rate_limited", map[string]any{
 				"wire_hash": wireHash, "wire_size": wireSize, "elapsed_since_last": now.Sub(lastSentAt).String(), "min_interval": checkpointMinSendInterval.String(), "pending_exec_count": len(pendingExecs),
@@ -443,6 +431,52 @@ func (service *Service) publishCheckpointWithOptionsAndAction(requestID string, 
 		})
 	}
 	return service.queueCheckpointProjection(stream, projection, terminalAction)
+}
+
+// deferCheckpointInsideSendInterval reports whether a non-forced checkpoint
+// falls inside the send interval. If it does, the deferred publish is armed
+// and the caller returns without building anything.
+func (service *Service) deferCheckpointInsideSendInterval(stream *ActiveStream, requestID string, now time.Time) bool {
+	stream.mu.Lock()
+	lastSentAt := stream.LastCheckpointSentAt
+	if lastSentAt.IsZero() || now.Sub(lastSentAt) >= checkpointMinSendInterval {
+		stream.mu.Unlock()
+		return false
+	}
+	elapsed := now.Sub(lastSentAt)
+	service.armDeferredCheckpointLocked(stream, requestID, checkpointMinSendInterval-elapsed)
+	stream.mu.Unlock()
+	if service.debug != nil {
+		service.debug.LogRuntimeLazy(context.Background(), requestID, "", "checkpoint_skipped_rate_limited", func() map[string]any {
+			return map[string]any{"elapsed_since_last": elapsed.String(), "min_interval": checkpointMinSendInterval.String()}
+		})
+	}
+	return true
+}
+
+// armDeferredCheckpointLocked schedules one checkpoint publish for the end of
+// the send interval unless one is already scheduled. Caller holds stream.mu.
+func (service *Service) armDeferredCheckpointLocked(stream *ActiveStream, requestID string, remaining time.Duration) {
+	if stream.CheckpointPublishTimer != nil {
+		return
+	}
+	stream.CheckpointPublishPending = true
+	stream.CheckpointPublishTimer = time.AfterFunc(remaining, func() {
+		if delayedStream, delayedOK := service.broker.Get(requestID); delayedOK && delayedStream != nil {
+			delayedStream.mu.Lock()
+			delayedStream.CheckpointPublishTimer = nil
+			delayedStream.CheckpointPublishPending = false
+			delayedStream.mu.Unlock()
+		}
+		if service.debug != nil {
+			service.debug.LogRuntime(context.Background(), requestID, "", "checkpoint_delayed_publish_fired", map[string]any{
+				"delay": remaining.String(),
+			})
+		}
+		if err := service.publishCheckpoint(requestID, ""); err != nil {
+			logger.Errorf("forwarder checkpoint delayed publish failed request_id=%s err=%v", strings.TrimSpace(requestID), err)
+		}
+	})
 }
 
 // flushAssistantText 把本轮累计的 assistant 文本一次性写回 history。

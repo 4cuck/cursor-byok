@@ -14,6 +14,9 @@ const appendSequenceRetention = 10 * time.Minute
 type appendSequenceTracker struct {
 	mu     sync.Mutex
 	states map[string]*appendSequenceState
+	// live reports whether a request is still running. It is called with mu
+	// held and must not call back into the tracker.
+	live func(requestID string) bool
 }
 
 type appendSequenceState struct {
@@ -58,7 +61,10 @@ func (tracker *appendSequenceTracker) state(requestID string) *appendSequenceSta
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	for key, state := range tracker.states {
-		if state == nil || state.expired(cutoff) {
+		// A request that is still running keeps its place however long the
+		// client stays quiet. Forgetting it would make its next frame wait
+		// for frame 1 again, which the client sent long ago.
+		if state == nil || (state.expired(cutoff) && !tracker.isLive(key)) {
 			delete(tracker.states, key)
 		}
 	}
@@ -73,6 +79,10 @@ func (tracker *appendSequenceTracker) state(requestID string) *appendSequenceSta
 	}
 	tracker.states[requestID] = state
 	return state
+}
+
+func (tracker *appendSequenceTracker) isLive(requestID string) bool {
+	return tracker.live != nil && tracker.live(requestID)
 }
 
 // Reset 把指定 request_id 的 append 序列状态强制重置为初始（next=1, processing=false）。
