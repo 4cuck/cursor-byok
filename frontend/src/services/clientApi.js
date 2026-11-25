@@ -16,6 +16,7 @@ import {
   PrepareCursorAccountRecoveryExport, ExecuteCursorAccountRecoveryExport,
   SetCurrentCursorAccount, UpdateCursorAccountTags, DeleteCursorAccounts,
   ClearCursorAccountLock, ClearCursorAccountQuotaCooldown, CheckCursorAccountHealth, GetCursorAccountPlan,
+  GetCursorAccountSpendLimit, SetCursorAccountSpendLimit,
   PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
   FetchCursorAccountModels, SyncCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
@@ -83,6 +84,7 @@ const desktopMethods = {
   PrepareCursorAccountRecoveryExport, ExecuteCursorAccountRecoveryExport,
   SetCurrentCursorAccount, UpdateCursorAccountTags, DeleteCursorAccounts,
   ClearCursorAccountLock, ClearCursorAccountQuotaCooldown, CheckCursorAccountHealth, GetCursorAccountPlan,
+  GetCursorAccountSpendLimit, SetCursorAccountSpendLimit,
   PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
   FetchCursorAccountModels, SyncCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
@@ -281,6 +283,12 @@ const PREVIEW_ACCOUNT_PLAN = {
   percentUsed: 25,
   billingCycleEnd: Date.now() + 12 * 24 * 60 * 60 * 1000,
   usageKnown: true,
+  onDemandLimitKnown: true,
+  onDemandMode: "fixed",
+  onDemandHardLimitDollars: 50,
+  onDemandLimitCents: 5000,
+  onDemandUsedCents: 0,
+  onDemandEditable: true,
 };
 
 // Probes one saved account. The id is required so the card can mark only that
@@ -309,12 +317,38 @@ export function checkCursorAccountHealth(accountID = "") {
 // Reads the plan name and included usage left for one saved account.
 export function getCursorAccountPlan(accountID = "") {
   if (isBrowserPreview) {
-    return Promise.resolve({ ...PREVIEW_ACCOUNT_PLAN });
+    return GetCursorAccountPlan(accountID);
   }
   return withApiLogging(
     "GetCursorAccountPlan",
     { accountID },
     () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "GetCursorAccountPlan", [accountID]),
+    { timeoutMs: 30_000 },
+  );
+}
+
+// Reads the live on-demand spend limit for one saved Cursor account.
+export function getCursorAccountSpendLimit(accountID = "") {
+  if (isBrowserPreview) {
+    return GetCursorAccountSpendLimit(accountID);
+  }
+  return withApiLogging(
+    "GetCursorAccountSpendLimit",
+    { accountID },
+    () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "GetCursorAccountSpendLimit", [accountID]),
+    { timeoutMs: 30_000 },
+  );
+}
+
+// Updates the on-demand spend limit for one saved Cursor account (disabled, fixed, or unlimited).
+export function setCursorAccountSpendLimit(request) {
+  if (isBrowserPreview) {
+    return SetCursorAccountSpendLimit(request);
+  }
+  return withApiLogging(
+    "SetCursorAccountSpendLimit",
+    { accountID: request?.accountId || "", mode: request?.mode || "", hardLimitDollars: request?.hardLimitDollars ?? 0 },
+    () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "SetCursorAccountSpendLimit", [request]),
     { timeoutMs: 30_000 },
   );
 }

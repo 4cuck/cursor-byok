@@ -16,11 +16,13 @@ import {
   executeCursorClientAccountSwitch,
   getCursorAccountLoginStatus,
   getCursorAccountPlan,
+  getCursorAccountSpendLimit,
   importCursorAccount,
   listCursorAccounts,
   prepareCursorAccountRecoveryExport,
   prepareCursorClientAccountSwitchWithOptions,
   setCurrentCursorAccount,
+  setCursorAccountSpendLimit,
   syncCursorAccountModelsRpc,
   updateCursorAccountTags,
 } from "@/services/clientApi";
@@ -30,8 +32,11 @@ import {
   autoBucketUsedPercent,
   bonusUsageCaption,
   credentialTypeLabel,
+  formatPlanCents,
+  formatSpendLimitSummary,
   namedBucketCaption,
   namedBucketUsedPercent,
+  onDemandLimitMode,
   onDemandUsageCaption,
   renewalLabel,
   subscriptionStatusLabel,
@@ -39,6 +44,7 @@ import {
   usageRemainingCaption,
   usedBarClass,
   usedUsagePercent,
+  validateSpendLimitInput,
 } from "@/utils/cursorAccountPlan";
 import { appState, reloadUserConfig, toUserError, toUserErrorWithCause } from "@/state/appState";
 import { Browser } from "@wailsio/runtime";
@@ -62,6 +68,15 @@ const importDialog = ref(null);
 const importValue = ref("");
 const tagDialog = ref(null);
 const tagValue = ref("");
+const spendLimitDialog = ref(null);
+const spendLimitLoading = ref(false);
+const spendLimitSaving = ref(false);
+const spendLimitSnapshot = ref(null);
+const spendLimitMode = ref("disabled");
+const spendLimitAmount = ref("50");
+const spendLimitError = ref("");
+
+const SPEND_LIMIT_PRESETS = [20, 50, 100, 200, 500];
 
 const isPanel = computed(() => props.variant === "panel");
 const loginWaiting = computed(() => Boolean(loginSessionId.value));
@@ -422,6 +437,145 @@ function clearImportDialog() {
 function clearTagDialog() {
   tagValue.value = "";
   tagDialog.value = null;
+}
+
+function clearSpendLimitDialog() {
+  spendLimitDialog.value = null;
+  spendLimitLoading.value = false;
+  spendLimitSaving.value = false;
+  spendLimitSnapshot.value = null;
+  spendLimitError.value = "";
+}
+
+function applySpendLimitState(snapshot, cachedPlan = null) {
+  const mode = snapshot?.mode || onDemandLimitMode(cachedPlan) || "disabled";
+  spendLimitMode.value = mode;
+  if (mode === "fixed") {
+    const dollars = Number(snapshot?.hardLimitDollars || cachedPlan?.onDemandHardLimitDollars || Math.round((Number(cachedPlan?.onDemandLimitCents) || 0) / 100));
+    spendLimitAmount.value = dollars > 0 ? String(dollars) : "50";
+  } else if (!spendLimitAmount.value || Number(spendLimitAmount.value) <= 0) {
+    spendLimitAmount.value = "50";
+  }
+}
+
+async function openSpendLimitDialog(account) {
+  if (!account?.id || busy.value) return;
+  spendLimitDialog.value = account;
+  spendLimitError.value = "";
+  spendLimitSaving.value = false;
+  spendLimitSnapshot.value = null;
+  const cachedPlan = planFor(account);
+  applySpendLimitState(null, cachedPlan);
+  spendLimitLoading.value = true;
+  try {
+    const live = await getCursorAccountSpendLimit(account.id);
+    if (spendLimitDialog.value?.id !== account.id) return;
+    spendLimitSnapshot.value = live;
+    applySpendLimitState(live, cachedPlan);
+  } catch (error) {
+    if (spendLimitDialog.value?.id !== account.id) return;
+    spendLimitError.value = toUserErrorWithCause(error) || toUserError(error) || "Could not load the current on-demand spend limit.";
+  } finally {
+    if (spendLimitDialog.value?.id === account.id) {
+      spendLimitLoading.value = false;
+    }
+  }
+}
+
+function selectSpendLimitMode(mode) {
+  spendLimitMode.value = mode;
+  spendLimitError.value = "";
+  if (mode === "fixed" && (!spendLimitAmount.value || Number(spendLimitAmount.value) <= 0)) {
+    spendLimitAmount.value = "50";
+  }
+}
+
+function applySpendLimitPreset(dollars) {
+  spendLimitMode.value = "fixed";
+  spendLimitAmount.value = String(dollars);
+  spendLimitError.value = "";
+}
+
+const spendLimitCurrentSummary = computed(() => {
+  const snap = spendLimitSnapshot.value;
+  if (snap?.mode) return formatSpendLimitSummary(snap.mode, snap.hardLimitDollars);
+  const cached = planFor(spendLimitDialog.value);
+  const mode = onDemandLimitMode(cached);
+  if (mode) {
+    const dollars = cached?.onDemandHardLimitDollars || Math.round((Number(cached?.onDemandLimitCents) || 0) / 100);
+    return formatSpendLimitSummary(mode, dollars);
+  }
+  return "Unknown";
+});
+
+const spendLimitReadOnlyReason = computed(() => {
+  const snap = spendLimitSnapshot.value;
+  if (snap && snap.editable === false && snap.readOnlyReason) return snap.readOnlyReason;
+  const cached = planFor(spendLimitDialog.value);
+  if (cached && cached.onDemandLimitKnown && cached.onDemandEditable === false && cached.onDemandReadOnlyReason) {
+    return cached.onDemandReadOnlyReason;
+  }
+  return "";
+});
+
+async function confirmSpendLimit() {
+  const account = spendLimitDialog.value;
+  if (!account?.id || spendLimitSaving.value || spendLimitLoading.value) return;
+
+  const validated = validateSpendLimitInput(spendLimitMode.value, spendLimitAmount.value);
+  if (!validated.ok) {
+    spendLimitError.value = validated.errorMessage;
+    return;
+  }
+
+  const prev = spendLimitSnapshot.value;
+  const targetLabel = formatSpendLimitSummary(validated.mode, validated.hardLimitDollars);
+  const isUnlimited = validated.mode === "unlimited";
+  const isRaisingOrEnabling = isUnlimited
+    || (validated.mode === "fixed" && (!prev || prev.mode === "disabled" || (prev.mode === "fixed" && validated.hardLimitDollars > Number(prev.hardLimitDollars || 0))));
+
+  if (isUnlimited) {
+    const confirmed = await showModal({
+      title: "Set unlimited on-demand spending?",
+      content: `Remove the monthly on-demand spend cap for ${account.email || "this account"}? Cursor will bill all usage beyond your included plan with no upper limit.`,
+      confirmText: "Set Unlimited",
+      cancelText: "Cancel",
+    });
+    if (!confirmed) return;
+  } else if (isRaisingOrEnabling) {
+    const confirmed = await showModal({
+      title: `Set on-demand limit to ${targetLabel}?`,
+      content: `Update the monthly on-demand spend limit for ${account.email || "this account"} to ${targetLabel}. Usage beyond your included allowance will be billed by Cursor up to this limit.`,
+      confirmText: `Set ${targetLabel}`,
+      cancelText: "Cancel",
+    });
+    if (!confirmed) return;
+  }
+
+  spendLimitSaving.value = true;
+  spendLimitError.value = "";
+  try {
+    const updated = await setCursorAccountSpendLimit({
+      accountId: account.id,
+      mode: validated.mode,
+      hardLimitDollars: validated.hardLimitDollars,
+      teamId: Number(prev?.teamId || 0),
+      personalScope: Boolean(prev?.personalScope),
+    });
+    const savedLabel = formatSpendLimitSummary(updated?.mode || validated.mode, updated?.hardLimitDollars ?? validated.hardLimitDollars);
+    const cleared = Number(updated?.clearedQuotaCooldowns || 0);
+    clearSpendLimitDialog();
+    await refreshAccountPlan(account);
+    message.success(
+      cleared > 0
+        ? `On-demand limit updated to ${savedLabel} (cleared ${cleared} model cooldown(s)).`
+        : `On-demand limit updated to ${savedLabel}.`,
+    );
+  } catch (error) {
+    spendLimitError.value = toUserErrorWithCause(error) || toUserError(error) || "Failed to update on-demand spend limit.";
+  } finally {
+    spendLimitSaving.value = false;
+  }
 }
 
 async function handleOAuthLogin() {
@@ -809,6 +963,7 @@ onBeforeUnmount(() => {
   }
   clearImportDialog();
   clearTagDialog();
+  clearSpendLimitDialog();
 });
 </script>
 
@@ -947,7 +1102,7 @@ onBeforeUnmount(() => {
                   <span class="icon-[mdi--loading] animate-spin text-[13px]" />
                   Syncing Cursor model catalog…
                 </div>
-                <div v-if="planFor(account)?.planName || planFor(account)?.usageKnown" class="mt-2 max-w-[440px]">
+                <div v-if="planFor(account)?.planName || planFor(account)?.usageKnown || planFor(account)?.onDemandLimitKnown" class="mt-2 max-w-[440px]">
                   <div class="flex flex-wrap items-center gap-1.5">
                     <span class="rounded-full border border-[#3f3f3f] bg-[#232323] px-2 py-0.5 text-[10px] font-medium text-white">
                       {{ planFor(account).planName || "Cursor" }}
@@ -998,12 +1153,30 @@ onBeforeUnmount(() => {
                       <span v-if="renewalLabel(planFor(account))">{{ renewalLabel(planFor(account)) }}</span>
                       <span v-if="renewalLabel(planFor(account)) && onDemandUsageCaption(planFor(account))">·</span>
                       <span v-if="onDemandUsageCaption(planFor(account))">{{ onDemandUsageCaption(planFor(account)) }}</span>
+                      <button
+                        v-if="!isAccountLocked(account)"
+                        type="button"
+                        class="cursor-pointer text-[10px] text-[#7dd3a0] underline-offset-2 hover:underline"
+                        :disabled="busy"
+                        @click="openSpendLimitDialog(account)"
+                      >
+                        Edit limit
+                      </button>
                       <span v-if="(renewalLabel(planFor(account)) || onDemandUsageCaption(planFor(account))) && (planFor(account).namedDisplayMessage || planFor(account).displayMessage)">·</span>
                       <span v-if="planFor(account).namedDisplayMessage || planFor(account).displayMessage">{{ planFor(account).namedDisplayMessage || planFor(account).displayMessage }}</span>
                     </div>
                   </template>
-                  <div v-else class="mt-1 text-[11px] text-[#8a8a8a]">
-                    {{ planFor(account).message || "Included usage was not reported for this key." }}
+                  <div v-else class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[#8a8a8a]">
+                    <span>{{ onDemandUsageCaption(planFor(account)) || planFor(account).message || "Included usage was not reported for this key." }}</span>
+                    <button
+                      v-if="!isAccountLocked(account)"
+                      type="button"
+                      class="cursor-pointer text-[10px] text-[#7dd3a0] underline-offset-2 hover:underline"
+                      :disabled="busy"
+                      @click="openSpendLimitDialog(account)"
+                    >
+                      Edit limit
+                    </button>
                   </div>
                 </div>
                 <div v-else-if="isPlanLoading(account)" class="mt-1.5 flex items-center gap-1.5 text-[11px] text-[#8a8a8a]">
@@ -1105,6 +1278,9 @@ onBeforeUnmount(() => {
                   <button type="button" class="menu-item" role="menuitem" @click="() => { close(); void refreshAccountPlan(account); }">
                     <span class="icon-[mdi--chart-box-outline]" /> Refresh plan & usage
                   </button>
+                  <button type="button" class="menu-item" role="menuitem" @click="() => { close(); void openSpendLimitDialog(account); }">
+                    <span class="icon-[mdi--cash-fast]" /> On-demand spend limit
+                  </button>
                   <button
                     v-if="syncedSummaryFor(account)"
                     type="button"
@@ -1170,6 +1346,142 @@ onBeforeUnmount(() => {
         <div class="flex justify-end gap-2">
           <Button variant="default" @click="clearTagDialog">Cancel</Button>
           <Button variant="primary" :disabled="busy" @click="confirmTags">Save</Button>
+        </div>
+      </div>
+    </div>
+    <div
+      v-if="spendLimitDialog"
+      class="fixed inset-0 z-[100000] flex items-center justify-center bg-black/50 p-4"
+      @click.self="clearSpendLimitDialog"
+    >
+      <div class="w-full max-w-[440px] rounded-[8px] border border-[#343434] bg-[#292929] p-5" role="dialog" aria-modal="true" aria-label="On-demand spend limit">
+        <div class="mb-3 flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h3 class="text-base font-medium text-white">On-demand spend limit</h3>
+            <p class="mt-0.5 truncate text-xs text-[#8a8a8a]">
+              {{ spendLimitDialog.email || "Unnamed account" }}
+              <span v-if="credentialTypeLabel(spendLimitDialog.credentialType)"> · {{ credentialTypeLabel(spendLimitDialog.credentialType) }}</span>
+            </p>
+          </div>
+          <span class="shrink-0 rounded-full border border-[#3f3f3f] bg-[#232323] px-2.5 py-0.5 text-[11px] text-[#d4d4d4]">
+            Current: {{ spendLimitCurrentSummary }}
+          </span>
+        </div>
+
+        <div v-if="spendLimitLoading" class="mb-4 flex items-center gap-2 rounded-[6px] border border-[#343434] bg-[#232323] px-3 py-3 text-xs text-[#a3a3a3]">
+          <span class="icon-[mdi--loading] animate-spin text-[14px]" />
+          Loading current limit from Cursor…
+        </div>
+
+        <template v-else>
+          <div
+            v-if="spendLimitReadOnlyReason"
+            class="mb-3 rounded-[6px] border border-[#6b4f1a] bg-[#302512] px-3 py-2 text-xs text-[#f2c66d]"
+          >
+            {{ spendLimitReadOnlyReason }}
+          </div>
+
+          <div
+            v-if="planFor(spendLimitDialog)?.onDemandUsedCents > 0"
+            class="mb-3 text-xs text-[#a3a3a3]"
+          >
+            Spent this cycle: <span class="font-medium text-white">{{ formatPlanCents(planFor(spendLimitDialog).onDemandUsedCents) }}</span>
+          </div>
+
+          <div class="mb-3 grid grid-cols-3 gap-1.5">
+            <button
+              type="button"
+              class="cursor-pointer rounded-[6px] border px-2.5 py-2 text-xs font-medium transition-colors"
+              :class="spendLimitMode === 'disabled'
+                ? 'border-[#2f6b49] bg-[#1f3a2c] text-[#7dd3a0]'
+                : 'border-[#3f3f3f] bg-[#232323] text-[#c4c4c4] hover:bg-[#2d2d2d]'"
+              :disabled="spendLimitSaving"
+              @click="selectSpendLimitMode('disabled')"
+            >
+              Disabled ($0)
+            </button>
+            <button
+              type="button"
+              class="cursor-pointer rounded-[6px] border px-2.5 py-2 text-xs font-medium transition-colors"
+              :class="spendLimitMode === 'fixed'
+                ? 'border-[#2f6b49] bg-[#1f3a2c] text-[#7dd3a0]'
+                : 'border-[#3f3f3f] bg-[#232323] text-[#c4c4c4] hover:bg-[#2d2d2d]'"
+              :disabled="spendLimitSaving"
+              @click="selectSpendLimitMode('fixed')"
+            >
+              Fixed limit
+            </button>
+            <button
+              type="button"
+              class="cursor-pointer rounded-[6px] border px-2.5 py-2 text-xs font-medium transition-colors"
+              :class="spendLimitMode === 'unlimited'
+                ? 'border-[#6b4f1a] bg-[#302512] text-[#f2c66d]'
+                : 'border-[#3f3f3f] bg-[#232323] text-[#c4c4c4] hover:bg-[#2d2d2d]'"
+              :disabled="spendLimitSaving"
+              @click="selectSpendLimitMode('unlimited')"
+            >
+              Unlimited
+            </button>
+          </div>
+
+          <div v-if="spendLimitMode === 'fixed'" class="mb-3">
+            <label class="mb-1.5 block text-xs text-[#a3a3a3]" for="cursor-spend-limit-input">
+              Monthly cap (whole USD dollars — raise or lower anytime)
+            </label>
+            <div class="relative">
+              <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[#8a8a8a]">$</span>
+              <input
+                id="cursor-spend-limit-input"
+                v-model="spendLimitAmount"
+                type="number"
+                min="1"
+                step="1"
+                class="h-9 w-full rounded-[6px] border border-[#3f3f3f] bg-[#232323] pl-7 pr-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+                placeholder="50"
+                :disabled="spendLimitSaving"
+                @keyup.enter="confirmSpendLimit"
+              />
+            </div>
+            <div class="mt-2 flex flex-wrap gap-1.5">
+              <button
+                v-for="preset in SPEND_LIMIT_PRESETS"
+                :key="preset"
+                type="button"
+                class="cursor-pointer rounded-full border border-[#3f3f3f] bg-[#232323] px-2.5 py-0.5 text-[11px] text-[#d4d4d4] hover:border-[#2f6b49] hover:text-white"
+                :disabled="spendLimitSaving"
+                @click="applySpendLimitPreset(preset)"
+              >
+                ${{ preset }}
+              </button>
+            </div>
+          </div>
+
+          <p v-else-if="spendLimitMode === 'disabled'" class="mb-3 text-xs leading-5 text-[#a3a3a3]">
+            Turns off on-demand spending (<span class="text-[#d4d4d4]">no_usage_based_allowed</span>). Requests will stop once your included plan allowance is reached.
+          </p>
+
+          <div v-else class="mb-3 rounded-[6px] border border-[#6b4f1a] bg-[#302512] px-3 py-2 text-xs leading-5 text-[#f2c66d]">
+            Removes the monthly on-demand cap entirely. All usage beyond your included plan will be billed by Cursor with no upper limit.
+          </div>
+
+          <div
+            v-if="spendLimitError"
+            class="mb-3 rounded-[6px] border border-[#4b1d1d] bg-[#2a1313] px-3 py-2 text-xs text-[#fca5a5]"
+          >
+            {{ spendLimitError }}
+          </div>
+        </template>
+
+        <div class="flex justify-end gap-2">
+          <Button variant="default" :disabled="spendLimitSaving" @click="clearSpendLimitDialog">Cancel</Button>
+          <Button
+            variant="primary"
+            :disabled="spendLimitLoading || spendLimitSaving"
+            @click="confirmSpendLimit"
+          >
+            <span v-if="spendLimitSaving" class="icon-[mdi--loading] mr-1 animate-spin text-[12px]" />
+            {{ spendLimitSaving ? "Saving…" : "Save limit" }}
+          </Button>
         </div>
       </div>
     </div>

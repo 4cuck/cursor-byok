@@ -1,3 +1,12 @@
+## v1.0.54
+
+### Added
+
+- **Cursor account on-demand spend limit management (Disabled / Fixed / Unlimited)**:
+  - Added `GetCursorAccountSpendLimit` and `SetCursorAccountSpendLimit` backed by Cursor's `DashboardService/GetHardLimit` and `DashboardService/SetHardLimit` RPCs (including `personal_scope` support for unified X Subscription plans and `team_id` support for Teams/Enterprise seats).
+  - Works with both OAuth (`session`) accounts and `crsr_`/`grok_` user API-key (`api_key_token`) accounts with automatic token refresh retry, Connect error decoding (`PAYMENT_METHOD_REQUIRED`, `PERMISSION_DENIED`, `FAILED_PRECONDITION`), and automatic per-model quota cooldown clearing when enabling or raising a limit.
+  - Updated Cursor account cards to display live on-demand status (**Disabled**, **Fixed (`$used / $limit`)**, or **Unlimited**) and added an **On-demand spend limit** modal (**Edit limit** inline or via **More**) with mode switching, whole-dollar input, quick presets (`$20`–`$500`), and confirmation prompts before enabling/raising caps or selecting **Unlimited**.
+
 ## v1.0.53
 
 ### Added
@@ -54,11 +63,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.53-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.53-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.53-windows-arm64-installer.exe` 或 `cursor-byok-1.0.53-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.53-windows-x32-installer.exe` 或 `cursor-byok-1.0.53-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.53-macos-arm64.dmg` 或 `cursor-byok-1.0.53-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.53-macos-x64.dmg` 或 `cursor-byok-1.0.53-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.53-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.54-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.54-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.54-windows-arm64-installer.exe` 或 `cursor-byok-1.0.54-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.54-windows-x32-installer.exe` 或 `cursor-byok-1.0.54-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.54-macos-arm64.dmg` 或 `cursor-byok-1.0.54-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.54-macos-x64.dmg` 或 `cursor-byok-1.0.54-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.54-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

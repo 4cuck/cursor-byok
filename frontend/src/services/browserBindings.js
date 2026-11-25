@@ -1232,8 +1232,25 @@ export const CheckCursorAccountHealth = (accountID) => {
     },
   });
 };
+let previewSpendLimitByAccount = {};
+
+function previewSpendLimitFor(accountID) {
+  const key = String(accountID || "");
+  return previewSpendLimitByAccount[key] || {
+    accountId: key,
+    mode: "fixed",
+    hardLimitDollars: 50,
+    noUsageBasedAllowed: false,
+    disabledByOrg: false,
+    editable: true,
+    membershipType: "pro",
+    subscriptionStatus: "active",
+  };
+}
+
 export const GetCursorAccountPlan = (accountID) => {
   recordPreviewCall("GetCursorAccountPlan", [accountID]);
+  const spend = previewSpendLimitFor(accountID);
   return Promise.resolve({
     planName: "Pro",
     membershipType: "pro",
@@ -1245,7 +1262,35 @@ export const GetCursorAccountPlan = (accountID) => {
     usedCents: 500,
     percentUsed: 25,
     usageKnown: true,
+    onDemandLimitKnown: true,
+    onDemandMode: spend.mode,
+    onDemandHardLimitDollars: spend.hardLimitDollars,
+    onDemandLimitCents: spend.mode === "fixed" ? spend.hardLimitDollars * 100 : 0,
+    onDemandUsedCents: 0,
+    onDemandDisabledByOrg: Boolean(spend.disabledByOrg),
+    onDemandEditable: Boolean(spend.editable),
+    onDemandReadOnlyReason: spend.readOnlyReason || "",
   });
+};
+export const GetCursorAccountSpendLimit = (accountID) => {
+  recordPreviewCall("GetCursorAccountSpendLimit", [accountID]);
+  return Promise.resolve({ ...previewSpendLimitFor(accountID) });
+};
+export const SetCursorAccountSpendLimit = (request) => {
+  recordPreviewCall("SetCursorAccountSpendLimit", [request]);
+  const key = String(request?.accountId || "");
+  const mode = String(request?.mode || "disabled").toLowerCase();
+  const dollars = mode === "unlimited" ? 2147483647 : mode === "fixed" ? Number(request?.hardLimitDollars || 0) : 0;
+  const next = {
+    ...previewSpendLimitFor(key),
+    accountId: key,
+    mode,
+    hardLimitDollars: dollars,
+    noUsageBasedAllowed: mode === "disabled",
+    clearedQuotaCooldowns: mode === "disabled" ? 0 : 1,
+  };
+  previewSpendLimitByAccount = { ...previewSpendLimitByAccount, [key]: next };
+  return Promise.resolve({ ...next });
 };
 export const ClearCursorAccountLock = (accountID) => {
   recordPreviewCall("ClearCursorAccountLock", [accountID]);

@@ -4,16 +4,20 @@ import {
   autoBucketCaption,
   autoBucketUsedPercent,
   bonusUsageCaption,
+  CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS,
   credentialTypeLabel,
   formatPlanCents,
+  formatSpendLimitSummary,
   namedBucketCaption,
   namedBucketUsedPercent,
+  onDemandLimitMode,
   onDemandUsageCaption,
   remainingUsagePercent,
   renewalLabel,
   subscriptionStatusLabel,
   usageRemainingCaption,
   usedUsagePercent,
+  validateSpendLimitInput,
 } from "./cursorAccountPlan.js";
 
 test("formats included cents as dollars", () => {
@@ -98,4 +102,36 @@ test("renewal label uses the billing cycle end", () => {
   const end = Date.UTC(2026, 4, 12);
   assert.match(renewalLabel({ billingCycleEnd: end }, Date.UTC(2026, 4, 1)), /^Resets /);
   assert.equal(renewalLabel({ billingCycleEnd: 0 }), "");
+});
+
+test("formats on-demand disabled, fixed, and unlimited modes", () => {
+  assert.equal(onDemandLimitMode({ onDemandMode: "disabled" }), "disabled");
+  assert.equal(onDemandLimitMode({ onDemandMode: "unlimited" }), "unlimited");
+  assert.equal(onDemandLimitMode({ onDemandHardLimitDollars: CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS }), "unlimited");
+  assert.equal(onDemandLimitMode({ onDemandLimitCents: 5000 }), "fixed");
+
+  assert.equal(onDemandUsageCaption({ onDemandMode: "disabled", onDemandUsedCents: 0 }), "On-demand: Disabled");
+  assert.equal(onDemandUsageCaption({ onDemandMode: "disabled", onDemandUsedCents: 350 }), "On-demand: Disabled ($3.50 used)");
+  assert.equal(onDemandUsageCaption({ onDemandMode: "unlimited", onDemandUsedCents: 0 }), "On-demand: Unlimited");
+  assert.equal(onDemandUsageCaption({ onDemandMode: "unlimited", onDemandUsedCents: 1234 }), "On-demand: $12.34 (Unlimited)");
+  assert.equal(onDemandUsageCaption({ onDemandMode: "fixed", onDemandHardLimitDollars: 100, onDemandUsedCents: 250 }), "On-demand limit: $2.50 / $100.00");
+
+  assert.equal(formatSpendLimitSummary("disabled", 0), "Disabled ($0)");
+  assert.equal(formatSpendLimitSummary("fixed", 250), "$250");
+  assert.equal(formatSpendLimitSummary("unlimited", CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS), "Unlimited");
+});
+
+test("validates spend limit modal input for disabled, fixed, and unlimited", () => {
+  assert.deepEqual(validateSpendLimitInput("disabled", ""), { ok: true, mode: "disabled", hardLimitDollars: 0 });
+  assert.deepEqual(validateSpendLimitInput("unlimited", ""), {
+    ok: true,
+    mode: "unlimited",
+    hardLimitDollars: CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS,
+  });
+  assert.deepEqual(validateSpendLimitInput("fixed", "$150"), { ok: true, mode: "fixed", hardLimitDollars: 150 });
+  assert.deepEqual(validateSpendLimitInput("fixed", "1,200"), { ok: true, mode: "fixed", hardLimitDollars: 1200 });
+  assert.equal(validateSpendLimitInput("fixed", "0").ok, false);
+  assert.equal(validateSpendLimitInput("fixed", "-5").ok, false);
+  assert.equal(validateSpendLimitInput("fixed", "12.50").ok, false);
+  assert.equal(validateSpendLimitInput("fixed", String(CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS)).ok, false);
 });

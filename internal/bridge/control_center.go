@@ -31,6 +31,8 @@ type CursorAccountModelSyncRequest = client.CursorAccountModelSyncRequest
 type CursorAccountModelSyncResult = client.CursorAccountModelSyncResult
 type CursorAccountHealth = client.CursorAccountHealth
 type CursorAccountPlan = client.CursorAccountPlan
+type CursorAccountSpendLimit = client.CursorAccountSpendLimit
+type CursorAccountSpendLimitRequest = client.CursorAccountSpendLimitRequest
 type RequestSourceQuery = requestlab.RequestSourceQuery
 type RequestSourcePage = requestlab.RequestSourcePage
 type RequestComparisonRequest = requestlab.RequestComparisonRequest
@@ -102,6 +104,18 @@ func (s *ProxyService) CheckCursorAccountHealth(accountID string) (CursorAccount
 // for one saved account. An empty accountID uses the current account.
 func (s *ProxyService) GetCursorAccountPlan(accountID string) (CursorAccountPlan, error) {
 	return s.core.GetCursorAccountPlan(accountID)
+}
+
+// GetCursorAccountSpendLimit reads the current on-demand spend limit for one
+// saved Cursor account. An empty accountID uses the current account.
+func (s *ProxyService) GetCursorAccountSpendLimit(accountID string) (CursorAccountSpendLimit, error) {
+	return s.core.GetCursorAccountSpendLimit(accountID)
+}
+
+// SetCursorAccountSpendLimit updates the on-demand spend limit for one saved
+// Cursor account to disabled ($0), a fixed dollar cap, or unlimited.
+func (s *ProxyService) SetCursorAccountSpendLimit(req CursorAccountSpendLimitRequest) (CursorAccountSpendLimit, error) {
+	return s.core.SetCursorAccountSpendLimit(req)
 }
 
 func (s *ProxyService) DeleteCursorAccounts(req CursorAccountDeleteRequest) error {

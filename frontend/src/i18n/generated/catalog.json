@@ -605,7 +605,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1504,
+          "line": 1549,
           "column": 70
         }
       ]
@@ -2239,7 +2239,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1395,
+          "line": 1440,
           "column": 100
         }
       ]
@@ -2983,7 +2983,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 804,
+          "line": 838,
           "column": 66
         }
       ]
@@ -3825,7 +3825,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1516,
+          "line": 1561,
           "column": 15
         }
       ]
@@ -5130,7 +5130,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 577,
+          "line": 611,
           "column": 99
         }
       ]
@@ -5812,7 +5812,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1479,
+          "line": 1524,
           "column": 49
         }
       ]
@@ -7515,7 +7515,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 459,
+          "line": 493,
           "column": 24
         }
       ]
@@ -7858,7 +7858,7 @@
         },
         {
           "file": "src/services/clientApi.js",
-          "line": 735,
+          "line": 769,
           "column": 128
         }
       ]
@@ -8006,12 +8006,12 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1356,
+          "line": 1401,
           "column": 37
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1370,
+          "line": 1415,
           "column": 37
         }
       ]
@@ -13085,7 +13085,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1449,
+          "line": 1494,
           "column": 35
         }
       ]
@@ -13958,7 +13958,7 @@
       "refs": [
         {
           "file": "src/services/clientApi.js",
-          "line": 193,
+          "line": 195,
           "column": 37
         }
       ]
@@ -14791,7 +14791,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1427,
+          "line": 1472,
           "column": 49
         }
       ]
@@ -14959,7 +14959,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1505,
+          "line": 1550,
           "column": 61
         }
       ]
@@ -15660,7 +15660,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1409,
+          "line": 1454,
           "column": 79
         }
       ]
@@ -16869,7 +16869,7 @@
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1313,
+          "line": 1358,
           "column": 49
         }
       ]
@@ -16985,12 +16985,12 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1463,
+          "line": 1508,
           "column": 35
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1490,
+          "line": 1535,
           "column": 48
         }
       ]
@@ -19124,12 +19124,12 @@
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1335,
+          "line": 1380,
           "column": 37
         },
         {
           "file": "src/services/browserBindings.js",
-          "line": 1495,
+          "line": 1540,
           "column": 78
         }
       ]
@@ -21722,7 +21722,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1519,
+          "line": 1564,
           "column": 26
         }
       ]
@@ -22718,7 +22718,7 @@
       "refs": [
         {
           "file": "src/services/browserBindings.js",
-          "line": 1520,
+          "line": 1565,
           "column": 26
         },
         {

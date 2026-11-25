@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 
@@ -45,10 +46,18 @@ type CursorAccountPlan struct {
 	NamedUsedCents      int32    `json:"namedUsedCents,omitempty"`
 	NamedLimitCents     int32    `json:"namedLimitCents,omitempty"`
 	NamedPercentUsed    float64  `json:"namedPercentUsed"`
-	HasBucketBreakdown  bool     `json:"hasBucketBreakdown,omitempty"`
-	OnDemandUsedCents   int32    `json:"onDemandUsedCents,omitempty"`
-	OnDemandLimitCents  int32    `json:"onDemandLimitCents,omitempty"`
-	BillingCycleEnd     int64    `json:"billingCycleEnd,omitempty"`
+	HasBucketBreakdown       bool     `json:"hasBucketBreakdown,omitempty"`
+	OnDemandUsedCents        int32    `json:"onDemandUsedCents,omitempty"`
+	OnDemandLimitCents       int32    `json:"onDemandLimitCents,omitempty"`
+	OnDemandLimitKnown       bool     `json:"onDemandLimitKnown,omitempty"`
+	OnDemandMode             string   `json:"onDemandMode,omitempty"` // "disabled" | "fixed" | "unlimited"
+	OnDemandHardLimitDollars int32    `json:"onDemandHardLimitDollars,omitempty"`
+	OnDemandDisabledByOrg    bool     `json:"onDemandDisabledByOrg,omitempty"`
+	OnDemandEditable         bool     `json:"onDemandEditable,omitempty"`
+	OnDemandReadOnlyReason   string   `json:"onDemandReadOnlyReason,omitempty"`
+	OnDemandTeamID           int32    `json:"onDemandTeamId,omitempty"`
+	OnDemandPersonalScope    bool     `json:"onDemandPersonalScope,omitempty"`
+	BillingCycleEnd          int64    `json:"billingCycleEnd,omitempty"`
 	DisplayMessage      string   `json:"displayMessage,omitempty"`
 	NamedDisplayMessage string   `json:"namedDisplayMessage,omitempty"`
 	AutoDisplayMessage  string   `json:"autoDisplayMessage,omitempty"`
@@ -159,7 +168,15 @@ func fetchCursorAccountPlan(ctx context.Context, authorization string) (CursorAc
 		}
 		return CursorAccountPlan{}, fmt.Errorf("cursor plan lookup failed")
 	}
-	return buildCursorAccountPlan(planInfo, usage, stripe), nil
+
+	scope := fetchCursorSpendLimitScope(ctx, authorization, stripe, usage)
+	var hardLimit *aiserverv1.GetHardLimitResponse
+	hlResp := &aiserverv1.GetHardLimitResponse{}
+	if err := postCursorDashboardDetailed(ctx, authorization, cursorGetHardLimitPath, buildGetHardLimitProtoRequest(scope.TeamID, scope.PersonalScope), hlResp); err == nil {
+		hardLimit = hlResp
+	}
+
+	return buildCursorAccountPlanWithHardLimit(planInfo, usage, stripe, hardLimit, scope), nil
 }
 
 func doCursorControlPlaneRequest(req *http.Request) (*http.Response, error) {
@@ -231,6 +248,11 @@ func getCursorStripeProfile(ctx context.Context, authorization string, profile *
 }
 
 func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserverv1.GetCurrentPeriodUsageResponse, stripe cursorStripeProfile) CursorAccountPlan {
+	scope := resolveCursorSpendLimitScope(stripe, usage, nil)
+	return buildCursorAccountPlanWithHardLimit(info, usage, stripe, nil, scope)
+}
+
+func buildCursorAccountPlanWithHardLimit(info *aiserverv1.GetPlanInfoResponse, usage *aiserverv1.GetCurrentPeriodUsageResponse, stripe cursorStripeProfile, hardLimit *aiserverv1.GetHardLimitResponse, scope cursorSpendLimitScope) CursorAccountPlan {
 	plan := CursorAccountPlan{}
 	membership := strings.TrimSpace(stripe.MembershipType)
 	if membership == "" {
@@ -238,6 +260,10 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 	}
 	plan.MembershipType = membership
 	plan.SubscriptionStatus = strings.TrimSpace(stripe.SubscriptionStatus)
+	plan.OnDemandEditable = scope.Editable
+	plan.OnDemandReadOnlyReason = scope.ReadOnlyReason
+	plan.OnDemandTeamID = scope.TeamID
+	plan.OnDemandPersonalScope = scope.PersonalScope
 
 	if info != nil && info.GetPlanInfo() != nil {
 		details := info.GetPlanInfo()
@@ -261,7 +287,7 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 		plan.AutoDisplayMessage = strings.TrimSpace(usage.GetAutoModelSelectedDisplayMessage())
 
 		if spend := usage.GetSpendLimitUsage(); spend != nil {
-			if spend.GetIndividualLimit() > 0 {
+			if spend.GetIndividualLimit() > 0 && spend.GetIndividualLimit() < CursorUnlimitedHardLimitDollars {
 				plan.OnDemandLimitCents = spend.GetIndividualLimit()
 				used := spend.GetIndividualLimit() - spend.GetIndividualRemaining()
 				if spend.GetIndividualUsed() > 0 {
@@ -271,13 +297,22 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 					used = 0
 				}
 				plan.OnDemandUsedCents = used
-			} else if spend.GetOverallLimit() > 0 {
+			} else if spend.GetOverallLimit() > 0 && spend.GetOverallLimit() < CursorUnlimitedHardLimitDollars {
 				plan.OnDemandLimitCents = spend.GetOverallLimit()
 				used := spend.GetOverallLimit() - spend.GetOverallRemaining()
+				if spend.GetOverallUsed() > 0 {
+					used = spend.GetOverallUsed()
+				}
 				if used < 0 {
 					used = 0
 				}
 				plan.OnDemandUsedCents = used
+			} else if spend.GetIndividualUsed() > 0 {
+				plan.OnDemandUsedCents = spend.GetIndividualUsed()
+			} else if spend.GetOverallUsed() > 0 {
+				plan.OnDemandUsedCents = spend.GetOverallUsed()
+			} else if spend.GetTotalSpend() > 0 {
+				plan.OnDemandUsedCents = spend.GetTotalSpend()
 			}
 		}
 
@@ -338,6 +373,24 @@ func buildCursorAccountPlan(info *aiserverv1.GetPlanInfoResponse, usage *aiserve
 			}
 		}
 	}
+	if hardLimit != nil {
+		decoded := decodeHardLimitResponse("", hardLimit, scope)
+		plan.OnDemandLimitKnown = true
+		plan.OnDemandMode = decoded.Mode
+		plan.OnDemandHardLimitDollars = decoded.HardLimitDollars
+		plan.OnDemandDisabledByOrg = decoded.DisabledByOrg
+		plan.OnDemandEditable = decoded.Editable
+		plan.OnDemandReadOnlyReason = decoded.ReadOnlyReason
+		switch decoded.Mode {
+		case CursorSpendLimitModeDisabled, CursorSpendLimitModeUnlimited:
+			plan.OnDemandLimitCents = 0
+		case CursorSpendLimitModeFixed:
+			if decoded.HardLimitDollars > 0 && decoded.HardLimitDollars <= math.MaxInt32/100 {
+				plan.OnDemandLimitCents = decoded.HardLimitDollars * 100
+			}
+		}
+	}
+
 	if plan.PlanName == "" && !plan.UsageKnown && plan.SubscriptionStatus == "" {
 		plan.Message = "Cursor did not return plan or usage for this key."
 	}
@@ -368,10 +421,10 @@ func includedUsage(usage *aiserverv1.GetCurrentPeriodUsageResponse, hasPooledPer
 		return 0, 0, false
 	}
 	if spend := usage.GetSpendLimitUsage(); spend != nil {
-		if spend.GetIndividualLimit() > 0 {
+		if spend.GetIndividualLimit() > 0 && spend.GetIndividualLimit() < CursorUnlimitedHardLimitDollars {
 			return spend.GetIndividualRemaining(), spend.GetIndividualLimit(), true
 		}
-		if spend.GetOverallLimit() > 0 {
+		if spend.GetOverallLimit() > 0 && spend.GetOverallLimit() < CursorUnlimitedHardLimitDollars {
 			return spend.GetOverallRemaining(), spend.GetOverallLimit(), true
 		}
 	}
@@ -388,10 +441,14 @@ func displayPlanName(membership string) string {
 		return "Pro"
 	case "pro_plus", "pro+":
 		return "Pro+"
-	case "ultra":
+	case "ultra", "unified_ultra":
 		return "Ultra"
 	case "premium":
 		return "Premium"
+	case "plus":
+		return "Plus"
+	case "super":
+		return "Super"
 	case "business", "team":
 		return "Business"
 	case "enterprise":

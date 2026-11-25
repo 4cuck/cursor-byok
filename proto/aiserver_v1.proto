@@ -14652,6 +14652,7 @@ message GetGroupsResponse {
 // Copied from: local:aiserver.v1.GetHardLimitRequest (var: Yc)
 message GetHardLimitRequest {
   optional int32 team_id = 1;
+  optional bool personal_scope = 2;
 }
 
 // Copied from: local:aiserver.v1.GetHardLimitResponse (var: Xc)
@@ -31554,6 +31555,7 @@ message SetHardLimitRequest {
   bool clear_per_user_first_party_models_additional_budget_dollars = 12;
   optional bool per_user_first_party_models_additional_budget_unlimited = 13;
   bool clear_per_user_first_party_models_additional_budget_unlimited = 14;
+  optional bool personal_scope = 15;
 }
 
 // Copied from: local:aiserver.v1.SetHardLimitResponse (var: tl)

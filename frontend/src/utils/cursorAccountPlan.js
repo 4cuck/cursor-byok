@@ -1,5 +1,7 @@
 /** Display helpers for a Cursor account plan snapshot. Amounts are cents. */
 
+export const CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS = 2147483647;
+
 export function formatPlanCents(cents) {
   const value = Number(cents);
   const amount = Number.isFinite(value) ? value / 100 : 0;
@@ -185,11 +187,77 @@ export function bonusUsageCaption(plan) {
   return `+${formatPlanCents(bonus)} free bonus`;
 }
 
+export function onDemandLimitMode(plan) {
+  const mode = String(plan?.onDemandMode || "").trim().toLowerCase();
+  if (mode === "disabled" || mode === "fixed" || mode === "unlimited") {
+    return mode;
+  }
+  const hardLimit = Number(plan?.onDemandHardLimitDollars) || 0;
+  if (hardLimit >= CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS) return "unlimited";
+  if (hardLimit > 0 || (Number(plan?.onDemandLimitCents) || 0) > 0) return "fixed";
+  return "";
+}
+
 export function onDemandUsageCaption(plan) {
-  const limit = Number(plan?.onDemandLimitCents) || 0;
-  if (limit <= 0) return "";
+  const mode = onDemandLimitMode(plan);
   const used = Math.max(0, Number(plan?.onDemandUsedCents) || 0);
+  if (mode === "unlimited") {
+    return used > 0
+      ? `On-demand: ${formatPlanCents(used)} (Unlimited)`
+      : "On-demand: Unlimited";
+  }
+  if (mode === "disabled") {
+    return used > 0
+      ? `On-demand: Disabled (${formatPlanCents(used)} used)`
+      : "On-demand: Disabled";
+  }
+  let limit = Number(plan?.onDemandLimitCents) || 0;
+  if (limit <= 0 && mode === "fixed") {
+    const dollars = Number(plan?.onDemandHardLimitDollars) || 0;
+    if (dollars > 0 && dollars < CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS) {
+      limit = dollars * 100;
+    }
+  }
+  if (limit <= 0) return "";
   return `On-demand limit: ${formatPlanCents(used)} / ${formatPlanCents(limit)}`;
+}
+
+export function formatSpendLimitSummary(mode, hardLimitDollars = 0) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (normalized === "disabled") return "Disabled ($0)";
+  if (normalized === "unlimited") return "Unlimited";
+  const dollars = Math.max(0, Math.floor(Number(hardLimitDollars) || 0));
+  if (dollars <= 0) return "Disabled ($0)";
+  if (dollars >= CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS) return "Unlimited";
+  return `$${dollars.toLocaleString("en-US")}`;
+}
+
+export function validateSpendLimitInput(mode, rawDollars) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (normalized === "disabled") {
+    return { ok: true, mode: "disabled", hardLimitDollars: 0 };
+  }
+  if (normalized === "unlimited") {
+    return { ok: true, mode: "unlimited", hardLimitDollars: CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS };
+  }
+  if (normalized !== "fixed") {
+    return { ok: false, errorMessage: "Choose Disabled, Fixed, or Unlimited." };
+  }
+  const text = String(rawDollars ?? "").trim().replace(/^\$/, "").replace(/,/g, "");
+  if (!text) {
+    return { ok: false, errorMessage: "Enter a whole dollar amount." };
+  }
+  if (!/^\d+$/.test(text)) {
+    return { ok: false, errorMessage: "Spend limit must be a positive whole number of dollars." };
+  }
+  const dollars = Number.parseInt(text, 10);
+  if (!Number.isSafeInteger(dollars) || dollars <= 0) {
+    return { ok: false, errorMessage: "Spend limit must be at least $1 (choose Disabled for $0)." };
+  }
+  if (dollars >= CURSOR_UNLIMITED_HARD_LIMIT_DOLLARS) {
+    return { ok: false, errorMessage: "Amount is too large (choose Unlimited instead)." };
+  }
+  return { ok: true, mode: "fixed", hardLimitDollars: dollars };
 }
 
 export function renewalLabel(plan, now = Date.now()) {
