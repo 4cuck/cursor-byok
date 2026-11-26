@@ -60,6 +60,11 @@ type accountRecord struct {
 	LastUsedAt   int64    `json:"lastUsedAtUnixMs,omitempty"`
 	AccessToken  string   `json:"accessToken"`
 	RefreshToken string   `json:"refreshToken"`
+	// MachineID is a stable, randomly generated device id presented to Cursor in
+	// x-cursor-checksum for this account. It is generated once and then kept, so
+	// the account always looks like the same single device and never trips the
+	// "too many computers" limit. Cursor's own serviceMachineId is never used.
+	MachineID string `json:"machineId,omitempty"`
 	// Lock state, persisted so a restart does not reset the cooldown.
 	LockedUntilUnixMS int64  `json:"lockedUntilUnixMs,omitempty"`
 	LockReason        string `json:"lockReason,omitempty"`
@@ -392,6 +397,7 @@ func (s *AccountStore) commitLegacyMigrationLocked() error {
 		LastUsedAt:   now,
 		AccessToken:  strings.TrimSpace(creds.AccessToken),
 		RefreshToken: strings.TrimSpace(creds.RefreshToken),
+		MachineID:    uuid.NewString(),
 	}
 	staging := s.dir + ".tmp"
 	_ = os.RemoveAll(staging)
@@ -635,6 +641,7 @@ func (s *AccountStore) upsertLocked(value credentials, replaceCredentials bool) 
 			LastUsedAt:   now,
 			AccessToken:  value.AccessToken,
 			RefreshToken: value.RefreshToken,
+			MachineID:    uuid.NewString(),
 		})
 		matched = len(records) - 1
 	}
@@ -826,6 +833,71 @@ func authIDsMatch(stored, subject string) bool {
 		return true
 	}
 	return strings.HasSuffix(subject, "|"+stored) || strings.HasSuffix(stored, "|"+subject)
+}
+
+// MachineIDForToken returns the stable per-account machine id for the account
+// the presented bearer token belongs to, generating and persisting one the
+// first time it is needed. Matching is by exact token first, then by a unique
+// JWT subject (authId). The device-limit "single api key" heuristic used during
+// refresh is intentionally excluded so one account's machine id can never be
+// served for another account. An empty string means no stored account matched;
+// callers then fall back to the per-install id.
+func (s *AccountStore) MachineIDForToken(presented, subject string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("account store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.migrateIfNeededLocked(); err != nil {
+		return "", err
+	}
+	records, err := s.loadRecordsLocked()
+	if err != nil {
+		return "", err
+	}
+	presented = strings.TrimSpace(presented)
+	subject = strings.TrimSpace(subject)
+
+	matched := -1
+	if presented != "" {
+		for i := range records {
+			if strings.TrimSpace(records[i].AccessToken) == presented || strings.TrimSpace(records[i].RefreshToken) == presented {
+				matched = i
+				break
+			}
+		}
+	}
+	if matched < 0 && subject != "" {
+		subjectMatches := 0
+		for i := range records {
+			if authIDsMatch(strings.TrimSpace(records[i].AuthID), subject) {
+				matched = i
+				subjectMatches++
+			}
+		}
+		// Only trust a subject match when it is unambiguous.
+		if subjectMatches != 1 {
+			matched = -1
+		}
+	}
+	if matched < 0 {
+		return "", nil
+	}
+	return s.ensureMachineIDLocked(records[matched])
+}
+
+// ensureMachineIDLocked returns the record's machine id, generating and
+// persisting a random one the first time (legacy accounts saved before machine
+// ids existed). The id is written once and then never changed.
+func (s *AccountStore) ensureMachineIDLocked(record accountRecord) (string, error) {
+	if id := strings.TrimSpace(record.MachineID); id != "" {
+		return id, nil
+	}
+	record.MachineID = uuid.NewString()
+	if err := s.replaceRecordLocked(record); err != nil {
+		return "", err
+	}
+	return record.MachineID, nil
 }
 
 func (s *AccountStore) updateTagsLocked(id string, tags []string) (CursorAccountSummary, error) {
@@ -1098,6 +1170,7 @@ func (s *AccountStore) readAccountLocked(id string) (accountRecord, error) {
 	record.AuthID = strings.TrimSpace(record.AuthID)
 	record.AccessToken = strings.TrimSpace(record.AccessToken)
 	record.RefreshToken = strings.TrimSpace(record.RefreshToken)
+	record.MachineID = strings.TrimSpace(record.MachineID)
 	if record.Tags == nil {
 		record.Tags = []string{}
 	}

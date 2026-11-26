@@ -1,7 +1,6 @@
 package upstream
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -10,33 +9,28 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	// Registers the "sqlite" driver. Without this blank import sql.Open returns
-	// a handle whose first query fails with "unknown driver", which is why the
-	// machine id silently read as empty.
-	_ "modernc.org/sqlite"
 )
 
-// Cursor sends its own version and machine id in every request header. Hardcoding
-// them makes the proxy look like an ancient client, and the server rejects model
-// traffic with ERROR_GPT_4_VISION_PREVIEW_RATE_LIMIT ("Update Required").
+// Cursor sends its own version in every request header. Hardcoding it makes the
+// proxy look like an ancient client, and the server rejects model traffic with
+// ERROR_GPT_4_VISION_PREVIEW_RATE_LIMIT ("Update Required").
 //
-// Both values are read from the installed client:
-//   - version/commit: <install>/resources/app/product.json
-//   - machineId:      state.vscdb -> storage.serviceMachineId
+// Version/commit are read from the installed client's
+// <install>/resources/app/product.json. Detection is cached briefly so
+// per-request overhead stays negligible.
 //
-// Detection is cached briefly so per-request overhead stays negligible.
+// The machine id that goes into x-cursor-checksum is NOT read from Cursor's
+// state.vscdb; see machine_id.go. The proxy uses its own per-account / per-install
+// random ids so accounts are not linkable to the host's serviceMachineId.
 
 const (
 	cursorClientVersionFallback = "3.30.14"
 	cursorDetectionTTL          = 5 * time.Minute
-	cursorStateServiceMachineID = "storage.serviceMachineId"
 )
 
 type cursorClientIdentity struct {
-	Version   string
-	Commit    string
-	MachineID string
+	Version    string
+	Commit     string
 	detectedAt time.Time
 }
 
@@ -53,11 +47,6 @@ func CursorClientVersion() string {
 // CursorClientCommit returns the detected Cursor commit, or "".
 func CursorClientCommit() string {
 	return cursorIdentity().Commit
-}
-
-// CursorMachineID returns the machine id Cursor uses in x-cursor-checksum.
-func CursorMachineID() string {
-	return cursorIdentity().MachineID
 }
 
 // CursorClientOS returns Electron's process.platform value for the host OS.
@@ -135,9 +124,6 @@ func cursorIdentity() cursorClientIdentity {
 		}
 		identity.Commit = strings.TrimSpace(product.Commit)
 	}
-	if machineID := readCursorMachineID(); machineID != "" {
-		identity.MachineID = machineID
-	}
 
 	cursorIdentityMu.Lock()
 	cursorIdentityInfo = identity
@@ -191,66 +177,4 @@ func readCursorProductJSON() (cursorProduct, bool) {
 		}
 	}
 	return cursorProduct{}, false
-}
-
-// cursorStateDBPaths returns candidate state.vscdb locations.
-func cursorStateDBPaths() []string {
-	if override := strings.TrimSpace(os.Getenv("CURSOR_STATE_DB")); override != "" {
-		return []string{override}
-	}
-	switch runtime.GOOS {
-	case "windows":
-		appData := os.Getenv("APPDATA")
-		return []string{
-			filepath.Join(appData, "Cursor", "User", "globalStorage", "state.vscdb"),
-			filepath.Join(appData, "cursor", "User", "globalStorage", "state.vscdb"),
-		}
-	case "darwin":
-		home, _ := os.UserHomeDir()
-		return []string{filepath.Join(home, "Library", "Application Support", "Cursor",
-			"User", "globalStorage", "state.vscdb")}
-	default:
-		home, _ := os.UserHomeDir()
-		return []string{filepath.Join(home, ".config", "Cursor", "User", "globalStorage", "state.vscdb")}
-	}
-}
-
-// readCursorMachineID reads storage.serviceMachineId from Cursor's state DB.
-// Opened read-only: the live client must not be disturbed.
-func readCursorMachineID() string {
-	for _, path := range cursorStateDBPaths() {
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-		machineID := readMachineIDFromStateDB(path)
-		if machineID != "" {
-			return machineID
-		}
-	}
-	return ""
-}
-
-func readMachineIDFromStateDB(path string) string {
-	// A Windows absolute path must become file:///C:/... — without the leading
-	// slash SQLite parses "C:" as a URI scheme and the open silently fails.
-	uriPath := filepath.ToSlash(path)
-	if runtime.GOOS == "windows" && !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	db, err := sql.Open("sqlite", "file:"+uriPath+"?mode=ro")
-	if err != nil {
-		return ""
-	}
-	defer db.Close()
-	// A read-only open still needs the driver to have loaded; surface nothing on
-	// failure, callers fall back to the timestamp-only checksum.
-	db.SetMaxOpenConns(1)
-
-	var machineID string
-	if err := db.QueryRow(
-		`SELECT value FROM ItemTable WHERE key = ?`, cursorStateServiceMachineID,
-	).Scan(&machineID); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(machineID)
 }

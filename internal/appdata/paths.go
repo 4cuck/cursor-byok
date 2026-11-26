@@ -59,6 +59,13 @@ func DataRootPath() string {
 	return filepath.Join(RootDir(), "data")
 }
 
+// MachineIDFilePath 返回「每安装」随机机器码文件路径。
+// 代理在此处生成并保留一枚随机 UUID，替代 Cursor 自身的 serviceMachineId，
+// 用于没有归属到具体账号的请求（本地中继、登录前的 promptsync 等）。
+func MachineIDFilePath() string {
+	return filepath.Join(DataRootPath(), "machine-id")
+}
+
 // ModelAdapterTestResultsFilePath 返回模型测速/可用性结果快照路径（进程外持久化，不进 config.yaml）。
 func ModelAdapterTestResultsFilePath() string {
 	return filepath.Join(DataRootPath(), "model-adapter-test-results.json")

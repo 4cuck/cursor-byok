@@ -143,6 +143,13 @@ type Manager struct {
 	pendingSwitch       *pendingSwitch
 	cursorRuntime       CursorRuntime
 	stateDBPath         func() (string, error)
+
+	// machineIDCache memoizes the resolved per-account machine id keyed by JWT
+	// subject (or raw token when no subject is present). Machine ids are
+	// immutable once assigned, so entries never need a TTL; the cache is dropped
+	// wholesale when accounts are removed.
+	machineIDMu    sync.Mutex
+	machineIDCache map[string]string
 }
 
 func NewManager(dataRoot, legacyPath string, client *http.Client) *Manager {
@@ -158,7 +165,63 @@ func NewManager(dataRoot, legacyPath string, client *http.Client) *Manager {
 		manager.state = StateError
 		manager.lastError = fmt.Sprintf("Failed to read Cursor account credentials: %v", err)
 	}
+	// Teach the upstream checksum builder how to map a request's Authorization
+	// token to this account's stable, randomly generated machine id. Managers
+	// created elsewhere (e.g. promptsync) share the same on-disk store, so
+	// whichever registers last still resolves identically.
+	upstream.SetMachineIDResolver(manager.MachineIDForAuthorization)
 	return manager
+}
+
+// MachineIDForAuthorization resolves the stable machine id for the account the
+// given Authorization header belongs to. It returns "" when no stored account
+// matches (local relay token, requests made before an account is saved), which
+// lets the caller fall back to the per-install id. Cursor's serviceMachineId is
+// never used.
+func (manager *Manager) MachineIDForAuthorization(authorization string) string {
+	if manager == nil || manager.store == nil {
+		return ""
+	}
+	token := strings.TrimSpace(authorization)
+	if len(token) >= 7 && strings.EqualFold(token[:7], "bearer ") {
+		token = strings.TrimSpace(token[7:])
+	}
+	if token == "" {
+		return ""
+	}
+	subject := subjectFromJWT(token)
+	cacheKey := subject
+	if cacheKey == "" {
+		cacheKey = token
+	}
+
+	manager.machineIDMu.Lock()
+	if manager.machineIDCache == nil {
+		manager.machineIDCache = make(map[string]string)
+	}
+	if id, ok := manager.machineIDCache[cacheKey]; ok {
+		manager.machineIDMu.Unlock()
+		return id
+	}
+	manager.machineIDMu.Unlock()
+
+	id, err := manager.store.MachineIDForToken(token, subject)
+	if err != nil || strings.TrimSpace(id) == "" {
+		return ""
+	}
+	manager.machineIDMu.Lock()
+	manager.machineIDCache[cacheKey] = id
+	manager.machineIDMu.Unlock()
+	return id
+}
+
+func (manager *Manager) clearMachineIDCache() {
+	if manager == nil {
+		return
+	}
+	manager.machineIDMu.Lock()
+	manager.machineIDCache = nil
+	manager.machineIDMu.Unlock()
 }
 
 func (manager *Manager) CurrentAccountID() string {
@@ -359,6 +422,7 @@ func (manager *Manager) Delete(req CursorAccountDeleteRequest) error {
 	if err := manager.store.Delete(req); err != nil {
 		return err
 	}
+	manager.clearMachineIDCache()
 	manager.adoptCurrentFromStore()
 	return nil
 }

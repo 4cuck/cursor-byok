@@ -274,9 +274,13 @@ func cursorChecksumTimestamp() string {
 // It is NOT a hash of the Authorization header. The previous implementation
 // appended sha256(authorization), which the server tolerated for control-plane
 // calls but rejected for model traffic.
+//
+// The machine id is resolved per account from the Authorization token (see
+// ChecksumMachineID), falling back to a stable per-install random id. Cursor's
+// own serviceMachineId is deliberately not used, so accounts are not linkable to
+// the host device.
 func BuildCursorChecksum(authorization string) string {
-	_ = authorization
-	return BuildCursorChecksumWithMachineID(CursorMachineID())
+	return BuildCursorChecksumWithMachineID(ChecksumMachineID(authorization))
 }
 
 // BuildCursorChecksumWithMachineID builds the header for an explicit machine id.

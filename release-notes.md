@@ -1,3 +1,12 @@
+## v1.0.57
+
+### Changed
+
+- **Each Cursor account presents its own device id**:
+  - The machine id sent to Cursor in `x-cursor-checksum` is no longer read from the host's Cursor install (`serviceMachineId`). Every saved account is assigned its own randomly generated id, created once and then kept, so accounts are no longer tied to the host device or linkable to one another.
+  - Requests not bound to a saved account (the local relay, sign-in before an account exists) use a single random id stored once per install, in `data/machine-id`.
+  - An existing account moves to its new random id once, the first time it is used after updating, and keeps it from then on. Each account still looks like the same single device, so this does not trip Cursor's "too many computers" limit.
+
 ## v1.0.56
 
 ### Fixed
@@ -119,11 +128,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.56-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.56-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.56-windows-arm64-installer.exe` 或 `cursor-byok-1.0.56-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.56-windows-x32-installer.exe` 或 `cursor-byok-1.0.56-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.56-macos-arm64.dmg` 或 `cursor-byok-1.0.56-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.56-macos-x64.dmg` 或 `cursor-byok-1.0.56-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.56-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.57-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.57-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.57-windows-arm64-installer.exe` 或 `cursor-byok-1.0.57-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.57-windows-x32-installer.exe` 或 `cursor-byok-1.0.57-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.57-macos-arm64.dmg` 或 `cursor-byok-1.0.57-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.57-macos-x64.dmg` 或 `cursor-byok-1.0.57-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.57-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。
