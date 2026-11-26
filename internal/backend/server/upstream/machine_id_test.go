@@ -7,68 +7,93 @@ import (
 	"testing"
 )
 
-// The per-install id must be generated once and then reused from disk, so a
+// A per-install id must be generated once and then reused from disk, so a
 // restart keeps presenting the same single device to Cursor.
-func TestLoadOrCreateInstallMachineIDPersists(t *testing.T) {
+func TestLoadOrCreateIDPersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "machine-id")
 
-	first := loadOrCreateInstallMachineID(path)
-	if strings.TrimSpace(first) == "" {
-		t.Fatal("expected a generated machine id")
+	first := loadOrCreateID(path, func() string { return "generated-id" })
+	if first != "generated-id" {
+		t.Fatalf("expected the generated id, got %q", first)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("machine id file was not written: %v", err)
+		t.Fatalf("id file was not written: %v", err)
 	}
-	if strings.TrimSpace(string(data)) != first {
+	if strings.TrimSpace(string(data)) != "generated-id" {
 		t.Fatalf("persisted id %q != returned id %q", strings.TrimSpace(string(data)), first)
 	}
 
-	second := loadOrCreateInstallMachineID(path)
-	if second != first {
-		t.Fatalf("install id changed on reload: %q -> %q", first, second)
-	}
-
-	other := loadOrCreateInstallMachineID(filepath.Join(t.TempDir(), "machine-id"))
-	if other == first {
-		t.Fatal("a fresh path must get its own random id")
+	// A second call must reuse the persisted value, never calling gen again.
+	second := loadOrCreateID(path, func() string { return "different-id" })
+	if second != "generated-id" {
+		t.Fatalf("install id changed on reload: %q", second)
 	}
 }
 
-// ChecksumMachineID prefers the per-account resolver and only falls back to the
-// per-install id when the resolver yields nothing. Cursor's serviceMachineId is
-// never consulted.
-func TestChecksumMachineIDUsesResolverThenFallback(t *testing.T) {
+// The install identity is a stable machine id + macMachineId pair.
+func TestInstallChecksumIdentityIsAPair(t *testing.T) {
+	identity := InstallChecksumIdentity()
+	if strings.TrimSpace(identity.MachineID) == "" || strings.TrimSpace(identity.MacMachineID) == "" {
+		t.Fatalf("install identity must have both ids, got %+v", identity)
+	}
+	if identity.MachineID == identity.MacMachineID {
+		t.Fatal("machineId and macMachineId must differ")
+	}
+	if InstallMachineID() != identity.MachineID {
+		t.Fatal("InstallMachineID must match the pair's MachineID")
+	}
+}
+
+// checksumIdentityFor prefers the per-account resolver and only falls back to the
+// per-install pair when the resolver yields nothing.
+func TestChecksumIdentityUsesResolverThenFallback(t *testing.T) {
 	t.Cleanup(func() { SetMachineIDResolver(nil) })
 
-	SetMachineIDResolver(func(authorization string) string {
+	SetMachineIDResolver(func(authorization string) ChecksumIdentity {
 		if authorization == "Bearer known" {
-			return "account-machine-id"
+			return ChecksumIdentity{MachineID: "account-machine", MacMachineID: "account-mac"}
 		}
-		return ""
+		return ChecksumIdentity{}
 	})
 
-	if got := ChecksumMachineID("Bearer known"); got != "account-machine-id" {
-		t.Fatalf("resolver id not used, got %q", got)
+	if got := checksumIdentityFor("Bearer known"); got.MachineID != "account-machine" || got.MacMachineID != "account-mac" {
+		t.Fatalf("resolver identity not used, got %+v", got)
 	}
-	if got := ChecksumMachineID("Bearer unknown"); got != InstallMachineID() {
-		t.Fatalf("unmatched token should fall back to install id, got %q want %q", got, InstallMachineID())
+	if got := checksumIdentityFor("Bearer unknown"); got != InstallChecksumIdentity() {
+		t.Fatalf("unmatched token should fall back to install identity, got %+v", got)
 	}
 
 	SetMachineIDResolver(nil)
-	if got := ChecksumMachineID("Bearer whatever"); got != InstallMachineID() {
-		t.Fatalf("nil resolver should fall back to install id, got %q", got)
+	if got := checksumIdentityFor("Bearer whatever"); got != InstallChecksumIdentity() {
+		t.Fatalf("nil resolver should fall back to install identity, got %+v", got)
 	}
 }
 
-// The full checksum must end with the resolved machine id so Cursor accepts
-// model traffic.
-func TestBuildCursorChecksumUsesResolvedMachineID(t *testing.T) {
+// The full checksum must append /macMachineId after the machine id.
+func TestBuildCursorChecksumAppendsMacMachineID(t *testing.T) {
 	t.Cleanup(func() { SetMachineIDResolver(nil) })
-	SetMachineIDResolver(func(string) string { return "resolved-id" })
+	SetMachineIDResolver(func(string) ChecksumIdentity {
+		return ChecksumIdentity{MachineID: "mid", MacMachineID: "macid"}
+	})
 
 	got := BuildCursorChecksum("Bearer token")
-	if !strings.HasSuffix(got, "resolved-id") {
-		t.Fatalf("checksum %q must end with the resolved machine id", got)
+	if !strings.HasSuffix(got, "mid/macid") {
+		t.Fatalf("checksum %q must end with machineId/macMachineId", got)
+	}
+}
+
+// The explicit builder covers all three degrade paths.
+func TestBuildCursorChecksumWithMachineIDsForms(t *testing.T) {
+	if got := BuildCursorChecksumWithMachineIDs("m", "mac"); !strings.HasSuffix(got, "m/mac") {
+		t.Fatalf("both ids: %q must end with m/mac", got)
+	}
+	machineOnly := BuildCursorChecksumWithMachineIDs("m", "")
+	if !strings.HasSuffix(machineOnly, "m") || strings.Contains(machineOnly, "/") {
+		t.Fatalf("machine-only form wrong: %q", machineOnly)
+	}
+	emptyMachine := BuildCursorChecksumWithMachineIDs("", "mac")
+	if strings.Contains(emptyMachine, "/") || strings.Contains(emptyMachine, "mac") {
+		t.Fatalf("empty machine id must degrade to the timestamp prefix: %q", emptyMachine)
 	}
 }

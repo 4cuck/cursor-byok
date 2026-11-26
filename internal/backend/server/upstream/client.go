@@ -275,22 +275,36 @@ func cursorChecksumTimestamp() string {
 // appended sha256(authorization), which the server tolerated for control-plane
 // calls but rejected for model traffic.
 //
-// The machine id is resolved per account from the Authorization token (see
-// ChecksumMachineID), falling back to a stable per-install random id. Cursor's
-// own serviceMachineId is deliberately not used, so accounts are not linkable to
-// the host device.
+// The machine id pair is resolved per account from the Authorization token (see
+// checksumIdentityFor), falling back to a stable per-install random pair. Cursor's
+// own serviceMachineId / macMachineId are deliberately not used, so accounts are
+// not linkable to the host device.
 func BuildCursorChecksum(authorization string) string {
-	return BuildCursorChecksumWithMachineID(ChecksumMachineID(authorization))
+	identity := checksumIdentityFor(authorization)
+	return BuildCursorChecksumWithMachineIDs(identity.MachineID, identity.MacMachineID)
 }
 
-// BuildCursorChecksumWithMachineID builds the header for an explicit machine id.
+// BuildCursorChecksumWithMachineID builds the header for an explicit machine id
+// (no macMachineId half).
 func BuildCursorChecksumWithMachineID(machineID string) string {
+	return BuildCursorChecksumWithMachineIDs(machineID, "")
+}
+
+// BuildCursorChecksumWithMachineIDs builds the header for an explicit machine id
+// pair. Real Cursor appends the macMachineId after a "/" separator; an empty
+// macMachineId degrades to the machine-id-only form, and an empty machine id
+// degrades to the timestamp prefix.
+func BuildCursorChecksumWithMachineIDs(machineID, macMachineID string) string {
 	prefix := cursorChecksumTimestamp()
 	machineID = strings.TrimSpace(machineID)
+	macMachineID = strings.TrimSpace(macMachineID)
 	if machineID == "" {
 		return prefix
 	}
-	return prefix + machineID
+	if macMachineID == "" {
+		return prefix + machineID
+	}
+	return prefix + machineID + "/" + macMachineID
 }
 
 // legacyBuildCursorChecksum is the previous sha256-based formula. Retained so

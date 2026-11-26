@@ -190,6 +190,18 @@ func (s *ProxyService) reinjectActiveCursorAccount() error {
 		if accountEmail := strings.TrimSpace(s.cursorAccount.Status().Email); accountEmail != "" {
 			email = accountEmail
 		}
+		// Inject the account's randomized device identity (serviceMachineId +
+		// telemetry.*) so the real Cursor IDE presents the same single device the
+		// proxy does, instead of the host's real one.
+		if device, ok := s.cursorAccount.CurrentDeviceIdentity(); ok {
+			return cursor.InjectCursorUserInfoWithDevice(email, accessToken, refreshToken, cursor.CursorDeviceIdentity{
+				ServiceMachineID:   device.ServiceMachineID,
+				MacMachineID:       device.MacMachineID,
+				DevDeviceID:        device.DevDeviceID,
+				TelemetryMachineID: device.TelemetryMachineID,
+				SqmID:              device.SqmID,
+			})
+		}
 	}
 	return cursor.InjectCursorUserInfo(email, accessToken, refreshToken)
 }

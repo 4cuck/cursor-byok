@@ -144,12 +144,12 @@ type Manager struct {
 	cursorRuntime       CursorRuntime
 	stateDBPath         func() (string, error)
 
-	// machineIDCache memoizes the resolved per-account machine id keyed by JWT
-	// subject (or raw token when no subject is present). Machine ids are
-	// immutable once assigned, so entries never need a TTL; the cache is dropped
-	// wholesale when accounts are removed.
+	// machineIDCache memoizes the resolved per-account checksum identity keyed by
+	// JWT subject (or raw token when no subject is present). The ids are immutable
+	// once assigned, so entries never need a TTL; the cache is dropped wholesale
+	// when accounts are removed.
 	machineIDMu    sync.Mutex
-	machineIDCache map[string]string
+	machineIDCache map[string]upstream.ChecksumIdentity
 }
 
 func NewManager(dataRoot, legacyPath string, client *http.Client) *Manager {
@@ -166,28 +166,28 @@ func NewManager(dataRoot, legacyPath string, client *http.Client) *Manager {
 		manager.lastError = fmt.Sprintf("Failed to read Cursor account credentials: %v", err)
 	}
 	// Teach the upstream checksum builder how to map a request's Authorization
-	// token to this account's stable, randomly generated machine id. Managers
+	// token to this account's stable, randomly generated machine id pair. Managers
 	// created elsewhere (e.g. promptsync) share the same on-disk store, so
 	// whichever registers last still resolves identically.
-	upstream.SetMachineIDResolver(manager.MachineIDForAuthorization)
+	upstream.SetMachineIDResolver(manager.ChecksumIdentityForAuthorization)
 	return manager
 }
 
-// MachineIDForAuthorization resolves the stable machine id for the account the
-// given Authorization header belongs to. It returns "" when no stored account
-// matches (local relay token, requests made before an account is saved), which
-// lets the caller fall back to the per-install id. Cursor's serviceMachineId is
-// never used.
-func (manager *Manager) MachineIDForAuthorization(authorization string) string {
+// ChecksumIdentityForAuthorization resolves the stable machine id pair for the
+// account the given Authorization header belongs to. It returns the zero value
+// when no stored account matches (local relay token, requests made before an
+// account is saved), which lets the caller fall back to the per-install pair.
+// Cursor's serviceMachineId / macMachineId are never used.
+func (manager *Manager) ChecksumIdentityForAuthorization(authorization string) upstream.ChecksumIdentity {
 	if manager == nil || manager.store == nil {
-		return ""
+		return upstream.ChecksumIdentity{}
 	}
 	token := strings.TrimSpace(authorization)
 	if len(token) >= 7 && strings.EqualFold(token[:7], "bearer ") {
 		token = strings.TrimSpace(token[7:])
 	}
 	if token == "" {
-		return ""
+		return upstream.ChecksumIdentity{}
 	}
 	subject := subjectFromJWT(token)
 	cacheKey := subject
@@ -197,22 +197,42 @@ func (manager *Manager) MachineIDForAuthorization(authorization string) string {
 
 	manager.machineIDMu.Lock()
 	if manager.machineIDCache == nil {
-		manager.machineIDCache = make(map[string]string)
+		manager.machineIDCache = make(map[string]upstream.ChecksumIdentity)
 	}
-	if id, ok := manager.machineIDCache[cacheKey]; ok {
+	if identity, ok := manager.machineIDCache[cacheKey]; ok {
 		manager.machineIDMu.Unlock()
-		return id
+		return identity
 	}
 	manager.machineIDMu.Unlock()
 
-	id, err := manager.store.MachineIDForToken(token, subject)
-	if err != nil || strings.TrimSpace(id) == "" {
-		return ""
+	device, found, err := manager.store.DeviceIdentityForToken(token, subject)
+	if err != nil || !found || strings.TrimSpace(device.ServiceMachineID) == "" {
+		return upstream.ChecksumIdentity{}
 	}
+	identity := upstream.ChecksumIdentity{MachineID: device.ServiceMachineID, MacMachineID: device.MacMachineID}
 	manager.machineIDMu.Lock()
-	manager.machineIDCache[cacheKey] = id
+	manager.machineIDCache[cacheKey] = identity
 	manager.machineIDMu.Unlock()
-	return id
+	return identity
+}
+
+// CurrentDeviceIdentity returns the device identity of the active account,
+// generating and persisting any missing fields. ok is false when there is no
+// current account. Used when injecting the current account into the real Cursor
+// IDE so its state.vscdb presents the same device as the proxy.
+func (manager *Manager) CurrentDeviceIdentity() (DeviceIdentity, bool) {
+	if manager == nil || manager.store == nil {
+		return DeviceIdentity{}, false
+	}
+	accountID := strings.TrimSpace(manager.store.CurrentAccountID())
+	if accountID == "" {
+		return DeviceIdentity{}, false
+	}
+	identity, err := manager.store.EnsureDeviceIdentity(accountID)
+	if err != nil || strings.TrimSpace(identity.ServiceMachineID) == "" {
+		return DeviceIdentity{}, false
+	}
+	return identity, true
 }
 
 func (manager *Manager) clearMachineIDCache() {

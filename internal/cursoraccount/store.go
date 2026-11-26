@@ -60,11 +60,22 @@ type accountRecord struct {
 	LastUsedAt   int64    `json:"lastUsedAtUnixMs,omitempty"`
 	AccessToken  string   `json:"accessToken"`
 	RefreshToken string   `json:"refreshToken"`
-	// MachineID is a stable, randomly generated device id presented to Cursor in
-	// x-cursor-checksum for this account. It is generated once and then kept, so
-	// the account always looks like the same single device and never trips the
-	// "too many computers" limit. Cursor's own serviceMachineId is never used.
-	MachineID string `json:"machineId,omitempty"`
+	// Device identity presented to Cursor for this account. Every field is a
+	// stable, randomly generated value created once and then kept, so the account
+	// always looks like the same single device and never trips the "too many
+	// computers" limit. The host's real Cursor serviceMachineId / telemetry block
+	// is never reused.
+	//
+	//   MachineID          -> x-cursor-checksum machineId + storage.serviceMachineId (uuid)
+	//   MacMachineID       -> x-cursor-checksum /macMachineId + telemetry.macMachineId (64-hex)
+	//   DevDeviceID        -> telemetry.devDeviceId (uuid)
+	//   TelemetryMachineID -> telemetry.machineId (64-hex)
+	//   SqmID              -> telemetry.sqmId ({GUID})
+	MachineID          string `json:"machineId,omitempty"`
+	MacMachineID       string `json:"macMachineId,omitempty"`
+	DevDeviceID        string `json:"devDeviceId,omitempty"`
+	TelemetryMachineID string `json:"telemetryMachineId,omitempty"`
+	SqmID              string `json:"sqmId,omitempty"`
 	// Lock state, persisted so a restart does not reset the cooldown.
 	LockedUntilUnixMS int64  `json:"lockedUntilUnixMs,omitempty"`
 	LockReason        string `json:"lockReason,omitempty"`
@@ -397,8 +408,8 @@ func (s *AccountStore) commitLegacyMigrationLocked() error {
 		LastUsedAt:   now,
 		AccessToken:  strings.TrimSpace(creds.AccessToken),
 		RefreshToken: strings.TrimSpace(creds.RefreshToken),
-		MachineID:    uuid.NewString(),
 	}
+	ensureDeviceIdentityFields(&record)
 	staging := s.dir + ".tmp"
 	_ = os.RemoveAll(staging)
 	if err := writeStoreTree(staging, []accountRecord{record}, record.ID); err != nil {
@@ -632,7 +643,7 @@ func (s *AccountStore) upsertLocked(value credentials, replaceCredentials bool) 
 			records[matched].Tags = []string{}
 		}
 	} else {
-		records = append(records, accountRecord{
+		newRecord := accountRecord{
 			ID:           uuid.NewString(),
 			Email:        value.Email,
 			AuthID:       value.AuthID,
@@ -641,8 +652,9 @@ func (s *AccountStore) upsertLocked(value credentials, replaceCredentials bool) 
 			LastUsedAt:   now,
 			AccessToken:  value.AccessToken,
 			RefreshToken: value.RefreshToken,
-			MachineID:    uuid.NewString(),
-		})
+		}
+		ensureDeviceIdentityFields(&newRecord)
+		records = append(records, newRecord)
 		matched = len(records) - 1
 	}
 	if err := s.persistRecordAndIndexLocked(records, matched); err != nil {
@@ -835,25 +847,25 @@ func authIDsMatch(stored, subject string) bool {
 	return strings.HasSuffix(subject, "|"+stored) || strings.HasSuffix(stored, "|"+subject)
 }
 
-// MachineIDForToken returns the stable per-account machine id for the account
-// the presented bearer token belongs to, generating and persisting one the
-// first time it is needed. Matching is by exact token first, then by a unique
-// JWT subject (authId). The device-limit "single api key" heuristic used during
-// refresh is intentionally excluded so one account's machine id can never be
-// served for another account. An empty string means no stored account matched;
-// callers then fall back to the per-install id.
-func (s *AccountStore) MachineIDForToken(presented, subject string) (string, error) {
+// DeviceIdentityForToken returns the stable per-account device identity for the
+// account the presented bearer token belongs to, generating and persisting any
+// missing fields the first time. Matching is by exact token first, then by a
+// unique JWT subject (authId). The device-limit "single api key" heuristic used
+// during refresh is intentionally excluded so one account's device can never be
+// served for another. found is false when no stored account matched; callers
+// then fall back to the per-install identity.
+func (s *AccountStore) DeviceIdentityForToken(presented, subject string) (identity DeviceIdentity, found bool, err error) {
 	if s == nil {
-		return "", fmt.Errorf("account store is nil")
+		return DeviceIdentity{}, false, fmt.Errorf("account store is nil")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.migrateIfNeededLocked(); err != nil {
-		return "", err
+		return DeviceIdentity{}, false, err
 	}
 	records, err := s.loadRecordsLocked()
 	if err != nil {
-		return "", err
+		return DeviceIdentity{}, false, err
 	}
 	presented = strings.TrimSpace(presented)
 	subject = strings.TrimSpace(subject)
@@ -881,23 +893,44 @@ func (s *AccountStore) MachineIDForToken(presented, subject string) (string, err
 		}
 	}
 	if matched < 0 {
-		return "", nil
+		return DeviceIdentity{}, false, nil
 	}
-	return s.ensureMachineIDLocked(records[matched])
+	resolved, err := s.ensureDeviceIdentityLocked(records[matched])
+	if err != nil {
+		return DeviceIdentity{}, false, err
+	}
+	return resolved, true, nil
 }
 
-// ensureMachineIDLocked returns the record's machine id, generating and
-// persisting a random one the first time (legacy accounts saved before machine
-// ids existed). The id is written once and then never changed.
-func (s *AccountStore) ensureMachineIDLocked(record accountRecord) (string, error) {
-	if id := strings.TrimSpace(record.MachineID); id != "" {
-		return id, nil
+// EnsureDeviceIdentity loads the account, generates and persists any missing
+// device identifiers, and returns the complete identity. Used by the state.vscdb
+// injection paths so the real Cursor IDE presents the same device as the proxy.
+func (s *AccountStore) EnsureDeviceIdentity(id string) (DeviceIdentity, error) {
+	if s == nil {
+		return DeviceIdentity{}, fmt.Errorf("account store is nil")
 	}
-	record.MachineID = uuid.NewString()
-	if err := s.replaceRecordLocked(record); err != nil {
-		return "", err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.migrateIfNeededLocked(); err != nil {
+		return DeviceIdentity{}, err
 	}
-	return record.MachineID, nil
+	record, err := s.readAccountLocked(id)
+	if err != nil {
+		return DeviceIdentity{}, err
+	}
+	return s.ensureDeviceIdentityLocked(record)
+}
+
+// ensureDeviceIdentityLocked fills any missing device field on the record,
+// persists it when something was generated, and returns the identity. Existing
+// fields are never regenerated, so an account's device is written once and kept.
+func (s *AccountStore) ensureDeviceIdentityLocked(record accountRecord) (DeviceIdentity, error) {
+	if ensureDeviceIdentityFields(&record) {
+		if err := s.replaceRecordLocked(record); err != nil {
+			return DeviceIdentity{}, err
+		}
+	}
+	return record.deviceIdentity(), nil
 }
 
 func (s *AccountStore) updateTagsLocked(id string, tags []string) (CursorAccountSummary, error) {
@@ -1171,6 +1204,10 @@ func (s *AccountStore) readAccountLocked(id string) (accountRecord, error) {
 	record.AccessToken = strings.TrimSpace(record.AccessToken)
 	record.RefreshToken = strings.TrimSpace(record.RefreshToken)
 	record.MachineID = strings.TrimSpace(record.MachineID)
+	record.MacMachineID = strings.TrimSpace(record.MacMachineID)
+	record.DevDeviceID = strings.TrimSpace(record.DevDeviceID)
+	record.TelemetryMachineID = strings.TrimSpace(record.TelemetryMachineID)
+	record.SqmID = strings.TrimSpace(record.SqmID)
 	if record.Tags == nil {
 		record.Tags = []string{}
 	}

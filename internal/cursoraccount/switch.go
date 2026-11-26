@@ -227,6 +227,24 @@ func (manager *Manager) executeSwitch(ctx context.Context, pending *pendingSwitc
 		return failedSwitchResult(pending.operationID, "account_switch_verify_failed"), wrapAccountError("account_switch_verify_failed", "verify cursor auth failed", err)
 	}
 
+	// Write this account's randomized device identity (serviceMachineId +
+	// telemetry.*) so the real Cursor IDE presents the same single device the
+	// proxy does, instead of the host's real one. A failure here is rolled back
+	// with the state backup like any other write failure.
+	var device DeviceIdentity
+	if device, err = manager.store.EnsureDeviceIdentity(record.ID); err != nil {
+		return failedSwitchResult(pending.operationID, "account_switch_write_failed"), wrapAccountError("account_switch_write_failed", "resolve device identity failed", err)
+	}
+	if err = cursor.ApplyCursorDeviceIdentity(dbPath, cursor.CursorDeviceIdentity{
+		ServiceMachineID:   device.ServiceMachineID,
+		MacMachineID:       device.MacMachineID,
+		DevDeviceID:        device.DevDeviceID,
+		TelemetryMachineID: device.TelemetryMachineID,
+		SqmID:              device.SqmID,
+	}); err != nil {
+		return failedSwitchResult(pending.operationID, "account_switch_write_failed"), wrapAccountError("account_switch_write_failed", "write cursor device identity failed", err)
+	}
+
 	// 回滚指针以执行时的实时当前账号为准：prepare 到 execute 之间当前账号
 	// 可能已被其他操作改变，不能用 prepare 时刻的冻结值，否则会回滚到过期指针。
 	previousID = manager.store.CurrentAccountID()

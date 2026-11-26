@@ -66,6 +66,13 @@ func MachineIDFilePath() string {
 	return filepath.Join(DataRootPath(), "machine-id")
 }
 
+// MacMachineIDFilePath 返回「每安装」随机 macMachineId 文件路径（64 位十六进制）。
+// 与 MachineIDFilePath 配套，拼进 x-cursor-checksum 的 /macMachineId 部分，
+// 替代 Cursor 自身 telemetry.macMachineId。
+func MacMachineIDFilePath() string {
+	return filepath.Join(DataRootPath(), "mac-machine-id")
+}
+
 // ModelAdapterTestResultsFilePath 返回模型测速/可用性结果快照路径（进程外持久化，不进 config.yaml）。
 func ModelAdapterTestResultsFilePath() string {
 	return filepath.Join(DataRootPath(), "model-adapter-test-results.json")

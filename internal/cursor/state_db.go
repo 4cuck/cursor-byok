@@ -234,6 +234,15 @@ func writeIsolatedCursorAuthState(destinationPath string, values map[string]stri
 // access 和 refresh 相同时用于占位会话；API Key 会话必须把短期 JWT 和原始
 // crsr_ / grok_ key 分开写入，否则客户端一小时后会拿过期 JWT 去刷新。
 func InjectCursorUserInfo(email, accessToken, refreshToken string) error {
+	return InjectCursorUserInfoWithDevice(email, accessToken, refreshToken, CursorDeviceIdentity{})
+}
+
+// InjectCursorUserInfoWithDevice injects the account auth cache and, when a
+// non-empty device identity is supplied, overwrites the state DB's
+// serviceMachineId + telemetry.* block with the account's randomized values so
+// the IDE presents the same single device as the proxy. An empty device identity
+// leaves the host's telemetry untouched.
+func InjectCursorUserInfoWithDevice(email, accessToken, refreshToken string, device CursorDeviceIdentity) error {
 	stateDBPath, err := resolveCursorStateDBPath()
 	if err != nil {
 		return err
@@ -256,6 +265,12 @@ func InjectCursorUserInfo(email, accessToken, refreshToken string) error {
 	values := buildCursorAuthStateValues(email, accessToken, refreshToken)
 	if err := syncCursorAuthStateDB(stateDBPath, values); err != nil {
 		return fmt.Errorf("Failed to sync the Cursor state database path=%s: %w", stateDBPath, err)
+	}
+
+	// Overwrite the device identity (serviceMachineId + telemetry.*) with the
+	// account's randomized values. No-op when no identity was supplied.
+	if err := ApplyCursorDeviceIdentity(stateDBPath, device); err != nil {
+		return err
 	}
 
 	logger.Infof(
@@ -670,11 +685,20 @@ func RestoreCursorUserInfo() error {
 		return err
 	}
 
-	if len(values) == 0 && len(removes) == 0 {
-		return nil
+	var restoreErr error
+	if len(values) > 0 || len(removes) > 0 {
+		if err := restoreCursorAuthStateDB(stateDBPath, values, removes); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("Failed to restore the Cursor state database path=%s: %w", stateDBPath, err))
+		}
 	}
-	if err := restoreCursorAuthStateDB(stateDBPath, values, removes); err != nil {
-		return fmt.Errorf("Failed to restore the Cursor state database path=%s: %w", stateDBPath, err)
+	// Also return the host's original device identity (serviceMachineId +
+	// telemetry.*) that was overwritten while injecting an account. No-op when
+	// cursor-byok never injected one on this host.
+	if err := restoreCursorDeviceIdentity(stateDBPath); err != nil {
+		restoreErr = errors.Join(restoreErr, fmt.Errorf("Failed to restore the Cursor device identity path=%s: %w", stateDBPath, err))
+	}
+	if restoreErr != nil {
+		return restoreErr
 	}
 	logger.Infof("restoreCursorUserInfo done path=%s restored=%d removed=%d", stateDBPath, len(values), len(removes))
 	return nil
