@@ -53,6 +53,14 @@ func attachDelegationRunStates(stream *ActiveStream, state *agentv1.Conversation
 		}
 		runs[toolCallID] = run
 	}
+	// A subagent the client moved to the background is still running after
+	// its Task call got a result. Reporting it as finished would show its
+	// card as completed while it works.
+	for toolCallID, backgrounded := range stream.DelegationRunBackgrounded {
+		if backgrounded != nil && strings.TrimSpace(toolCallID) != "" {
+			runs[toolCallID] = backgrounded
+		}
+	}
 	for toolCallID, terminal := range stream.DelegationRunTerminals {
 		if terminal != nil && strings.TrimSpace(toolCallID) != "" {
 			runs[toolCallID] = terminal

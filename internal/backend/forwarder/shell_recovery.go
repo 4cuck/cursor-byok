@@ -335,7 +335,7 @@ func (service *Service) deliverCapturedShellToCursorAccount(stream *ActiveStream
 			},
 		},
 	}
-	_ = deliverCursorAccountShellTerminal(stream, pending.ToolCallID, accountPending, exitMsg)
+	_ = service.answerCursorAccountShellTerminal(stream, accountPending, exitMsg)
 }
 
 func buildSyntheticShellResultPayload(pending runtimecore.PendingExec, reason string) string {

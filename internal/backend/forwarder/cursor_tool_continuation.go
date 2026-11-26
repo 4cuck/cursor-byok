@@ -150,8 +150,35 @@ const (
 // arbitrary paths, and preserve OutputLocation when no inline text is available
 // (such as remote SSH spill files).
 func deliverCursorAccountShellTerminal(stream *ActiveStream, toolCallID string, pending runtimecore.PendingExec, message *agentv1.ExecClientMessage) bool {
-	if message == nil {
+	preface, terminal := cursorAccountShellTerminalMessages(stream, pending, message)
+	return sendCursorAccountShellTerminal(stream, toolCallID, preface, terminal)
+}
+
+// answerCursorAccountShellTerminal is deliverCursorAccountShellTerminal for a
+// tool call of the model: what the shell is answered with is also kept, so a
+// turn resumed after a lost stream can answer the same call again.
+func (service *Service) answerCursorAccountShellTerminal(stream *ActiveStream, pending runtimecore.PendingExec, message *agentv1.ExecClientMessage) bool {
+	preface, terminal := cursorAccountShellTerminalMessages(stream, pending, message)
+	service.rememberCursorExecAnswer(stream, pending, preface, terminal)
+	return sendCursorAccountShellTerminal(stream, pending.ToolCallID, preface, terminal)
+}
+
+func sendCursorAccountShellTerminal(stream *ActiveStream, toolCallID string, preface, terminal *agentv1.ExecClientMessage) bool {
+	if terminal == nil {
 		return false
+	}
+	if preface != nil && !deliverCursorToolResultWithin(stream, toolCallID, preface, cursorShellTerminalDeliverWait) {
+		return false
+	}
+	return deliverCursorToolResultWithin(stream, toolCallID, terminal, cursorShellTerminalDeliverWait)
+}
+
+// cursorAccountShellTerminalMessages builds what a finished shell is answered
+// with on the Cursor account stream: the text the model can read, if any,
+// then the end of the shell.
+func cursorAccountShellTerminalMessages(stream *ActiveStream, pending runtimecore.PendingExec, message *agentv1.ExecClientMessage) (*agentv1.ExecClientMessage, *agentv1.ExecClientMessage) {
+	if message == nil {
+		return nil, nil
 	}
 	accountPending := pendingWithLocalCursorShellSpill(stream, pending, message)
 	terminal := proto.CloneOf(message)
@@ -177,13 +204,12 @@ func deliverCursorAccountShellTerminal(stream *ActiveStream, toolCallID string, 
 			trim(&f.Stdout, &f.Stderr, f.InterleavedOutput, f.OutputHead, f.OutputTail, &f.OutputLocation)
 		}
 	}
-	if preface := shellStreamOutputPreface(accountPending, terminal); preface != nil {
-		if !deliverCursorToolResultWithin(stream, toolCallID, preface, cursorShellTerminalDeliverWait) {
-			return false
-		}
+	preface := shellStreamOutputPreface(accountPending, terminal)
+	if preface != nil {
+		// The text travels in the preface; the exit does not point at a file.
 		terminal.GetShellStream().GetExit().OutputLocation = nil
 	}
-	return deliverCursorToolResultWithin(stream, toolCallID, terminal, cursorShellTerminalDeliverWait)
+	return preface, terminal
 }
 
 func isCursorAccountShellTerminal(message *agentv1.ExecClientMessage) bool {

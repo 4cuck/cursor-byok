@@ -53,6 +53,9 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		}
 		intent.Kind = "run"
 		intent.StartsRun = true
+		// A run the IDE starts because background tasks finished has no user
+		// message: what finished is what the model is to be told.
+		intent.BackgroundCompletion = inboundBackgroundCompletion(runRequest)
 		intent.Mode, intent.ModeSource, intent.HasExplicitMode, err = extractRunMode(message)
 		if err != nil {
 			return InboundIntent{}, err
@@ -359,6 +362,9 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	}
 	stream.approvedCursorWeb = nil
 	stream.activeCursorEdits = nil
+	stream.activeCursorAwaits = nil
+	forgetCursorExecAnswersLocked(stream)
+	stream.cursorWakeupAction = nil
 	stream.observedFileContents = nil
 	stream.RecentCompletedInteractions = make(map[string]time.Time)
 	stream.BackgroundShells = make(map[string]*BackgroundShellState)
@@ -416,11 +422,17 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		"latest_user_text":                     userMessageText(intent.UserMessage),
 		"manual_compaction_requested":          intent.ManualCompaction.Requested,
 	})
+	// A run started because background tasks finished: remember what the
+	// first Cursor account pass has to send, and what became of the tasks.
+	service.beginBackgroundCompletionRun(stream, intent.BackgroundCompletion)
 	if err := service.publishCheckpointForce(intent.RequestID, intent.ConversationID); err != nil {
 		return err
 	}
 	if intent.Prewarm {
 		return nil
+	}
+	if err := service.announceBackgroundCompletion(stream, intent.BackgroundCompletion); err != nil {
+		return err
 	}
 	return service.requestProviderAction(stream, providerActionStart)
 }

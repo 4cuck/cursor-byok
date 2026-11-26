@@ -161,6 +161,17 @@ type StreamRequest struct {
 	// CursorRequestContext 是 IDE 带来的执行环境。Cursor 账户回合把它交给
 	// 云端 agent，云端据此生成系统提示词。空环境会被当成没有工作区的 Windows。
 	CursorRequestContext *agentv1.RequestContext
+	// CursorConversationAction is an action the IDE itself started this run
+	// with and that Cursor's server understands as it is: a background task
+	// (a subagent, a shell) has finished. A Cursor account call sends it as
+	// the run's action in place of a user message or a resume, so the server
+	// tells the model what finished the way it does for the IDE. It is set
+	// for the first pass of such a run only.
+	CursorConversationAction *agentv1.ConversationAction
+	// cursorRecovery is the lost Cursor account stream this call resumes
+	// from. The gateway sets it once per call, so that every attempt inside
+	// the call builds the same run message.
+	cursorRecovery *cursorAccountInterruption
 	// CustomHeadersEnabled 表示是否启用自定义请求头。
 	CustomHeadersEnabled bool
 	// CustomHeadersJSON 表示自定义请求头 JSON 对象。
@@ -244,6 +255,19 @@ const (
 	// Cursor's authoritative EditToolCall outcome (before/after content and
 	// real +/- line counts).
 	ModelEventKindCursorEditCompleted ModelEventKind = "cursor_edit_completed"
+	// ModelEventKindCursorAwaitStarted is display/history only. It forwards
+	// the start card of Cursor's upstream AwaitShell call, which runs on
+	// Cursor's server and watches the shell through silent file reads.
+	ModelEventKindCursorAwaitStarted ModelEventKind = "cursor_await_started"
+	// ModelEventKindCursorAwaitCompleted is display/history only. It carries
+	// the outcome Cursor reported for that wait.
+	ModelEventKindCursorAwaitCompleted ModelEventKind = "cursor_await_completed"
+	// ModelEventKindCursorUserMessageAppended is display only. It forwards a
+	// message Cursor's server put into the conversation on its own account:
+	// the notice that a background task finished, which the server writes
+	// when a run starts with that action. The client shows it as the notice
+	// the turn answers.
+	ModelEventKindCursorUserMessageAppended ModelEventKind = "cursor_user_message_appended"
 	// ModelEventKindTurnFinished 表示当前模型回合结束。
 	ModelEventKindTurnFinished ModelEventKind = "turn_finished"
 	// ModelEventKindProviderError 表示 provider 侧返回错误。
@@ -294,6 +318,13 @@ type ModelEvent struct {
 	CursorEditStarted *agentv1.ToolCallStartedUpdate
 	// CursorEditCompleted carries the upstream terminal EditToolCall card.
 	CursorEditCompleted *agentv1.ToolCallCompletedUpdate
+	// CursorAwaitStarted carries the upstream AwaitToolCall start update.
+	CursorAwaitStarted *agentv1.ToolCallStartedUpdate
+	// CursorAwaitCompleted carries the upstream AwaitToolCall card with its result.
+	CursorAwaitCompleted *agentv1.ToolCallCompletedUpdate
+	// CursorUserMessage carries a message the upstream server appended to the
+	// conversation itself (ModelEventKindCursorUserMessageAppended).
+	CursorUserMessage *agentv1.UserMessage
 	// ToolCallDelta 保存与当前工具调用相关的流式增量。
 	ToolCallDelta *agentv1.ToolCallDelta
 	// ArgsTextDelta 保存原始工具参数文本增量，供兼容层透传。
@@ -361,6 +392,26 @@ func CursorEditStartedCallID(started *agentv1.ToolCallStartedUpdate) string {
 func CursorEditCompletedCallID(completion *agentv1.ToolCallCompletedUpdate) string {
 	card := completion.GetToolCall()
 	if card.GetEditToolCall().GetResult().GetResult() == nil {
+		return ""
+	}
+	return firstNonEmptyString(card.GetToolCallId(), completion.GetCallId())
+}
+
+// CursorAwaitStartedCallID returns the tool call ID for an upstream Cursor
+// AwaitToolCall start update, or "" when the update is not an await card.
+func CursorAwaitStartedCallID(started *agentv1.ToolCallStartedUpdate) string {
+	if started == nil || started.GetToolCall().GetAwaitToolCall() == nil {
+		return ""
+	}
+	return firstNonEmptyString(started.GetToolCall().GetToolCallId(), started.GetCallId())
+}
+
+// CursorAwaitCompletedCallID returns the tool call ID for an upstream Cursor
+// AwaitToolCall completion, or "" when the update is not an await card. A
+// completion without a result is accepted: it still ends the wait.
+func CursorAwaitCompletedCallID(completion *agentv1.ToolCallCompletedUpdate) string {
+	card := completion.GetToolCall()
+	if card.GetAwaitToolCall() == nil {
 		return ""
 	}
 	return firstNonEmptyString(card.GetToolCallId(), completion.GetCallId())

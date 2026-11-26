@@ -263,6 +263,7 @@ func (gateway *DefaultProviderGateway) StartStream(ctx context.Context, req Prov
 		CursorToolResults:         req.CursorToolResults,
 		CursorInteractionReplies:  req.CursorInteractionReplies,
 		CursorRequestContext:      req.CursorRequestContext,
+		CursorConversationAction:  req.CursorConversationAction,
 		Messages:                  req.Messages,
 		StableMessageCount:        req.StableMessageCount,
 		Tools:                     append([]json.RawMessage(nil), req.Tools...),

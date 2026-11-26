@@ -846,6 +846,17 @@ func isBackgroundSubagentSuccess(success *agentv1.SubagentSuccess) bool {
 		strings.TrimSpace(success.GetTranscriptPath()) != ""
 }
 
+// SubagentResultIsBackgroundHandoff reports whether the client answered a
+// subagent exec by moving the subagent to the background: the exec is over,
+// the subagent is not. The client answers this way right after launching a
+// subagent that was asked to run in the background, and when a running one is
+// sent there. These are the results convertSubagentResultToTaskResult turns
+// into a Task result with is_background set.
+func SubagentResultIsBackgroundHandoff(result *agentv1.SubagentResult) bool {
+	success := result.GetSuccess()
+	return success != nil && strings.TrimSpace(success.GetFinalMessage()) == "" && isBackgroundSubagentSuccess(success)
+}
+
 // DecodeGlobToolArgs 解析并归一化 Glob 参数，兼容历史与模型常见别名。
 func DecodeGlobToolArgs(raw []byte) (*agentv1.GlobToolArgs, error) {
 	args, err := decodeArgsMap(raw)

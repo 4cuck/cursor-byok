@@ -136,6 +136,11 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 	pendingExec.ReasoningSignatureSource = invocation.ReasoningSignatureSource
 	pendingExec.SilentUI = silentUI
 	pendingExec = initializePendingExecForTracking(pendingExec)
+	if !silentUI {
+		// What this call is answered with is kept: a turn resumed after a
+		// lost stream is asked for it again (cursor_exec_replay.go).
+		noteCursorExecCall(stream, invocation.CallID, invocation.ToolName)
+	}
 	var started *agentv1.ToolCall
 	if !silentUI {
 		started = buildStartedToolCall(invocation)
@@ -208,6 +213,12 @@ func (service *Service) dispatchNativeCursorExec(stream *ActiveStream, invocatio
 			service.releaseNativeDelegationQuietly(pendingExec.ExecID)
 		}
 		return err
+	}
+	if silentUI {
+		// A silent exec shows no card, adds no history and is not listed among
+		// the pending tool calls, so a checkpoint would carry nothing new. A
+		// wait sends several of these a second for as long as it blocks.
+		return nil
 	}
 	if err := service.publishCheckpoint(stream.RequestID, strings.TrimSpace(stream.ConversationID)); err != nil {
 		if isSubagent && !checkpointConversationInitialized(stream) {

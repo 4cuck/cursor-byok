@@ -61,7 +61,7 @@ func newCursorAccountGateway(auth CursorAccountAuthorizer) *cursorAccountGateway
 	return &cursorAccountGateway{auth: auth}
 }
 
-func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamRequest, sink func(ModelEvent) error) error {
+func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamRequest, sink func(ModelEvent) error) (streamErr error) {
 	if gateway == nil || gateway.auth == nil {
 		return ErrCursorAccountModelGatewayUnavailable
 	}
@@ -74,6 +74,30 @@ func (gateway *cursorAccountGateway) Stream(ctx context.Context, req StreamReque
 	}
 	if modelID == "" {
 		return fmt.Errorf("cursor account model id is empty")
+	}
+	if !cursorAccountSideCall(req) {
+		// The previous stream of this run was lost: this call resumes the
+		// turn. The record is taken once, so every attempt below builds the
+		// same run message.
+		if recovery, ok := cursorAccountTakeRecovery(req.RunID); ok {
+			req.cursorRecovery = &recovery
+			defer func() {
+				if streamErr != nil {
+					// The call that was to resume the turn failed, perhaps
+					// before it reached Cursor. Whoever makes the call again
+					// still has to resume, not start from the transcript.
+					cursorAccountRestoreRecovery(req.RunID)
+				}
+			}()
+			from := "the request it had sent"
+			if recovery.checkpointed {
+				from = "its last checkpoint"
+			}
+			logger.Infof("cursor account resuming an interrupted turn conversation=%s from %s lost_streams=%d", strings.TrimSpace(req.ConversationID), from, recovery.recoveries)
+			if err := cursorAccountWaitBeforeRecovery(ctx, recovery.recoveries); err != nil {
+				return err
+			}
+		}
 	}
 	candidates := candidateCursorAccountsForModel(gateway.auth, req.CursorAccountID, modelID)
 	requested := strings.TrimSpace(req.CursorAccountID)
@@ -202,7 +226,8 @@ func (output *cursorAccountOutput) emit(event ModelEvent) error {
 	switch event.Kind {
 	case ModelEventKindTextDelta, ModelEventKindThinkingDelta, ModelEventKindToolLikeCompleted,
 		ModelEventKindPartialToolCall, ModelEventKindToolCallDelta,
-		ModelEventKindCursorWebResult, ModelEventKindCursorEditStarted, ModelEventKindCursorEditCompleted:
+		ModelEventKindCursorWebResult, ModelEventKindCursorEditStarted, ModelEventKindCursorEditCompleted,
+		ModelEventKindCursorAwaitStarted, ModelEventKindCursorAwaitCompleted:
 		output.forwarded = true
 	}
 	return output.sink(event)
@@ -258,6 +283,9 @@ func (gateway *cursorAccountGateway) streamAuthorizedOnce(ctx context.Context, r
 	host := gateway.agentHosts.host(ctx, authorization)
 	requestID := uuid.NewString()
 	run := cursorAccountRunMessageFor(req, modelID, stateConversationID, historyBudget)
+	// A pass that follows a lost stream resumes the turn instead of sending
+	// what the transcript ends with.
+	cursorAccountApplyRecovery(req, run, stateConversationID)
 	if env := run.GetRunRequest().GetAction().GetUserMessageAction().GetRequestContext().GetEnv(); env != nil {
 		logger.Infof("cursor account environment os=%s shell=%s workspaces=%d", env.GetOsVersion(), env.GetShell(), len(env.GetWorkspacePaths()))
 	}
@@ -287,7 +315,35 @@ func (gateway *cursorAccountGateway) streamAuthorizedOnce(ctx context.Context, r
 		appendErr <- appendFrame(ctx, 0, mustCursorProto(run))
 	}()
 
-	return readCursorAccountStream(ctx, appendFrame, requestID, stateConversationID, modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, req.CursorToolResults, req.CursorInteractionReplies, cursorAccountRequestContext(req), sink)
+	emitted := false
+	err = readCursorAccountStream(ctx, appendFrame, requestID, stateConversationID, modelID, cursorAccountEventLabel(req), req.SilentTimeout, resp.Body, appendErr, req.CursorToolResults, req.CursorInteractionReplies, cursorAccountRequestContext(req), func(event ModelEvent) error {
+		emitted = true
+		return sink(event)
+	})
+	var lost *cursorAccountStreamLostError
+	if !errors.As(err, &lost) || ctx.Err() != nil || cursorAccountSideCall(req) {
+		return err
+	}
+	if !emitted && !lost.checkpointed {
+		// Nothing of this attempt reached the caller or was kept upstream:
+		// the call can simply be made again, which the router does.
+		return err
+	}
+	recoveries, resumable := cursorAccountNoteStreamLost(req.RunID, lost.checkpointed, run)
+	if !resumable {
+		logger.Warnf("cursor account stream was lost mid-turn and is not resumed request_id=%s conversation=%s lost_streams=%d: %v", requestID, stateConversationID, recoveries, lost.cause)
+		return err
+	}
+	logger.Warnf("cursor account stream was lost mid-turn; the turn resumes in a fresh pass request_id=%s conversation=%s checkpointed=%t lost_streams=%d: %v", requestID, stateConversationID, lost.checkpointed, recoveries, lost.cause)
+	label := cursorAccountEventLabel(req)
+	return sink(ModelEvent{
+		Kind:         ModelEventKindTurnFinished,
+		OccurredAt:   time.Now().UTC(),
+		Provider:     label,
+		GroupName:    label,
+		Model:        modelID,
+		FinishReason: FinishReasonCursorStreamInterrupted,
+	})
 }
 
 func (gateway *cursorAccountGateway) authorize(ctx context.Context, accountID string) (string, error) {
@@ -609,6 +665,13 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 	var thinkingStarted time.Time
 	querySeen := make(map[uint32]bool)
 	cursorEditDisplayIDs := make(map[string]string)
+	// cursorAwaitDisplayIDs holds the upstream AwaitShell calls of this run,
+	// each with the id its card is shown under ("" until it has a card).
+	cursorAwaitDisplayIDs := make(map[string]string)
+	// polledToolCalls holds the tool calls that have already read a file.
+	polledToolCalls := make(map[string]bool)
+	// silentPolls counts, per tool call, the reads answered without a card.
+	silentPolls := make(map[string]int)
 	dispatchIDs := cursorDispatchIDs{}
 	var inputTokens, outputTokens, cacheRead, cacheWrite, reasoningTokens int64
 	usagePresent := false
@@ -617,6 +680,9 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 	sawVisibleTextAfterLastTool := false
 	sawToolCall := false
 	sawThinking := false
+	// sawCheckpoint reports that Cursor sent a checkpoint of the conversation
+	// during this stream.
+	sawCheckpoint := false
 
 	finishThinking := func() error {
 		if !thinkingActive {
@@ -920,6 +986,11 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 			}
 			if checkpoint := msg.GetConversationCheckpointUpdate(); checkpoint != nil {
 				cursorAccountRememberState(conversationID, checkpoint)
+				if strings.TrimSpace(conversationID) != "" && cursorAccountStateHasConversation(checkpoint) {
+					// From here the saved state holds this turn: a lost stream
+					// resumes from it.
+					sawCheckpoint = true
+				}
 				if sawTurnEnded {
 					// Terminal checkpoint received; allow brief window for the trailing
 					// Connect end-stream frame, then finish cleanly.
@@ -946,13 +1017,26 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 					continue
 				}
 				noteUseful()
-				silentEditExec := cursorExecBelongsToUpstreamEdit(exec, cursorEditDisplayIDs)
-				if silentEditExec {
+				// Execs the upstream agent makes for a tool call of its own (the
+				// reads and the write behind an edit, the reads a wait polls
+				// with) are answered without a card. They are not calls the
+				// model made, so they also stay out of the forwarder's
+				// tool-call accounting.
+				silentExec := cursorExecBelongsToUpstreamEdit(exec, cursorEditDisplayIDs)
+				if !silentExec && cursorExecIsInternalPoll(exec, cursorAwaitDisplayIDs, polledToolCalls) {
+					silentExec = true
+					polling := cursorExecReadToolCallID(exec)
+					silentPolls[polling]++
+					if _, announced := cursorAwaitDisplayIDs[polling]; !announced && silentPolls[polling] == 1 {
+						logger.Infof("cursor account tool call reads a file again without a wait card; answering its reads silently request_id=%s call_id=%s", requestID, polling)
+					}
+				}
+				if silentExec {
 					callID = cursorAccountExecWireCallID(exec)
 				}
 				callID = dispatchIDs.claim(callID)
 				sawToolCall = true
-				if !silentEditExec {
+				if !silentExec {
 					sawVisibleTextAfterLastTool = false
 					if err := finishThinking(); err != nil {
 						return err
@@ -971,7 +1055,7 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 						ArgsJSON:    args,
 						NativeExec:  mustCursorProto(exec),
 						ModelCallID: requestID,
-						SilentUI:    silentEditExec,
+						SilentUI:    silentExec,
 					},
 				}); err != nil {
 					return err
@@ -986,10 +1070,30 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 			if update == nil {
 				continue
 			}
+			if appended := update.GetUserMessageAppended(); appended != nil {
+				// The server echoes the user's own message this way; the
+				// client already shows that one. The notice that a background
+				// task finished is written by the server, and the client can
+				// only show it if it is passed on.
+				if notice := appended.GetUserMessage(); cursorAccountIsTaskNotice(notice) {
+					noteUseful()
+					if err := sink(ModelEvent{
+						Kind:              ModelEventKindCursorUserMessageAppended,
+						OccurredAt:        time.Now().UTC(),
+						Provider:          providerLabel,
+						GroupName:         providerLabel,
+						Model:             modelID,
+						CursorUserMessage: proto.CloneOf(notice),
+					}); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			if partial := update.GetPartialToolCall(); partial != nil {
 				if id := CursorEditPartialCallID(partial); id != "" {
 					noteUseful()
-					displayID := claimCursorEditDisplayID(cursorEditDisplayIDs, dispatchIDs, id, partial.GetCallId())
+					displayID := claimCursorCardDisplayID(cursorEditDisplayIDs, dispatchIDs, id, partial.GetCallId())
 					card := proto.CloneOf(partial.GetToolCall())
 					if displayID != id && card != nil && card.ToolCallId != nil {
 						card.ToolCallId = proto.String(displayID)
@@ -1013,11 +1117,12 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 					}
 					continue
 				}
+				noteCursorAwaitCall(cursorAwaitDisplayIDs, partial.GetToolCall(), partial.GetCallId())
 			}
 			if delta := update.GetToolCallDelta(); delta != nil && delta.GetToolCallDelta().GetEditToolCallDelta() != nil {
 				if id := strings.TrimSpace(delta.GetCallId()); id != "" {
 					noteUseful()
-					displayID := claimCursorEditDisplayID(cursorEditDisplayIDs, dispatchIDs, id)
+					displayID := claimCursorCardDisplayID(cursorEditDisplayIDs, dispatchIDs, id)
 					if err := sink(ModelEvent{
 						Kind:          ModelEventKindToolCallDelta,
 						OccurredAt:    time.Now().UTC(),
@@ -1035,7 +1140,7 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 			if started := update.GetToolCallStarted(); started != nil {
 				if id := CursorEditStartedCallID(started); id != "" {
 					noteUseful()
-					displayID := claimCursorEditDisplayID(cursorEditDisplayIDs, dispatchIDs, id, started.GetCallId())
+					displayID := claimCursorCardDisplayID(cursorEditDisplayIDs, dispatchIDs, id, started.GetCallId())
 					cloned := proto.CloneOf(started)
 					if displayID != id {
 						cloned.CallId = displayID
@@ -1061,6 +1166,36 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 					}
 					continue
 				}
+				if id := CursorAwaitStartedCallID(started); id != "" {
+					// A wait may leave the stream quiet for as long as it blocks;
+					// that is not a stalled stream.
+					noteUseful()
+					displayID := claimCursorCardDisplayID(cursorAwaitDisplayIDs, dispatchIDs, id, started.GetCallId())
+					cloned := proto.CloneOf(started)
+					if displayID != id {
+						cloned.CallId = displayID
+						if cloned.ToolCall != nil && cloned.ToolCall.ToolCallId != nil {
+							cloned.ToolCall.ToolCallId = proto.String(displayID)
+						}
+					}
+					sawToolCall = true
+					sawVisibleTextAfterLastTool = false
+					if err := finishThinking(); err != nil {
+						return err
+					}
+					if err := sink(ModelEvent{
+						Kind:               ModelEventKindCursorAwaitStarted,
+						OccurredAt:         time.Now().UTC(),
+						Provider:           providerLabel,
+						GroupName:          providerLabel,
+						Model:              modelID,
+						ToolCallID:         displayID,
+						CursorAwaitStarted: cloned,
+					}); err != nil {
+						return err
+					}
+					continue
+				}
 			}
 			if completion := update.GetToolCallCompleted(); completion != nil {
 				if id := CursorWebResultCallID(completion); id != "" {
@@ -1075,7 +1210,7 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 				}
 				if id := CursorEditCompletedCallID(completion); id != "" {
 					noteUseful()
-					displayID := claimCursorEditDisplayID(cursorEditDisplayIDs, dispatchIDs, id, completion.GetCallId())
+					displayID := claimCursorCardDisplayID(cursorEditDisplayIDs, dispatchIDs, id, completion.GetCallId())
 					cloned := proto.CloneOf(completion)
 					if displayID != id {
 						cloned.CallId = displayID
@@ -1098,6 +1233,35 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 					}); err != nil {
 						return err
 					}
+				} else if id := CursorAwaitCompletedCallID(completion); id != "" {
+					displayID := claimCursorCardDisplayID(cursorAwaitDisplayIDs, dispatchIDs, id, completion.GetCallId())
+					cloned := proto.CloneOf(completion)
+					if displayID != id {
+						cloned.CallId = displayID
+						if cloned.ToolCall != nil && cloned.ToolCall.ToolCallId != nil {
+							cloned.ToolCall.ToolCallId = proto.String(displayID)
+						}
+					}
+					sawToolCall = true
+					sawVisibleTextAfterLastTool = false
+					if err := finishThinking(); err != nil {
+						return err
+					}
+					if err := sink(ModelEvent{
+						Kind:                 ModelEventKindCursorAwaitCompleted,
+						OccurredAt:           time.Now().UTC(),
+						Provider:             providerLabel,
+						GroupName:            providerLabel,
+						Model:                modelID,
+						ToolCallID:           displayID,
+						CursorAwaitCompleted: cloned,
+					}); err != nil {
+						return err
+					}
+					logger.Infof("cursor account wait finished request_id=%s call_id=%s silent_polls=%d", requestID, displayID, silentPolls[id])
+					// The model has the result of its wait now, as it has after
+					// any tool result: from here a quiet stream is a stalled one.
+					resetToolSilence()
 				}
 				continue
 			}
@@ -1173,7 +1337,15 @@ func readCursorAccountFrames(ctx context.Context, streamCtx context.Context, sen
 			if readErr == io.EOF || sawTurnEnded {
 				return finishTurn()
 			}
-			return readErr
+			if ctx.Err() != nil {
+				return readErr
+			}
+			// The stream was lost before the turn ended. The turn itself is
+			// not: the caller resumes it from the last checkpoint.
+			if err := finishThinking(); err != nil {
+				return err
+			}
+			return &cursorAccountStreamLostError{cause: readErr, checkpointed: sawCheckpoint}
 		}
 	}
 }
@@ -1471,6 +1643,14 @@ func cursorAccountRunMessageFor(req StreamRequest, modelID, stateConversationID 
 				},
 			},
 		}
+	}
+	if relayed := req.CursorConversationAction; relayed != nil && !cursorAccountSideCall(req) {
+		// The IDE started this run with an action of its own that Cursor's
+		// server understands as it is: a background task finished. Sending a
+		// resume in its place starts a turn in which the model is told
+		// nothing; the server writes the notice the model reads from this
+		// action.
+		action = proto.CloneOf(relayed)
 	}
 	return &agentv1.AgentClientMessage{
 		Message: &agentv1.AgentClientMessage_RunRequest{
@@ -2590,7 +2770,10 @@ func cursorAccountExecWireCallID(exec *agentv1.ExecServerMessage) string {
 	return fmt.Sprintf("exec-%d", exec.GetId())
 }
 
-func claimCursorEditDisplayID(displayByRaw map[string]string, dispatchIDs cursorDispatchIDs, primary string, aliases ...string) string {
+// claimCursorCardDisplayID returns the id an upstream tool card (an edit or a
+// wait) is shown under, claiming one the first time the card is seen. An entry
+// that is present but empty names a known call that has no card yet.
+func claimCursorCardDisplayID(displayByRaw map[string]string, dispatchIDs cursorDispatchIDs, primary string, aliases ...string) string {
 	candidates := make([]string, 0, 1+len(aliases))
 	if trimmed := strings.TrimSpace(primary); trimmed != "" {
 		candidates = append(candidates, trimmed)
@@ -2633,6 +2816,63 @@ func cursorExecBelongsToUpstreamEdit(exec *agentv1.ExecServerMessage, cursorEdit
 	default:
 		return false
 	}
+}
+
+// noteCursorAwaitCall records an upstream AwaitShell call under every id it
+// is announced with, so the file reads it polls with are recognized from the
+// first one on.
+func noteCursorAwaitCall(awaitCalls map[string]string, card *agentv1.ToolCall, callID string) {
+	if card.GetAwaitToolCall() == nil {
+		return
+	}
+	for _, id := range []string{card.GetToolCallId(), callID} {
+		if id = strings.TrimSpace(id); id == "" {
+			continue
+		}
+		if _, known := awaitCalls[id]; !known {
+			awaitCalls[id] = ""
+		}
+	}
+}
+
+// cursorExecReadToolCallID returns the tool call a file read is made for, or
+// "" when the exec is not a file read.
+func cursorExecReadToolCallID(exec *agentv1.ExecServerMessage) string {
+	switch {
+	case exec.GetReadArgs() != nil:
+		return strings.TrimSpace(exec.GetReadArgs().GetToolCallId())
+	case exec.GetRedactedReadArgs() != nil:
+		return strings.TrimSpace(exec.GetRedactedReadArgs().GetToolCallId())
+	default:
+		return ""
+	}
+}
+
+// cursorExecIsInternalPoll reports whether a file read is one the upstream
+// agent makes for itself rather than a Read the model called.
+//
+// Cursor's AwaitShell runs on Cursor's server. It watches a shell by reading
+// the shell's terminal file through the client several times a second, every
+// read under the AwaitShell call's own id, until the command ends, the pattern
+// matches or block_until_ms runs out. The client answers those reads without
+// showing them: the wait has its own card.
+//
+// A read is such a poll when its tool call was announced as an Await call. A
+// tool call that reads a second time is polling too, whatever it was announced
+// as; a Read the model called reads once.
+func cursorExecIsInternalPoll(exec *agentv1.ExecServerMessage, awaitCalls map[string]string, polled map[string]bool) bool {
+	toolCallID := cursorExecReadToolCallID(exec)
+	if toolCallID == "" {
+		return false
+	}
+	if _, waiting := awaitCalls[toolCallID]; waiting {
+		return true
+	}
+	if polled[toolCallID] {
+		return true
+	}
+	polled[toolCallID] = true
+	return false
 }
 
 func cursorAccountExecTool(exec *agentv1.ExecServerMessage) (string, string, []byte, bool) {

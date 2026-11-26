@@ -38,6 +38,9 @@ func (service *Service) closeCanceledPendingInteractions(stream *ActiveStream, r
 	if err := service.closeUnreportedCursorEdits(stream, "Canceled before Cursor reported an edit result: "+reason, true); err != nil {
 		logger.Errorf("forwarder canceled native edit closure failed: %v", err)
 	}
+	if err := service.closeUnreportedCursorAwaits(stream, "Canceled before the wait reported a result: "+reason); err != nil {
+		logger.Errorf("forwarder canceled native await closure failed: %v", err)
+	}
 	stream.mu.Lock()
 	pendingItems := make([]runtimecore.PendingInteraction, 0, len(stream.PendingInteractions))
 	for _, pending := range stream.PendingInteractions {

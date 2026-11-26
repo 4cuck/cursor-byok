@@ -30,6 +30,12 @@ func (service *Service) handleToolInvocation(stream *ActiveStream, invocation ru
 	if nativeExecIsInternalSpillWrite(invocation.NativeExec) {
 		return service.dispatchNativeCursorExec(stream, invocation)
 	}
+	// A turn resumed after its stream to Cursor was lost is asked again for a
+	// tool call it has already run. It is answered with the result on record:
+	// no second run, no second card, nothing counted.
+	if service.answerReissuedCursorExec(stream, invocation) {
+		return nil
+	}
 	// Internal Read/Write execs owned by an upstream Cursor EditToolCall run on
 	// the IDE silently while the EditToolCall InteractionUpdate drives the UI
 	// card. Still enforce mode checks for writes, without counting them toward

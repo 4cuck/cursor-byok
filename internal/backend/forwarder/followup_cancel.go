@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"cursor/gen/agentv1"
+	execbridge "cursor/internal/backend/agent/bridge/exec"
 	runtimecore "cursor/internal/backend/agent/core"
 	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/backend/delegation"
@@ -388,6 +389,19 @@ func (service *Service) absorbBackgroundedSubagentExecResult(execID string, suba
 		// 非终态进展事件：后台子代理仍在跑，静默吸收即可。
 		return true
 	}
+	if subagentResult.BackgroundHandoff {
+		// The client answered the exec by moving the subagent to its own
+		// background: the exec is over, the subagent is not. Recording this
+		// as the result would tell the model, at the start of its next turn,
+		// that the task had ended with nothing to show. The client reports
+		// the real end by starting a run of this conversation
+		// (background_task_wakeup.go), and that run carries the result.
+		service.settleNativeDelegation(record.ExecID, delegation.TaskCompleted, "Cursor 子代理已转入后台运行", "", false)
+		service.forgetBackgroundedDelegation(record.ExecID)
+		logger.Infof("forwarder backgrounded subagent was moved to the client's background conversation_id=%s exec_id=%s tool_call_id=%s agent_id=%s",
+			strings.TrimSpace(record.ConversationID), strings.TrimSpace(record.ExecID), strings.TrimSpace(record.ToolCallID), strings.TrimSpace(subagentResult.AgentID))
+		return true
+	}
 	status := delegation.TaskCompleted
 	progress := "Cursor 子代理已在后台完成"
 	if subagentResult.Failed {
@@ -406,6 +420,9 @@ type subagentTerminalOutcome struct {
 	AgentID   string
 	ErrorText string
 	Text      string
+	// BackgroundHandoff marks an answer that ends the exec only: the client
+	// moved the subagent to its background, where it is still running.
+	BackgroundHandoff bool
 }
 
 // subagentTerminalOutcomeFrom 把客户端子代理终态结果归一化；非终态事件返回 nil。
@@ -419,8 +436,9 @@ func subagentTerminalOutcomeFrom(result *agentv1.SubagentResult) *subagentTermin
 		return &subagentTerminalOutcome{Failed: true, AgentID: agentID, ErrorText: errorText, Text: errorText}
 	}
 	return &subagentTerminalOutcome{
-		AgentID: strings.TrimSpace(result.GetSuccess().GetAgentId()),
-		Text:    strings.TrimSpace(result.GetSuccess().GetFinalMessage()),
+		AgentID:           strings.TrimSpace(result.GetSuccess().GetAgentId()),
+		Text:              strings.TrimSpace(result.GetSuccess().GetFinalMessage()),
+		BackgroundHandoff: execbridge.SubagentResultIsBackgroundHandoff(result),
 	}
 }
 

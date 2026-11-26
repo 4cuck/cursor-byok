@@ -186,6 +186,20 @@ type ActiveStream struct {
 	// activeCursorEdits tracks upstream Cursor-owned EditToolCall cards whose
 	// low-level Read/Write execs run silently on the IDE.
 	activeCursorEdits map[string]cursorPendingEdit
+	// activeCursorAwaits tracks upstream Cursor-owned AwaitShell cards that
+	// have started and not yet reported a result. The wait itself runs on
+	// Cursor's server; its terminal-file reads run silently on the IDE.
+	activeCursorAwaits map[string]cursorPendingAwait
+	// cursorExecAnswers holds, per tool call, what this turn answered
+	// Cursor's exec with, oldest first in cursorExecAnswerOrder. A turn
+	// resumed after a lost stream is asked for a pending tool call again
+	// under the same id and answers it from here (cursor_exec_replay.go).
+	cursorExecAnswers     map[string]cursorExecAnswer
+	cursorExecAnswerOrder []string
+	// cursorWakeupAction is the "background tasks finished" action the IDE
+	// started this turn with. A Cursor account turn sends it to Cursor's
+	// server as the run's action; it is dropped once a pass has carried it.
+	cursorWakeupAction *agentv1.ConversationAction
 	// observedFileContents caches complete UTF-8 file snapshots seen via native
 	// Read/Write/Delete execs in this stream so standalone native Write fallback
 	// cards compute real before/after diffs instead of +N full-file adds.
@@ -221,6 +235,12 @@ type ActiveStream struct {
 	// 据此把 Task 卡片渲染为 succeeded/error/aborted；运行中的委派则由
 	// attachDelegationRunStates 从 PendingExecs 推导为 RUNNING。
 	DelegationRunTerminals map[string]*agentv1.SubagentRunState
+	// DelegationRunBackgrounded holds the runs (toolCallID → run) of native
+	// subagents the client moved to the background: the Task call has its
+	// result, the subagent is still running. They are published as
+	// BACKGROUNDED, never as finished; a terminal state recorded for the same
+	// tool call takes precedence.
+	DelegationRunBackgrounded map[string]*agentv1.SubagentRunState
 	// DelegationRunProgress 记录本地委派 worker 的最新可见进度（key=toolCallID）。
 	// attachDelegationRunStates 会把它写入 RUNNING run 的 detail 随 checkpoint 推送，
 	// 让 Cursor Task 卡片在运行期间持续显示实时进度；detail 变化会改变 wire hash，
@@ -491,6 +511,10 @@ type ProviderRequest struct {
 	CursorInteractionReplies chan *agentv1.InteractionResponse
 	// CursorRequestContext 是本回合 IDE 上报的执行环境，转交给 Cursor 账户网关。
 	CursorRequestContext *agentv1.RequestContext
+	// CursorConversationAction is the action the IDE started this run with
+	// when a background task finished. A Cursor account turn sends it to
+	// Cursor's server as it is (background_task_wakeup.go).
+	CursorConversationAction *agentv1.ConversationAction
 }
 
 type ProviderGateway interface {
@@ -674,6 +698,10 @@ type InboundIntent struct {
 	IgnoredReason        string
 	Prewarm              bool
 	ManualCompaction     manualCompactionDirective
+	// BackgroundCompletion is set when the IDE starts the run because
+	// background tasks of the conversation finished: the run has no user
+	// message, this is what the model is to be told.
+	BackgroundCompletion *agentv1.BackgroundTaskCompletionAction
 }
 
 // normalizeMode 对外部传入的 mode 做最小归一化，但不再静默降级。

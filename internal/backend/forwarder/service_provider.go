@@ -27,6 +27,10 @@ func shouldResumeAfterToolResults(finishReason string) bool {
 	switch strings.TrimSpace(finishReason) {
 	case "tool_use", "tool_calls", "function_call":
 		return true
+	case modeladapter.FinishReasonCursorStreamInterrupted:
+		// The stream to Cursor was lost, the turn was not: the next pass
+		// resumes it from Cursor's last checkpoint.
+		return true
 	default:
 		return false
 	}
@@ -401,6 +405,9 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		providerRequest.CursorToolResults = results
 		providerRequest.CursorInteractionReplies = replies
 		providerRequest.CursorRequestContext = cursorAccountForwardContext(conversation, workspacePaths, terminalsFolder)
+		// Set while the turn was started by finished background tasks and
+		// no pass has carried that news to Cursor yet.
+		providerRequest.CursorConversationAction = cursorWakeupActionOf(stream)
 	}
 	service.debug.LogProvider(context.Background(), requestID, conversationID, "provider_request_prepared", map[string]any{
 		"model_call_id":          strings.TrimSpace(modelCallID),

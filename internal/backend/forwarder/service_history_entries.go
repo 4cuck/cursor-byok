@@ -54,6 +54,11 @@ func buildRunEntries(intent InboundIntent, effectiveMode agentv1.AgentMode, turn
 			)))
 		}
 	}
+	if intent.UserMessage == nil && intent.BackgroundCompletion != nil {
+		// The run was started because background tasks finished. The notice
+		// stands where the user's message would: it is what the model reads.
+		entries = append(entries, backgroundCompletionRunEntries(turnSeq, intent.RequestID, intent.BackgroundCompletion)...)
+	}
 	modeEntry, err := newModeMetadataEntry(turnSeq, intent.RequestID, effectiveMode, intent.HasExplicitMode, intent.ModeSource)
 	if err != nil {
 		return nil, err

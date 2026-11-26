@@ -477,6 +477,14 @@ func (service *Service) keepNativeDelegationAlive(requestID, execID string) {
 }
 
 func (service *Service) updateNativeDelegationStatus(execID string, status delegation.TaskStatus, progress string, errorText string) {
+	service.settleNativeDelegation(execID, status, progress, errorText, true)
+}
+
+// settleNativeDelegation moves a native delegation to status. announce
+// controls whether a terminal status is also written into the parent's Task
+// card as the subagent's closing summary; it is false when this process stops
+// tracking a subagent that has not finished (see noteNativeSubagentBackgrounded).
+func (service *Service) settleNativeDelegation(execID string, status delegation.TaskStatus, progress string, errorText string, announce bool) {
 	if service == nil || strings.TrimSpace(execID) == "" {
 		return
 	}
@@ -527,7 +535,7 @@ func (service *Service) updateNativeDelegationStatus(execID string, status deleg
 			"error":        errorText,
 		})
 	}
-	if delegatedStatusTerminal(status) {
+	if announce && delegatedStatusTerminal(status) {
 		service.publishNativeDelegationProgress(requestID, execID, nativeDelegationTerminalSummary(&snapshot))
 		_ = service.broker.Publish(requestID, StreamEvent{
 			Message: buildThinkingCompletedMessage(int32(time.Since(snapshot.StartedAt).Milliseconds())),

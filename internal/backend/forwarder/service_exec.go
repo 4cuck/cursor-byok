@@ -151,18 +151,24 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 		}
 	}
 	if strings.TrimSpace(pending.ExecKind) == "subagent" {
-		status := delegation.TaskCompleted
-		progress := "Cursor 子代理已完成"
-		errorText := ""
-		runStatus := agentv1.SubagentRunStatus_SUBAGENT_RUN_STATUS_SUCCESS
-		if subagentResultFailed(intent.ExecClientMessage.GetSubagentResult()) {
-			status = delegation.TaskFailed
-			progress = "Cursor 子代理执行失败"
-			errorText = subagentResultErrorText(intent.ExecClientMessage.GetSubagentResult())
-			runStatus = agentv1.SubagentRunStatus_SUBAGENT_RUN_STATUS_ERROR
+		if subagentResult := intent.ExecClientMessage.GetSubagentResult(); execbridge.SubagentResultIsBackgroundHandoff(subagentResult) {
+			// The client moved the subagent to the background. The exec has
+			// its answer, the subagent is still working: this is not its end.
+			service.noteNativeSubagentBackgrounded(stream, pending, subagentResult.GetSuccess())
+		} else {
+			status := delegation.TaskCompleted
+			progress := "Cursor 子代理已完成"
+			errorText := ""
+			runStatus := agentv1.SubagentRunStatus_SUBAGENT_RUN_STATUS_SUCCESS
+			if subagentResultFailed(subagentResult) {
+				status = delegation.TaskFailed
+				progress = "Cursor 子代理执行失败"
+				errorText = subagentResultErrorText(subagentResult)
+				runStatus = agentv1.SubagentRunStatus_SUBAGENT_RUN_STATUS_ERROR
+			}
+			service.updateNativeDelegationStatus(pending.ExecID, status, progress, errorText)
+			service.recordDelegationRunTerminal(stream, pending, runStatus, "Cursor 子代理", errorText)
 		}
-		service.updateNativeDelegationStatus(pending.ExecID, status, progress, errorText)
-		service.recordDelegationRunTerminal(stream, pending, runStatus, "Cursor 子代理", errorText)
 	}
 	backgroundShellToolCallID := ""
 	if strings.TrimSpace(pending.ExecKind) == "shell" && shellToolCallIsBackgrounded(result.ToolCall) {
@@ -219,12 +225,16 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 		return err
 	}
 	if isCursorAccountShellTerminal(intent.ExecClientMessage) {
-		if !deliverCursorAccountShellTerminal(stream, pending.ToolCallID, pending, intent.ExecClientMessage) {
+		if !service.answerCursorAccountShellTerminal(stream, pending, intent.ExecClientMessage) {
 			return service.reconcileStream(stream)
 		}
 		return nil
 	}
-	if preface := shellStreamOutputPreface(pending, intent.ExecClientMessage); preface != nil {
+	preface := shellStreamOutputPreface(pending, intent.ExecClientMessage)
+	// Kept whether or not Cursor's stream is still there to take it: a turn
+	// resumed after a lost stream is asked for this tool call again.
+	service.rememberCursorExecAnswer(stream, pending, preface, intent.ExecClientMessage)
+	if preface != nil {
 		if !deliverCursorToolResult(stream, pending.ToolCallID, preface) {
 			return service.reconcileStream(stream)
 		}

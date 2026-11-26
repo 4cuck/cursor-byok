@@ -282,25 +282,7 @@ func isEditHistoryToolName(name string) bool {
 }
 
 func hasCompletedEditHistoryEntryLocked(stream *ActiveStream, toolCallID string) bool {
-	if stream == nil || stream.CheckpointConversation == nil || strings.TrimSpace(toolCallID) == "" {
-		return false
-	}
-	id := strings.TrimSpace(toolCallID)
-	entries := stream.CheckpointConversation.Entries
-	for i := len(entries) - 1; i >= 0; i-- {
-		entry := entries[i]
-		if entry.Kind != "tool_result" || entry.TurnSeq != stream.TurnSeq || entry.RequestID != stream.RequestID {
-			continue
-		}
-		if historyEntryToolCallID(entry) != id {
-			continue
-		}
-		var payload toolResultEntryPayload
-		if err := json.Unmarshal(entry.Payload, &payload); err == nil && isEditHistoryToolName(payload.ToolName) {
-			return true
-		}
-	}
-	return false
+	return hasToolResultEntryLocked(stream, toolCallID, isEditHistoryToolName)
 }
 
 func (service *Service) flushPendingTextAndHarvestReasoningForCursorEdit(stream *ActiveStream) (

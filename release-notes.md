@@ -1,3 +1,21 @@
+## v1.0.59
+
+### Fixed
+
+- **Waiting on a shell no longer ends the turn (Cursor accounts)**:
+  - `AwaitShell` runs on Cursor's server, which watches the command by reading its terminal file through the IDE several times a second. Each of those reads was shown as a `Read` call of the model, and the repeated-call guard stopped the turn at the fifth identical one, a few seconds into any wait on a command that was still running.
+  - The reads are now answered silently and the wait is shown as one card with Cursor's own result.
+- **A background subagent no longer shows "Completed" the moment it starts**:
+  - The IDE answers the launch of a background subagent at once with "moved to background". That answer was recorded as the subagent finishing. The run is now reported as backgrounded, and the card stays running until the subagent ends.
+  - The same answer for a subagent that a new message had sent to the background is no longer recorded as its result.
+- **The agent is told when a background task finishes**:
+  - When a background subagent or shell ends, the IDE starts a run of the parent chat to say so. It went out as a plain resume, so the model was started and told nothing.
+  - On a Cursor account the IDE's message is now relayed to Cursor, which writes the notice the model reads. For other providers cursor-byok writes the same notice.
+- **A dropped connection to Cursor no longer fails the turn**:
+  - Cursor's server closes the connection from time to time (`http2: server sent GOAWAY`), which ended the turn with `upstream stream interrupted mid-response`. The turn now resumes from the last checkpoint Cursor sent, as the Cursor client does, up to 10 times per turn.
+  - A tool that was running when the connection dropped does not run a second time: when Cursor asks for it again, it is answered with the result already at hand.
+  - A question or approval card that was open at that moment is not carried over, and text written before the drop stays on screen with the answer written again after it.
+
 ## v1.0.58
 
 ### Changed
@@ -137,11 +155,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.58-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.58-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.58-windows-arm64-installer.exe` 或 `cursor-byok-1.0.58-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.58-windows-x32-installer.exe` 或 `cursor-byok-1.0.58-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.58-macos-arm64.dmg` 或 `cursor-byok-1.0.58-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.58-macos-x64.dmg` 或 `cursor-byok-1.0.58-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.58-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.59-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.59-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.59-windows-arm64-installer.exe` 或 `cursor-byok-1.0.59-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.59-windows-x32-installer.exe` 或 `cursor-byok-1.0.59-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.59-macos-arm64.dmg` 或 `cursor-byok-1.0.59-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.59-macos-x64.dmg` 或 `cursor-byok-1.0.59-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.59-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

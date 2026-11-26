@@ -905,6 +905,12 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 		return service.applyCursorEditStarted(stream, event.CursorEditStarted, modelCallID)
 	case modeladapter.ModelEventKindCursorEditCompleted:
 		return service.applyCursorEditCompleted(stream, event.CursorEditCompleted, modelCallID)
+	case modeladapter.ModelEventKindCursorAwaitStarted:
+		return service.applyCursorAwaitStarted(stream, event.CursorAwaitStarted, modelCallID)
+	case modeladapter.ModelEventKindCursorAwaitCompleted:
+		return service.applyCursorAwaitCompleted(stream, event.CursorAwaitCompleted, modelCallID)
+	case modeladapter.ModelEventKindCursorUserMessageAppended:
+		return service.applyCursorUserMessageAppended(stream, event.CursorUserMessage)
 	case modeladapter.ModelEventKindToolLikeCompleted:
 		if event.ToolInvocation == nil {
 			return fmt.Errorf("tool invocation is required")
@@ -1090,11 +1096,35 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	if errors.Is(payload.Err, errProviderLoopInterrupted) || isTerminalStreamStatus(status) {
 		return nil
 	}
-	if err := service.closeUnreportedCursorWeb(stream, "Cursor ended the stream without reporting a web tool result."); err != nil {
-		return service.failStreamIfNonTerminal(stream, "unknown", err)
+	// A pass whose stream to Cursor was lost is resumed by the next one, and
+	// Cursor then runs again whatever was open: the same edit, the same wait,
+	// under the same ids. Their cards stay open for it. Closing them here
+	// would show a failed edit or wait for work that completes a moment
+	// later. Whatever is still unreported when the turn really ends is closed
+	// by the pass that ends it.
+	streamInterrupted := payload.Err == nil && strings.TrimSpace(finishReason) == modeladapter.FinishReasonCursorStreamInterrupted
+	if payload.Err == nil {
+		// The pass carried the "background tasks finished" action this turn
+		// was started with, if there was one. Later passes of the turn go on
+		// from there; one that is resumed after a lost stream gets its
+		// request from the gateway's record of it.
+		stream.mu.Lock()
+		stream.cursorWakeupAction = nil
+		stream.mu.Unlock()
 	}
-	if err := service.closeUnreportedCursorEdits(stream, "Cursor ended the stream without reporting an edit result.", false); err != nil {
-		return service.failStreamIfNonTerminal(stream, "unknown", err)
+	if streamInterrupted {
+		logger.Infof("forwarder provider pass lost its stream to Cursor; resuming the turn request_id=%s conversation_id=%s provider_pass=%d pending_execs=%d",
+			strings.TrimSpace(requestID), strings.TrimSpace(conversationID), providerPass, pendingBridgeCount(stream))
+	} else {
+		if err := service.closeUnreportedCursorWeb(stream, "Cursor ended the stream without reporting a web tool result."); err != nil {
+			return service.failStreamIfNonTerminal(stream, "unknown", err)
+		}
+		if err := service.closeUnreportedCursorEdits(stream, "Cursor ended the stream without reporting an edit result.", false); err != nil {
+			return service.failStreamIfNonTerminal(stream, "unknown", err)
+		}
+		if err := service.closeUnreportedCursorAwaits(stream, "Cursor ended the stream before the wait reported a result."); err != nil {
+			return service.failStreamIfNonTerminal(stream, "unknown", err)
+		}
 	}
 	if payload.Err != nil {
 		// 已实时推送给客户端的部分输出（文本/推理）在错误收口前必须先落盘，
