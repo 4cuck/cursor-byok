@@ -1,3 +1,19 @@
+## v1.0.60
+
+### Added
+
+- **API keys on a Cursor account card**:
+  - Each Cursor account card has **More → API keys**. The dialog lists the account's user API keys with their name, masked key and creation date.
+  - **Create key** makes a new key and shows it once, with a copy button. A key is created only when you press the button; nothing creates one on its own.
+  - The name is one you type or a random one. A random name follows the shape of a key the account already has, or Cursor's own naming when it has none. It contains nothing taken from this machine (no host name, user name or process id), so the key names of two accounts share nothing that identifies one machine or person.
+
+### Fixed
+
+- **A finished background subagent no longer shows "Stopped", and the agent is told when background work ends**:
+  - Cursor decides with its `long_running_jobs` switch whether background work may end after the turn that started it. Cursor ships that switch on, but it was missing from the list cursor-byok serves, and the IDE reads a missing switch as off. Off, the IDE left the Task card of a finished background subagent without its result, so it showed "Stopped", and never started the run that tells the agent a background subagent or command has finished. v1.0.59 made cursor-byok answer that run; the IDE never sent it.
+  - The switch is now served as on. After updating, restart Cursor once. The chat then starts a short turn on its own when a background subagent or command finishes, and it shows which background tasks are still running, as Cursor does without cursor-byok. A card that already shows "Stopped" stays as it is.
+  - With that run now arriving, two gaps in how it was handled are closed. Tasks that finish together are each shown in the IDE; for models outside a Cursor account only the first was. And the run works in the chat's own workspace and terminals folder, which it does not name itself, so a wait on a command, relative paths and new subagents work in it as in any other turn.
+
 ## v1.0.59
 
 ### Fixed
@@ -155,11 +171,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.59-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.59-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.59-windows-arm64-installer.exe` 或 `cursor-byok-1.0.59-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.59-windows-x32-installer.exe` 或 `cursor-byok-1.0.59-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.59-macos-arm64.dmg` 或 `cursor-byok-1.0.59-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.59-macos-x64.dmg` 或 `cursor-byok-1.0.59-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.59-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.60-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.60-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.60-windows-arm64-installer.exe` 或 `cursor-byok-1.0.60-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.60-windows-x32-installer.exe` 或 `cursor-byok-1.0.60-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.60-macos-arm64.dmg` 或 `cursor-byok-1.0.60-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.60-macos-x64.dmg` 或 `cursor-byok-1.0.60-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.60-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

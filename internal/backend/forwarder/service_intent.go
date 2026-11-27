@@ -326,6 +326,12 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		return err
 	}
 	updateStreamRequestContextData(stream, intent.RequestContext)
+	if !intent.Prewarm {
+		// A run that names no workspace of its own, such as the one the
+		// client starts when background tasks finish, works in the one its
+		// conversation was started with.
+		restoreStreamPathContext(stream, conversation)
+	}
 	service.updateStreamMCPToolServers(stream, intent.RequestContext)
 	clearPendingProviderCompletion(stream)
 	stream.mu.Lock()

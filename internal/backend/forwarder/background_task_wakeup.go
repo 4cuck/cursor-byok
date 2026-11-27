@@ -5,16 +5,20 @@
 // ends some time after the turn that started it. The IDE then starts a run of
 // the parent conversation that carries no user message: its action is the
 // list of what finished (BackgroundTaskCompletionAction). Cursor's server
-// answers such a run by putting a notice into the conversation, a simulated
-// user message, and the model reacts to it: it tells the user, reads the
-// result, goes on with the work.
+// answers such a run by putting a notice per task into the conversation,
+// each a simulated user message, and the model reacts to them: it tells the
+// user, reads the result, goes on with the work.
 //
 // Without this file the run was started as a plain resume and the model was
 // told nothing.
 //
 // On a Cursor account the action is relayed to Cursor's server as it is, the
-// server writes the notice, and the notice is passed on to the IDE. For any
-// other model the forwarder writes the same notice itself.
+// server writes the notices, and they are passed on to the IDE. For any other
+// model the forwarder writes the same notices itself.
+//
+// The IDE starts these runs only while its long_running_jobs gate is on, and
+// it takes the gate from the bootstrap this process serves
+// (server/upstream/mocks.go).
 package forwarder
 
 import (
@@ -79,68 +83,109 @@ func backgroundTaskStatusLabel(status agentv1.BackgroundTaskStatus) string {
 	}
 }
 
-// backgroundTaskNoticeText writes the notice the model reads, in the words
-// and the layout Cursor's server uses for it.
-func backgroundTaskNoticeText(action *agentv1.BackgroundTaskCompletionAction) string {
-	tasks := reportedBackgroundTasks(action)
-	if len(tasks) == 0 {
-		return ""
-	}
-	finished := true
-	for _, task := range tasks {
-		switch task.GetReason() {
-		case agentv1.BackgroundTaskCompletionReason_BACKGROUND_TASK_COMPLETION_REASON_UNSPECIFIED,
-			agentv1.BackgroundTaskCompletionReason_BACKGROUND_TASK_COMPLETION_REASON_TASK_FINISHED:
-		default:
-			finished = false
-		}
-	}
-	var text strings.Builder
-	text.WriteString("<system_notification>\n")
-	switch {
-	case !finished:
-		text.WriteString("The following background work has an update.")
-	case len(tasks) == 1:
-		text.WriteString("The following task has finished.")
+// backgroundTaskNotice is the notice of one background task: what the model
+// reads, and the task it is about.
+type backgroundTaskNotice struct {
+	Text   string
+	Title  string
+	TaskID string
+}
+
+const (
+	// What the last notice of a run asks of the model, as Cursor's server
+	// asks it. For a subagent the server goes on about linking cloud agents,
+	// which no other model has; that part is left out.
+	backgroundShellFollowUpQuery    = "Briefly inform the user about the task result and perform any follow-up actions (if needed)."
+	backgroundSubagentFollowUpQuery = "Perform any necessary follow-up actions in response to the subagent completion above. If no follow-up work is needed, no further action is required. If you mention an agent or subagent in your response, link it with the `[Name](id)` Don't use generic label such as `[agent]`, `[worker]`, or `[subagent]`. Don't repeat the same confirmation every time."
+)
+
+func backgroundTaskHasFinished(task *agentv1.BackgroundTaskCompletion) bool {
+	switch task.GetReason() {
+	case agentv1.BackgroundTaskCompletionReason_BACKGROUND_TASK_COMPLETION_REASON_UNSPECIFIED,
+		agentv1.BackgroundTaskCompletionReason_BACKGROUND_TASK_COMPLETION_REASON_TASK_FINISHED:
+		return true
 	default:
-		text.WriteString("The following tasks have finished.")
+		// Progress, a message, a request for attention: it is still running.
+		return false
 	}
-	text.WriteString(" If you were already aware, ignore this notification and do not restate prior responses.\n")
-	line := func(name, value string) {
-		if value = strings.TrimSpace(value); value != "" {
-			fmt.Fprintf(&text, "%s: %s\n", name, value)
+}
+
+// backgroundTaskNotices writes the notices the model reads, in the words and
+// the layout Cursor's server uses for them (captured from the live server for
+// a finished shell, a finished subagent, and both in one run): one notice per
+// task, in the order reported, and on the last one what the model is asked to
+// do. The opening line for work that is still running was not captured; it is
+// this file's own.
+func backgroundTaskNotices(action *agentv1.BackgroundTaskCompletionAction) []backgroundTaskNotice {
+	tasks := reportedBackgroundTasks(action)
+	notices := make([]backgroundTaskNotice, 0, len(tasks))
+	for index, task := range tasks {
+		var text strings.Builder
+		text.WriteString("<system_notification>\n")
+		if backgroundTaskHasFinished(task) {
+			text.WriteString("The following task has finished.")
+		} else {
+			text.WriteString("The following background work has an update.")
 		}
-	}
-	for _, task := range tasks {
+		text.WriteString(" If you were already aware, ignore this notification and do not restate prior responses.\n")
+		line := func(name, value string) {
+			if value = strings.TrimSpace(value); value != "" {
+				fmt.Fprintf(&text, "%s: %s\n", name, value)
+			}
+		}
 		text.WriteString("\n<task>\n")
 		line("kind", backgroundTaskKindLabel(task.GetKind()))
 		line("status", backgroundTaskStatusLabel(task.GetStatus()))
 		line("task_id", task.GetTaskId())
 		line("title", task.GetTitle())
+		line("tool_call_id", task.GetToolCallId())
+		line("agent_id", task.GetSubagentId())
 		line("detail", task.GetDetail())
 		line("output_path", task.GetOutputPath())
 		text.WriteString("</task>\n")
+		text.WriteString("</system_notification>")
+		if index == len(tasks)-1 {
+			text.WriteString("\n")
+			if reminder := strings.TrimSpace(action.GetSystemReminder()); reminder != "" {
+				text.WriteString(wrapSystemReminder(reminder))
+				text.WriteString("\n")
+			}
+			query := backgroundShellFollowUpQuery
+			if task.GetKind() == agentv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT {
+				query = backgroundSubagentFollowUpQuery
+			}
+			text.WriteString("<user_query>" + query + "</user_query>")
+		}
+		notices = append(notices, backgroundTaskNotice{
+			Text:   text.String(),
+			Title:  strings.TrimSpace(task.GetTitle()),
+			TaskID: strings.TrimSpace(task.GetTaskId()),
+		})
 	}
-	text.WriteString("</system_notification>\n")
-	if reminder := strings.TrimSpace(action.GetSystemReminder()); reminder != "" {
-		text.WriteString(wrapSystemReminder(reminder))
-		text.WriteString("\n")
-	}
-	text.WriteString("<user_query>Briefly inform the user about the task result and perform any follow-up actions (if needed).</user_query>")
-	return text.String()
+	return notices
 }
 
 // backgroundCompletionRunEntries are the history entries of a run that was
-// started because background tasks finished: the notice, which is what the
+// started because background tasks finished: the notices, which are what the
 // model reads in place of a user message, and one record per task.
+//
+// The notices stand in the transcript as one message. A Cursor account pass
+// takes the last message of the transcript as the turn's own and everything
+// before it as history; the relayed action replaces the turn's message, and
+// Cursor's server writes its notices from it. A notice left in the history
+// would be told to the model twice whenever that history is sent.
 func backgroundCompletionRunEntries(turnSeq int64, requestID string, action *agentv1.BackgroundTaskCompletionAction) []HistoryEntry {
-	notice := backgroundTaskNoticeText(action)
-	if notice == "" {
+	notices := backgroundTaskNotices(action)
+	if len(notices) == 0 {
 		return nil
+	}
+	texts := make([]string, 0, len(notices))
+	for _, notice := range notices {
+		texts = append(texts, notice.Text)
 	}
 	entries := []HistoryEntry{newPromptContextEntry(turnSeq, requestID, newPromptContextMessage(
 		promptContextSourceBackgroundTaskCompletion,
-		modeladapter.Message{Role: "user", Content: notice},
+		modeladapter.Message{Role: "user", Content: strings.Join(texts, "\n")},
 		true,
 	))}
 	return append(entries, backgroundTaskCompletionMetadataEntries(turnSeq, requestID, &agentv1.AgentClientMessage{
@@ -178,14 +223,7 @@ func (service *Service) beginBackgroundCompletionRun(stream *ActiveStream, actio
 // BACKGROUNDED (native_subagent_background.go); this is its end.
 func (service *Service) recordFinishedBackgroundSubagent(stream *ActiveStream, task *agentv1.BackgroundTaskCompletion) {
 	toolCallID := strings.TrimSpace(task.GetToolCallId())
-	if task.GetKind() != agentv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT || toolCallID == "" {
-		return
-	}
-	switch task.GetReason() {
-	case agentv1.BackgroundTaskCompletionReason_BACKGROUND_TASK_COMPLETION_REASON_UNSPECIFIED,
-		agentv1.BackgroundTaskCompletionReason_BACKGROUND_TASK_COMPLETION_REASON_TASK_FINISHED:
-	default:
-		// Progress, a message, a request for attention: it is still running.
+	if task.GetKind() != agentv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT || toolCallID == "" || !backgroundTaskHasFinished(task) {
 		return
 	}
 	var status agentv1.SubagentRunStatus
@@ -203,33 +241,39 @@ func (service *Service) recordFinishedBackgroundSubagent(stream *ActiveStream, t
 	service.recordDelegationRunTerminal(stream, runtimecore.PendingExec{ToolCallID: toolCallID}, status, "Cursor 子代理", detail)
 }
 
-// announceBackgroundCompletion shows the notice in the IDE for a model that
-// is not a Cursor account model. A Cursor account turn gets the notice from
-// Cursor's server (applyCursorUserMessageAppended).
+// announceBackgroundCompletion shows the notices in the IDE for a model that
+// is not a Cursor account model, one message per task as Cursor's server
+// sends them: the IDE pairs each message with the task it reported, in
+// order. A Cursor account turn gets the notices from Cursor's server
+// (applyCursorUserMessageAppended).
 func (service *Service) announceBackgroundCompletion(stream *ActiveStream, action *agentv1.BackgroundTaskCompletionAction) error {
 	if service == nil || stream == nil || service.cursorAccountModel(activeStreamModelID(stream)) {
 		return nil
 	}
-	notice := backgroundTaskNoticeText(action)
-	tasks := reportedBackgroundTasks(action)
-	if notice == "" || len(tasks) == 0 {
+	notices := backgroundTaskNotices(action)
+	if len(notices) == 0 {
 		return nil
 	}
 	stream.mu.Lock()
 	mode := stream.Mode
 	stream.mu.Unlock()
-	message := &agentv1.UserMessage{
-		Text:               notice,
-		MessageId:          uuid.NewString(),
-		Mode:               mode,
-		IsSimulatedMsg:     proto.Bool(true),
-		SimulatedMsgReason: agentv1.SimulatedMsgReason_SIMULATED_MSG_REASON_BACKGROUND_TASK_COMPLETION.Enum(),
-		SimulatedMessageMetadata: &agentv1.UserMessage_SimulatedMessageMetadata{
-			Title:  proto.String(strings.TrimSpace(tasks[0].GetTitle())),
-			TaskId: proto.String(strings.TrimSpace(tasks[0].GetTaskId())),
-		},
+	for _, notice := range notices {
+		message := &agentv1.UserMessage{
+			Text:               notice.Text,
+			MessageId:          uuid.NewString(),
+			Mode:               mode,
+			IsSimulatedMsg:     proto.Bool(true),
+			SimulatedMsgReason: agentv1.SimulatedMsgReason_SIMULATED_MSG_REASON_BACKGROUND_TASK_COMPLETION.Enum(),
+			SimulatedMessageMetadata: &agentv1.UserMessage_SimulatedMessageMetadata{
+				Title:  proto.String(notice.Title),
+				TaskId: proto.String(notice.TaskID),
+			},
+		}
+		if err := service.broker.Publish(stream.RequestID, StreamEvent{Message: buildUserMessageAppendedMessage(message)}); err != nil {
+			return err
+		}
 	}
-	return service.broker.Publish(stream.RequestID, StreamEvent{Message: buildUserMessageAppendedMessage(message)})
+	return nil
 }
 
 // applyCursorUserMessageAppended passes on the notice Cursor's server wrote.

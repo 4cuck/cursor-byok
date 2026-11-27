@@ -51,6 +51,43 @@ func updateStreamRequestContextData(stream *ActiveStream, requestContext *agentv
 	stream.mu.Unlock()
 }
 
+// restoreStreamPathContext gives the stream of a run that named no workspace
+// the workspace and the terminals folder its conversation was started with.
+//
+// A run the client starts on its own, because background tasks finished,
+// carries no request context, and its stream is new: there is nothing on it
+// to preserve. Without the folders a wait cannot find a shell's terminal
+// file, the spilled output of a finished shell is not read back, a relative
+// path resolves against nothing and a subagent is launched without its
+// workspace. What the run did name is left as it is.
+func restoreStreamPathContext(stream *ActiveStream, conversation *ConversationFile) {
+	if stream == nil || conversation == nil {
+		return
+	}
+	stream.mu.Lock()
+	needWorkspace := len(stream.WorkspacePaths) == 0
+	needTerminals := strings.TrimSpace(stream.TerminalsFolder) == ""
+	stream.mu.Unlock()
+	if !needWorkspace && !needTerminals {
+		return
+	}
+	env := latestStoredRequestContextEnv(conversation)
+	if env == nil {
+		return
+	}
+	workspacePaths := compactWorkspacePaths(env.GetWorkspacePaths(), env.GetProjectFolder())
+	terminalsFolder := strings.TrimSpace(env.GetTerminalsFolder())
+
+	stream.mu.Lock()
+	if len(stream.WorkspacePaths) == 0 && len(workspacePaths) > 0 {
+		stream.WorkspacePaths = workspacePaths
+	}
+	if strings.TrimSpace(stream.TerminalsFolder) == "" && terminalsFolder != "" {
+		stream.TerminalsFolder = terminalsFolder
+	}
+	stream.mu.Unlock()
+}
+
 func snapshotStreamPathContext(stream *ActiveStream) streamPathContext {
 	if stream == nil {
 		return streamPathContext{}

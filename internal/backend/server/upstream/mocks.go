@@ -105,6 +105,17 @@ const (
 	bootstrapStatsigLocalDefaultRule                   = "local_default"
 )
 
+// bootstrapStatsigLongRunningJobsGate is the client's switch for background
+// work that ends after the turn that started it. The client ships it switched
+// on, and a gate missing from the bootstrap reads as off. Off, the client
+// leaves the Task card of a background subagent that finished without its
+// outcome (the card then shows "Stopped"), and it never starts the run that
+// tells the agent a background subagent or shell has finished: finished
+// subagents are not queued for it, finished shells are not reported by the
+// exec extension, and what is queued is held back. The forwarder answers that
+// run in background_task_wakeup.go.
+const bootstrapStatsigLongRunningJobsGate = "long_running_jobs"
+
 type statsigSecondaryExposure struct {
 	Gate           string `json:"gate,omitempty"`
 	GateValue      string `json:"gateValue,omitempty"`
@@ -169,6 +180,7 @@ var bootstrapStatsigTemplate = statsigBootstrapTemplate{
 		bootstrapStatsigCanvasInlinePreview:              buildEnabledStatsigGate(bootstrapStatsigCanvasInlinePreview),
 		bootstrapStatsigGlassDesignModeComposerPill:      buildEnabledStatsigGate(bootstrapStatsigGlassDesignModeComposerPill),
 		bootstrapStatsigEnableMultitaskMode:              buildEnabledStatsigGate(bootstrapStatsigEnableMultitaskMode),
+		bootstrapStatsigLongRunningJobsGate:              buildEnabledStatsigGate(bootstrapStatsigLongRunningJobsGate),
 		bootstrapStatsigDecomposeAlwaysLocalExtHostGate:  buildDisabledStatsigGate(bootstrapStatsigDecomposeAlwaysLocalExtHostGate),
 		bootstrapStatsigCursorExtensionsIsolationV2Gate:  buildDisabledStatsigGate(bootstrapStatsigCursorExtensionsIsolationV2Gate),
 		bootstrapStatsigCursorAgentWorkerExtension:       buildDisabledStatsigGate(bootstrapStatsigCursorAgentWorkerExtension),

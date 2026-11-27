@@ -1,6 +1,7 @@
 package modeladapter
 
 import (
+	"strings"
 	"testing"
 
 	"cursor/gen/agentv1"
@@ -44,9 +45,22 @@ func TestCursorAccountRunCarriesTheActionTheIDEStartedItWith(t *testing.T) {
 	// The forwarder also records its own notice of the finished task as the
 	// newest message of the transcript. It is not sent on top of the action.
 	withNotice := append(append([]Message(nil), transcript...), Message{Role: "user", Content: "<system_notification>\nThe following task has finished.\n</system_notification>"})
-	run = cursorAccountRunMessage(StreamRequest{Messages: withNotice, CursorConversationAction: relayed}, "claude-fable-5-2").GetRunRequest()
+	message := cursorAccountRunMessage(StreamRequest{Messages: withNotice, CursorConversationAction: relayed}, "claude-fable-5-2")
+	run = message.GetRunRequest()
 	if !proto.Equal(run.GetAction(), relayed) {
 		t.Fatalf("with the notice in the transcript the run sends %v, want only the relayed action", run.GetAction())
+	}
+	// Nor does it go out as history. With no checkpoint of Cursor's to go on
+	// from, the transcript before the turn's own message is sent as the
+	// conversation so far; Cursor's server writes its notice from the action,
+	// so a second one there would tell the model twice. This is why the
+	// forwarder records the notices of one run as one message.
+	history := cursorAccountHistoryPlain(message)
+	if !strings.Contains(history, "The build is running.") {
+		t.Fatalf("the conversation so far is not sent as history: %q", history)
+	}
+	if strings.Contains(history, "The following task has finished.") {
+		t.Fatalf("the forwarder's notice is sent as history next to the action: %q", history)
 	}
 
 	// A side call (a compaction summary, a title) is not a turn of the

@@ -304,6 +304,41 @@ func TestBuildBootstrapStatsigConfigJSONEnablesDesignModeAndCanvasPreviewGates(t
 	}
 }
 
+// The client decides with long_running_jobs whether background work may end
+// after the turn that started it. It ships the gate switched on, but a gate
+// the bootstrap does not list reads as off, and then a background subagent
+// that finished is left as "Stopped" on its Task card and the agent is never
+// told that a background subagent or shell has finished.
+func TestBuildBootstrapStatsigConfigJSONEnablesLongRunningJobs(t *testing.T) {
+	payload, err := buildBootstrapStatsigConfigJSON(12345, "test-auth-id")
+	if err != nil {
+		t.Fatalf("build bootstrap statsig config: %v", err)
+	}
+
+	var decoded statsigBootstrapTemplate
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode bootstrap statsig config: %v", err)
+	}
+	// The client looks the gate up by this exact name: hash_used "none"
+	// means names are not hashed.
+	if decoded.HashUsed != "none" {
+		t.Fatalf("hash_used = %q, want none", decoded.HashUsed)
+	}
+	gate, ok := decoded.FeatureGates["long_running_jobs"]
+	if !ok {
+		t.Fatal(`the bootstrap does not list "long_running_jobs"; the client reads a gate it is not given as off`)
+	}
+	if value, isBool := gate["value"].(bool); !isBool || !value {
+		t.Fatalf(`"long_running_jobs" value = %#v, want true`, gate["value"])
+	}
+	if name, _ := gate["name"].(string); name != "long_running_jobs" {
+		t.Fatalf(`"long_running_jobs" carries name %q`, name)
+	}
+	if ruleID, _ := gate["rule_id"].(string); ruleID != "local_enabled" {
+		t.Fatalf(`"long_running_jobs" rule_id = %q, want local_enabled`, ruleID)
+	}
+}
+
 type fakeSystemSettingService struct {
 	adapters []legacyruntime.ModelAdapterConfig
 }
