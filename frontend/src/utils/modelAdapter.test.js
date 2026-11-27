@@ -133,3 +133,28 @@ test("normalizeCustomThinkingEfforts：token 形态校验与限量", async () =>
   assert.equal(capped.length, 8);
   assert.deepEqual(normalizeCustomThinkingEfforts(undefined), []);
 });
+
+test("normalizeModelAdapter：Claude 订阅 OAuth 鉴权模式经多次归一化仍保留，并通过校验", async () => {
+  const { ANTHROPIC_AUTH_MODE_OAUTH, normalizeModelAdapter, validateModelAdapters } = await import("./modelAdapter.js");
+  const adapter = normalizeModelAdapter({
+    displayName: "Claude 订阅",
+    type: "anthropic",
+    baseURL: "https://api.anthropic.com",
+    apiKey: "sk-ant-oat01-token",
+    modelID: "claude-sonnet-4-6",
+    anthropicAuthMode: " OAuth ",
+  });
+  assert.equal(adapter.anthropicAuthMode, ANTHROPIC_AUTH_MODE_OAUTH);
+  // 保存流程会多次归一化；未知模式会被改写成旧配置默认的双头模式。
+  assert.equal(normalizeModelAdapter(normalizeModelAdapter(adapter)).anthropicAuthMode, ANTHROPIC_AUTH_MODE_OAUTH);
+  assert.equal(validateModelAdapters([adapter]), "");
+});
+
+test("normalizeModelAdapter：Fast 模式在 openai 与 anthropic 渠道保留，gemini 渠道不保留", async () => {
+  const { normalizeModelAdapter } = await import("./modelAdapter.js");
+  const base = { displayName: "Fast", baseURL: "https://api.example.com", apiKey: "sk-x", fastMode: true };
+  assert.equal(normalizeModelAdapter({ ...base, type: "openai", modelID: "gpt-x" }).fastMode, true);
+  assert.equal(normalizeModelAdapter({ ...base, type: "anthropic", modelID: "claude-opus-4-8" }).fastMode, true);
+  assert.equal(normalizeModelAdapter({ ...base, type: "gemini", modelID: "gemini-x" }).fastMode, false);
+  assert.equal(normalizeModelAdapter({ ...base, type: "anthropic", modelID: "claude-opus-4-8", fastMode: false }).fastMode, false);
+});

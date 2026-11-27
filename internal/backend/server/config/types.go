@@ -653,7 +653,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				return nil, err
 			}
 		case next.AnthropicAuthMode == "":
-			return nil, i18n.NewError("error.model_adapter.anthropic_auth_mode_invalid", i18n.CodeInvalidModelAdapter, "Model adapter anthropicAuthMode must be legacy_dual, auto, x_api_key, or bearer")
+			return nil, i18n.NewError("error.model_adapter.anthropic_auth_mode_invalid", i18n.CodeInvalidModelAdapter, "Model adapter anthropicAuthMode must be legacy_dual, auto, x_api_key, bearer, or oauth")
 		case next.Type == "anthropic" && next.AnthropicExtraParamsEnabled:
 			if err := validateJSONMap(next.AnthropicExtraParamsJSON, "anthropicExtraParamsJSON"); err != nil {
 				return nil, err

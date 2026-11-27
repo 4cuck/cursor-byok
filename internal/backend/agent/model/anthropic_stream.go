@@ -14,6 +14,7 @@ import (
 
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
+	"cursor/internal/logger"
 )
 
 func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, sink func(ModelEvent) error) error {
@@ -32,10 +33,11 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 	if modelID == "" {
 		return fmt.Errorf("anthropic model id is empty")
 	}
+	requestURL := anthropicEndpointURL(baseURL)
+	oauthMode := anthropicUsesOAuth(requestURL, req.AnthropicAuthMode, apiKey)
 
 	startedAt := time.Now().UTC()
 	finishedAt := time.Time{}
-	requestURL := anthropicEndpointURL(baseURL)
 	body := cloneRequestBodyOverride(req.RequestBodyOverride)
 	if len(body) == 0 {
 		thinkingConfig := buildAnthropicThinkingConfig(req)
@@ -64,7 +66,7 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 					"max_tokens":     req.MaxTokens,
 					"tool_raw_count": len(req.Tools),
 				}
-				draftBody["system"] = anthropicProviderSystemBlocks(systemParts)
+				draftBody["system"] = anthropicProviderSystemBlocks(systemParts, oauthMode)
 				recordLLMRequestArtifact(req, "anthropic", modelID, "POST", requestURL, draftBody)
 				recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "anthropic", modelID, startedAt, time.Time{}, finishedAt, "", 0, 0, 0, 0, err))
 				return err
@@ -92,7 +94,7 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 		if len(tools) > 0 {
 			body["tools"] = tools
 		}
-		body["system"] = anthropicProviderSystemBlocks(systemParts)
+		body["system"] = anthropicProviderSystemBlocks(systemParts, oauthMode)
 		frontier := buildAnthropicCacheFrontier(body, stableMessageCount)
 		req.RequestKnobs = annotateAnthropicRequestKnobs(req.RequestKnobs, body, frontier)
 		// 注意：此处 clone 不可省略——它把 []anthropicTool/[]anthropicMessage
@@ -107,6 +109,14 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 	// 非 disabled 时按 AnthropicThinkingEffort 写 adaptive 配置。与 openai.go 的
 	// applyOpenAIThinkingDisable 对称——后者也是无条件在两条路径之后调用。
 	applyAnthropicThinkingConfig(body, req)
+	// Claude Fast mode ("speed":"fast") is applied before extra params so a user
+	// override still wins. It is left off while the provider's last refusal of
+	// it for this credential and model is still cooling down.
+	fastModeKey := anthropicFastModeKey(baseURL, apiKey, modelID)
+	fastModeCoolingDown := req.FastMode && anthropicFastModeCoolingDown(fastModeKey, time.Now())
+	if !fastModeCoolingDown {
+		applyAnthropicFastMode(body, req)
+	}
 	if err := ApplyAnthropicExtraParams(body, req.AnthropicExtraParamsEnabled, req.AnthropicExtraParamsJSON); err != nil {
 		finishedAt = time.Now().UTC()
 		recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "anthropic", modelID, startedAt, time.Time{}, finishedAt, "", 0, 0, 0, 0, err))
@@ -125,6 +135,19 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 	if req.RequestKnobs != nil {
 		req.RequestKnobs["tool_admission"] = admission.diagnostics()
 	}
+	// fastModeSent is whether the request asks for Fast mode. It turns false
+	// for the rest of the call once the provider refuses Fast mode.
+	fastModeSent := anthropicFastModeRequested(body, req)
+	if req.FastMode && req.RequestKnobs != nil {
+		switch {
+		case fastModeSent:
+			req.RequestKnobs["anthropic_fast_mode"] = "fast"
+		case fastModeCoolingDown:
+			req.RequestKnobs["anthropic_fast_mode"] = "standard speed: fast mode was refused earlier and is cooling down"
+		default:
+			req.RequestKnobs["anthropic_fast_mode"] = "standard speed: the request body overrides speed"
+		}
+	}
 	recordLLMRequestArtifact(req, "anthropic", modelID, "POST", requestURL, body)
 
 	customHeaders, err := ParseCustomHeaders(req.CustomHeadersEnabled, req.CustomHeadersJSON)
@@ -140,17 +163,60 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 		recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "anthropic", modelID, startedAt, time.Time{}, finishedAt, "", 0, 0, 0, 0, err))
 		return err
 	}
+	// standardSpeedPayload is the same request without Fast mode. It is built
+	// only if the provider refuses Fast mode.
+	var standardSpeedPayload []byte
 
 	err = streamWithReconnect(ctx, sink, requestReplaySafety(req), func(_ int, wrappedSink func(ModelEvent) error) error {
 		streamCtx, streamIdle := newProviderStreamIdleWatchdog(ctx, req.ProviderStreamIdleTimeout)
 		defer streamIdle.Stop()
 
-		resp, err := doProviderRequestWithGzipFallback(streamCtx, adapter.client, "anthropic", req.RequestID, req.ModelCallID, payload, requestURL, func(httpReq *http.Request) error {
-			httpReq.Header.Set("anthropic-version", "2023-06-01")
-			httpReq.Header.Set("content-type", "application/json")
-			httpReq.Header.Set("User-Agent", AnthropicClaudeCodeUserAgent)
-			return ApplyAnthropicCompatibleAuthHeaders(httpReq, requestURL, req.AnthropicAuthMode, apiKey, customHeaders)
-		})
+		sendRequest := func() (*http.Response, error) {
+			requestPayload := payload
+			if !fastModeSent && standardSpeedPayload != nil {
+				requestPayload = standardSpeedPayload
+			}
+			return doProviderRequestWithGzipFallback(streamCtx, adapter.client, "anthropic", req.RequestID, req.ModelCallID, requestPayload, requestURL, func(httpReq *http.Request) error {
+				httpReq.Header.Set("anthropic-version", "2023-06-01")
+				httpReq.Header.Set("content-type", "application/json")
+				httpReq.Header.Set("User-Agent", AnthropicClaudeCodeUserAgent)
+				if err := ApplyAnthropicCompatibleAuthHeaders(httpReq, requestURL, req.AnthropicAuthMode, apiKey, customHeaders); err != nil {
+					return err
+				}
+				// The Claude CLI's OAuth and Fast mode headers go on last, so they
+				// survive the merge of custom headers.
+				finalizeAnthropicDynamicHeaders(httpReq, oauthMode, fastModeSent)
+				return nil
+			})
+		}
+
+		resp, err := sendRequest()
+		if err == nil && fastModeSent && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+			refusal := buildHTTPStatusError("anthropic adapter", resp)
+			_ = resp.Body.Close()
+			reason := anthropicFastModeRefusal(refusal)
+			if reason == "" {
+				finishedAt = time.Now().UTC()
+				recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "anthropic", modelID, startedAt, time.Time{}, finishedAt, "", 0, 0, 0, 0, refusal))
+				return refusal
+			}
+			// The provider refused Fast mode, not the request. As the Claude CLI
+			// does, leave Fast mode off for a while and send the same request
+			// again at standard speed.
+			standardSpeedPayload, err = anthropicStandardSpeedPayload(body)
+			if err != nil {
+				finishedAt = time.Now().UTC()
+				recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "anthropic", modelID, startedAt, time.Time{}, finishedAt, "", 0, 0, 0, 0, err))
+				return err
+			}
+			fastModeSent = false
+			cooldown := startAnthropicFastModeCooldown(fastModeKey, time.Now(), refusal)
+			logger.Warnf("anthropic adapter: fast mode refused for model %s (%s); using standard speed for %s", modelID, reason, cooldown)
+			if req.RequestKnobs != nil {
+				req.RequestKnobs["anthropic_fast_mode"] = "standard speed: fast mode refused, " + reason
+			}
+			resp, err = sendRequest()
+		}
 		if err != nil {
 			if idleErr := streamIdle.Err(); idleErr != nil {
 				err = idleErr

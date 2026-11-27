@@ -40,6 +40,14 @@ const (
 	anthropicThinkOpenTag            = "<think>"
 	anthropicThinkCloseTag           = "</think>"
 	anthropicBillingHeaderSystemText = "x-anthropic-billing-header: cc_version=2.1.179.61a; cc_entrypoint=cli; cch=37703;"
+	// anthropicClaudeCodeIdentitySystemText is the identity system block the
+	// Claude CLI (2.1.329) sends with a Claude subscription OAuth token, right
+	// after its billing header block. It is sent as a block of its own, with
+	// exactly this text.
+	anthropicClaudeCodeIdentitySystemText = "You are Claude Code, Anthropic's official CLI for Claude."
+	// anthropicOAuthAppHeaderValue is the x-app value the Claude CLI sends on
+	// OAuth-authenticated Messages requests.
+	anthropicOAuthAppHeaderValue = "cli"
 )
 
 type anthropicContentPartKind string
@@ -203,11 +211,21 @@ func ApplyAnthropicCompatibleAuthHeaders(httpReq *http.Request, requestURL, mode
 	return ApplyHeaderSet(httpReq, customHeaders)
 }
 
-func anthropicProviderSystemBlocks(systemParts []string) []map[string]any {
+// anthropicProviderSystemBlocks builds the Messages `system` array: the billing
+// header block, then for a Claude subscription OAuth token the Claude Code
+// identity as a block of its own, then the caller's system prompt. This is the
+// order the Claude CLI sends them in.
+func anthropicProviderSystemBlocks(systemParts []string, oauthMode bool) []map[string]any {
 	blocks := []map[string]any{{
 		"type": "text",
 		"text": anthropicBillingHeaderSystemText,
 	}}
+	if oauthMode {
+		blocks = append(blocks, map[string]any{
+			"type": "text",
+			"text": anthropicClaudeCodeIdentitySystemText,
+		})
+	}
 	if len(systemParts) > 0 {
 		blocks = append(blocks, map[string]any{
 			"type": "text",
@@ -215,6 +233,70 @@ func anthropicProviderSystemBlocks(systemParts []string) []map[string]any {
 		})
 	}
 	return blocks
+}
+
+// anthropicUsesOAuth reports whether a request to requestURL with apiKey is
+// authenticated as a Claude subscription OAuth token: the channel's mode is
+// oauth, or it is auto and the key is such a token for the official API.
+func anthropicUsesOAuth(requestURL string, mode string, apiKey string) bool {
+	return modelchannel.ResolveAnthropicAuthMode(requestURL, mode, apiKey) == modelchannel.AnthropicAuthModeOAuth
+}
+
+// finalizeAnthropicDynamicHeaders attaches the headers the Claude CLI sends
+// with a subscription OAuth token (its OAuth beta features and x-app) and with
+// Fast mode (the fast-mode beta feature). oauth is whether the request is
+// authenticated with a subscription token; fast is whether this attempt asks
+// for Fast mode. It runs after custom headers so these beta features are always
+// present; a user-provided anthropic-beta is merged, not replaced.
+func finalizeAnthropicDynamicHeaders(httpReq *http.Request, oauth bool, fast bool) {
+	if httpReq == nil {
+		return
+	}
+	if !oauth && !fast {
+		return
+	}
+	betas := make([]string, 0, 3)
+	if oauth {
+		betas = append(betas, modelchannel.AnthropicOAuthBetaFeature, modelchannel.AnthropicClaudeCodeBetaFeature)
+	}
+	if fast {
+		betas = append(betas, modelchannel.AnthropicFastModeBetaFeature)
+	}
+	mergeAnthropicBetaHeader(httpReq, betas)
+	if oauth && strings.TrimSpace(httpReq.Header.Get("x-app")) == "" {
+		httpReq.Header.Set("x-app", anthropicOAuthAppHeaderValue)
+	}
+}
+
+// mergeAnthropicBetaHeader appends beta features to anthropic-beta without
+// duplicating any already present (comma-separated, order preserved).
+func mergeAnthropicBetaHeader(httpReq *http.Request, features []string) {
+	if httpReq == nil || len(features) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(features)+2)
+	merged := make([]string, 0, len(features)+2)
+	appendFeature := func(feature string) {
+		trimmed := strings.TrimSpace(feature)
+		if trimmed == "" {
+			return
+		}
+		if _, dup := seen[trimmed]; dup {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		merged = append(merged, trimmed)
+	}
+	for _, existing := range strings.Split(httpReq.Header.Get("anthropic-beta"), ",") {
+		appendFeature(existing)
+	}
+	for _, feature := range features {
+		appendFeature(feature)
+	}
+	if len(merged) == 0 {
+		return
+	}
+	httpReq.Header.Set("anthropic-beta", strings.Join(merged, ","))
 }
 
 // Stream 发送 Messages 流式请求，并解析统一模型事件。

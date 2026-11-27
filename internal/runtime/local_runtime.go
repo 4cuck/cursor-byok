@@ -125,7 +125,8 @@ type ModelAdapterConfig struct {
 	ThinkingBudgetTokens int `json:"thinkingBudgetTokens"`
 	// Pricing 表示该模型的可选明确价格。
 	Pricing *ModelPricing `json:"pricing,omitempty"`
-	// FastMode 表示 OpenAI/GPT 是否请求 priority service tier。
+	// FastMode 表示是否请求 provider 的快速模式：OpenAI/GPT 为 priority service tier，
+	// Anthropic 为 speed: fast。
 	FastMode bool `json:"fastMode,omitempty"`
 	// CursorModelSpec 保存 Cursor 目录里的 effort、fast 和 max mode 定义。
 	CursorModelSpec string `json:"cursorModelSpec,omitempty"`
@@ -311,7 +312,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 				return nil, err
 			}
 		case next.AnthropicAuthMode == "":
-			return nil, errors.New("Model adapter anthropicAuthMode must be legacy_dual, auto, x_api_key, or bearer")
+			return nil, errors.New("Model adapter anthropicAuthMode must be legacy_dual, auto, x_api_key, bearer, or oauth")
 		case next.Type == "anthropic" && next.AnthropicExtraParamsEnabled:
 			if err := validateJSONMap(next.AnthropicExtraParamsJSON, "anthropicExtraParamsJSON"); err != nil {
 				return nil, err
@@ -517,7 +518,8 @@ type ResolvedChannel struct {
 	AnthropicMaxTokens int
 	// AnthropicThinkingEffort 表示 Anthropic adaptive thinking 的 output_config.effort。
 	AnthropicThinkingEffort string
-	// FastMode 表示 OpenAI/GPT 是否请求 priority service tier。
+	// FastMode 表示是否请求 provider 的快速模式：OpenAI/GPT 为 priority service tier，
+	// Anthropic 为 speed: fast。
 	FastMode bool
 	// OpenAIServiceTier 表示显式 OpenAI service tier。
 	OpenAIServiceTier string

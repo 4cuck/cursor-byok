@@ -1398,7 +1398,7 @@ func buildModelParameterDefinitions(adapter legacyruntime.ModelAdapterConfig, co
 	if adapter.FastMode {
 		definitions = append(definitions, map[string]any{
 			"id":              modelRuntimeFastParameterID,
-			"markdownTooltip": "Use the provider's priority service tier when available.",
+			"markdownTooltip": "Use the provider's fast mode when available: the priority service tier on OpenAI, speed: fast on Claude.",
 			"name":            "Fast",
 			"parameterType": map[string]any{
 				"booleanParameter": map[string]any{

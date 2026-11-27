@@ -59,6 +59,8 @@ import {
   validateModelAdapters,
 } from "@/state/appState";
 import { anthropicAuthModeOptions } from "@/utils/anthropicAuthMeta";
+import { parseClaudeCredentials } from "@/utils/claudeCredentials";
+import { ANTHROPIC_AUTH_MODE_OAUTH } from "@/utils/modelAdapter";
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 // 静态元数据（选项/档位/字段提示/余额头覆盖判定）已归位 utils/modelEditorMeta.js。
@@ -179,6 +181,63 @@ const lastTestAdapterID = ref("");
 const localTestFailure = ref("");
 const manualAddMode = ref(false);
 const catalogError = ref("");
+
+// Claude 订阅 OAuth：粘贴 Claude CLI 的 credentials.json（~/.claude/credentials.json），
+// 取出其中的访问令牌填入访问密钥，省去手工复制长令牌。
+const claudeCredentialsText = ref("");
+// 导入结果，一行一句；claudeCredentialsFailed 为 true 时按错误显示。
+const claudeCredentialsStatus = ref([]);
+const claudeCredentialsFailed = ref(false);
+// 导入框只在用得上订阅令牌的鉴权模式下显示：订阅 OAuth，或接口地址为空、
+// 为官方地址时的「自动」（官方地址上「自动」会识别订阅令牌）。
+const showClaudeCredentialsImport = computed(() => {
+  if (draft.type !== "anthropic") return false;
+  if (draft.anthropicAuthMode === ANTHROPIC_AUTH_MODE_OAUTH) return true;
+  if (draft.anthropicAuthMode !== ANTHROPIC_AUTH_MODE_AUTO) return false;
+  const baseURL = String(draft.baseURL || "").trim();
+  return baseURL === "" || /^https:\/\/api\.anthropic\.com(\/|$)/i.test(baseURL);
+});
+
+function claudeCredentialsDate(expiresAt) {
+  return new Date(expiresAt).toLocaleDateString();
+}
+
+function claudeCredentialsFailure(result) {
+  switch (result.reason) {
+    case "empty":
+      return "请先粘贴 credentials.json 的内容。";
+    case "invalid_json":
+      return "粘贴的内容不是有效的 JSON。";
+    case "expired":
+      return `这个令牌已在 ${claudeCredentialsDate(result.expiresAt)} 过期，请在 Claude CLI 重新登录后再导入。`;
+    default:
+      return "没有找到 claudeAiOauth.accessToken。";
+  }
+}
+
+function importClaudeCredentials() {
+  const result = parseClaudeCredentials(claudeCredentialsText.value);
+  claudeCredentialsFailed.value = !result.ok;
+  if (!result.ok) {
+    claudeCredentialsStatus.value = [String(claudeCredentialsFailure(result))];
+    return;
+  }
+  draft.apiKey = result.accessToken;
+  draft.anthropicAuthMode = ANTHROPIC_AUTH_MODE_OAUTH;
+  if (!String(draft.baseURL || "").trim()) {
+    draft.baseURL = "https://api.anthropic.com";
+  }
+  const lines = ["访问令牌已填入访问密钥。"];
+  if (result.expiresAt > 0) {
+    lines.push(`令牌有效期至 ${claudeCredentialsDate(result.expiresAt)}。`);
+  }
+  if (result.fromFile && !result.hasRefreshToken) {
+    lines.push("凭据里没有刷新令牌，到期后需要重新导入。");
+  }
+  claudeCredentialsStatus.value = lines.map((line) => String(line));
+  claudeCredentialsText.value = "";
+}
+
 // 快速添加：归类方式（与模型配置页「名称/连接」一致），不再在此页手填 groupName
 const quickGroupMode = ref(loadSupplierGroupMode());
 const quickGroupModeOptions = [
@@ -1435,20 +1494,26 @@ onMounted(async () => {
                   </div>
 
                   <div
-                    v-if="draft.type === 'openai' || draft.type === 'gemini'"
+                    v-if="draft.type === 'openai' || draft.type === 'gemini' || draft.type === 'anthropic'"
                     class="grid grid-cols-1 gap-3 md:grid-cols-2"
                   >
                     <label
-                      v-if="draft.type === 'openai' && /gpt/i.test(draft.modelID || '')"
+                      v-if="(draft.type === 'openai' && /gpt/i.test(draft.modelID || '')) || draft.type === 'anthropic'"
                       class="center-row justify-between gap-3 rounded-[8px] border border-[#343434] bg-[#232323] px-3 py-2 text-sm text-[#d4d4d4]"
                     >
-                      <span>Fast 模式（priority）</span>
+                      <span>{{ draft.type === 'anthropic' ? 'Fast 模式（speed: fast）' : 'Fast 模式（priority）' }}</span>
                       <input
                         v-model="draft.fastMode"
                         type="checkbox"
                         class="size-4 accent-[#10AD5D]"
                       >
                     </label>
+                    <p
+                      v-if="draft.type === 'anthropic'"
+                      class="self-center text-xs text-[#a3a3a3]"
+                    >
+                      订阅账户使用 Fast 模式需要用量额度，且只有部分模型支持；不可用时自动改用标准速度。
+                    </p>
 
                     <label
                       v-if="draft.type === 'openai'"
@@ -1517,7 +1582,45 @@ onMounted(async () => {
                         :options="anthropicAuthModeOptions"
                       />
                       <span class="text-xs text-[#a3a3a3]">自定义 Authorization 或 X-Api-Key 请求头会完全接管鉴权，并抑制自动生成的鉴权头。</span>
+                      <span class="text-xs text-[#a3a3a3]">「自动」在官方地址上遇到 Claude 订阅令牌（sk-ant-oat…）时，按订阅 OAuth 发送。</span>
                     </label>
+
+                    <div
+                      v-if="showClaudeCredentialsImport"
+                      class="mb-3 rounded-[8px] border border-[#3a3a3a] bg-[#1f1f1f] p-3"
+                    >
+                      <span class="text-sm text-[#d4d4d4]">导入 Claude 订阅凭据</span>
+                      <p class="mt-1 text-xs text-[#a3a3a3]">
+                        粘贴 Claude CLI 凭据文件的内容，访问令牌会填入访问密钥。文件位置： <code class="text-[#d4d4d4]">~/.claude/credentials.json</code>
+                      </p>
+                      <p class="mt-1 text-xs text-[#a3a3a3]">
+                        请求带 Claude CLI 的 OAuth 请求头发送，用量计入你的 Claude 订阅。
+                      </p>
+                      <textarea
+                        v-model="claudeCredentialsText"
+                        rows="4"
+                        spellcheck="false"
+                        placeholder='{"claudeAiOauth":{"accessToken":"sk-ant-oat01-..."}}'
+                        class="mt-2 min-h-[88px] w-full resize-none rounded-[6px] border border-[#3f3f3f] bg-[#1b1b1b] px-3 py-2 font-mono text-xs text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+                      />
+                      <div class="center-row mt-2 justify-between gap-3">
+                        <div
+                          class="flex flex-col gap-0.5 text-xs"
+                          :class="claudeCredentialsFailed ? 'text-[#fca5a5]' : 'text-[#8f8f8f]'"
+                        >
+                          <span
+                            v-for="(line, index) in claudeCredentialsStatus"
+                            :key="index"
+                          >{{ line }}</span>
+                        </div>
+                        <Button
+                          variant="primary"
+                          @click="importClaudeCredentials"
+                        >
+                          导入令牌
+                        </Button>
+                      </div>
+                    </div>
                     <div class="flex items-center justify-between gap-3">
                       <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
                         <Tooltip :content="fieldTips.anthropicExtraParams" />

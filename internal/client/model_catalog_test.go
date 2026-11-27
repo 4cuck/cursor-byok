@@ -96,6 +96,38 @@ func TestFetchModelCatalogAnthropicAuthModes(t *testing.T) {
 	}
 }
 
+// TestFetchModelCatalogClaudeSubscriptionToken covers the oauth mode: the token
+// goes out as a bearer token with the Claude Code beta features and x-app.
+func TestFetchModelCatalogClaudeSubscriptionToken(t *testing.T) {
+	var received http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		received = request.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-test"}]}`))
+	}))
+	defer server.Close()
+	service := &ProxyService{publicClient: server.Client(), modelCatalogCache: newMetadataCache[ModelCatalogResult](modelCatalogCacheTTL)}
+	result, err := service.FetchModelCatalog(ModelCatalogRequest{
+		Type: "anthropic", ModelCatalogStatus: "manual_only", BaseURL: server.URL + "/v1", APIKey: "sk-ant-oat01-token",
+		AnthropicAuthMode: "oauth", ModelCatalogURL: server.URL + "/models",
+	})
+	if err != nil || len(result.Models) != 1 {
+		t.Fatalf("FetchModelCatalog() = %+v, error = %v", result, err)
+	}
+	if got := received.Get("Authorization"); got != "Bearer sk-ant-oat01-token" {
+		t.Fatalf("Authorization = %q, want the bearer token", got)
+	}
+	if got := received.Get("x-api-key"); got != "" {
+		t.Fatalf("x-api-key = %q, want none", got)
+	}
+	if got := received.Get("anthropic-beta"); got != "oauth-2025-04-20,claude-code-20250219" {
+		t.Fatalf("anthropic-beta = %q, want the Claude Code OAuth beta features", got)
+	}
+	if got := received.Get("x-app"); got != "cli" {
+		t.Fatalf("x-app = %q, want cli", got)
+	}
+}
+
 func TestFetchModelCatalogSameOriginReceivesProviderCredentials(t *testing.T) {
 	tests := []struct {
 		provider    string

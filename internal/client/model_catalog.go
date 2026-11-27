@@ -91,7 +91,7 @@ func (s *ProxyService) FetchModelCatalog(request ModelCatalogRequest) (ModelCata
 	headerIdentity := modelCatalogHeadersIdentity(customHeaders)
 	anthropicAuthMode := modelchannel.NormalizeAnthropicAuthMode(request.AnthropicAuthMode)
 	if anthropicAuthMode == "" {
-		return ModelCatalogResult{}, i18n.NewError("error.model_adapter.anthropic_auth_mode_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 anthropicAuthMode 仅支持 legacy_dual、auto、x_api_key 或 bearer")
+		return ModelCatalogResult{}, i18n.NewError("error.model_adapter.anthropic_auth_mode_invalid", i18n.CodeInvalidModelAdapter, "模型适配器 anthropicAuthMode 仅支持 legacy_dual、auto、x_api_key、bearer 或 oauth")
 	}
 	cacheKey := metadataIdentityHash(
 		"model_catalog",
@@ -117,6 +117,12 @@ func (s *ProxyService) FetchModelCatalog(request ModelCatalogRequest) (ModelCata
 					headers.Add(name, value)
 				}
 			}
+		}
+		// A request with a Claude subscription OAuth token carries the Claude
+		// Code beta features and x-app, as on the chat request path.
+		if modelchannel.ResolveAnthropicAuthMode(request.BaseURL, anthropicAuthMode, apiKey) == modelchannel.AnthropicAuthModeOAuth {
+			headers.Set("anthropic-beta", modelchannel.AnthropicOAuthBetaFeature+","+modelchannel.AnthropicClaudeCodeBetaFeature)
+			headers.Set("x-app", "cli")
 		}
 	} else if typeName == "gemini" {
 		headers.Set("x-goog-api-key", apiKey)

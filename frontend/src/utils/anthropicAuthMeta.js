@@ -3,4 +3,5 @@ export const anthropicAuthModeOptions = [
   { label: "兼容双头（旧配置默认）", value: "legacy_dual" },
   { label: "仅 X-Api-Key", value: "x_api_key" },
   { label: "仅 Bearer", value: "bearer" },
+  { label: "Claude 订阅 OAuth（Pro / Max 令牌）", value: "oauth" },
 ];

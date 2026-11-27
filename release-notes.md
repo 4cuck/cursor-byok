@@ -1,3 +1,24 @@
+## v1.0.61
+
+### Added
+
+- **Claude subscription tokens (Pro / Max) work for Anthropic models**:
+  - An Anthropic model can be run on the access token the Claude CLI keeps in `~/.claude/credentials.json` (`sk-ant-oat…`), against `https://api.anthropic.com`. Usage counts against the subscription.
+  - The new authentication mode **Claude subscription OAuth** (model editor, **Protocol and Advanced Settings**) sends the token as a bearer token with the Claude CLI's OAuth headers (`anthropic-beta: oauth-2025-04-20,claude-code-20250219`, `x-app: cli`) and adds the Claude Code identity system block after the billing header, in the order the CLI sends them.
+  - **Auto** recognizes a subscription token on the official API and sends it the same way, so the token also works with the default settings. Until now Auto put it in `x-api-key`, which Anthropic answers with `401 invalid x-api-key`; only **Bearer only** and the legacy dual-header mode got through.
+  - **Import Claude subscription credentials** in the model editor takes the pasted contents of `credentials.json`, or the token alone, and fills the access token into the API key. A token that has already expired is refused, with its expiry date.
+  - **Fetch models** lists the subscription's models. Which of them the plan may call is Anthropic's decision: a model outside the plan answers `429 Usage credits are required for this model`.
+  - The token is stored as the model's API key and is not refreshed. When it expires, import the credentials again.
+  - Whether a subscription token may be used outside Anthropic's own clients is set by Anthropic's terms. Check them before you use one here.
+- **Fast mode for Claude models**:
+  - The **Fast mode** switch in the model editor is now offered for Anthropic models. With it on, requests carry `"speed": "fast"` and the `fast-mode-2026-02-01` beta feature, as the Claude CLI sends them.
+  - Anthropic accepts Fast mode for some models only and, on a subscription, only with usage credits. When it refuses Fast mode (a `400` that names Fast mode or the `speed` parameter, a `429`, or a `529`), the same request is sent again at standard speed, and Fast mode stays off for that key and model for 30 minutes, or for the provider's `Retry-After` when that is longer than 10 minutes. The Claude CLI falls back on the same refusals. Any other error is returned as it is.
+  - Tested against a subscription without usage credits: both of Anthropic's refusals (`Usage credits are required for fast mode`, `does not support the speed parameter`) fall back and the request succeeds. A request that Anthropic accepts in Fast mode has not been observed yet.
+
+### Changed
+
+- The Claude Code user agent sent to model providers is now `claude-cli/2.1.329`.
+
 ## v1.0.60
 
 ### Added
@@ -171,11 +192,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.60-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.60-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.60-windows-arm64-installer.exe` 或 `cursor-byok-1.0.60-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.60-windows-x32-installer.exe` 或 `cursor-byok-1.0.60-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.60-macos-arm64.dmg` 或 `cursor-byok-1.0.60-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.60-macos-x64.dmg` 或 `cursor-byok-1.0.60-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.60-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.61-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.61-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.61-windows-arm64-installer.exe` 或 `cursor-byok-1.0.61-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.61-windows-x32-installer.exe` 或 `cursor-byok-1.0.61-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.61-macos-arm64.dmg` 或 `cursor-byok-1.0.61-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.61-macos-x64.dmg` 或 `cursor-byok-1.0.61-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.61-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

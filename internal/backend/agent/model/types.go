@@ -145,7 +145,8 @@ type StreamRequest struct {
 	OpenAIExtraParamsJSON string
 	// OpenAIServiceTier 表示显式 OpenAI service tier；fastMode 优先使用 priority。
 	OpenAIServiceTier string
-	// FastMode 表示 OpenAI/GPT 是否启用 priority service tier。
+	// FastMode 表示是否请求 provider 的快速模式：OpenAI/GPT 为 priority service tier，
+	// Anthropic 为 speed: fast（被拒绝时改用标准速度，见 anthropic_fast_mode.go）。
 	FastMode bool
 	// ModelParameters 是 IDE 在模型选择器里选中的注册表参数。
 	ModelParameters []ModelParameter

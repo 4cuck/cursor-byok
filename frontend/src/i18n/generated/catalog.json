@@ -99,7 +99,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1389,
+          "line": 1448,
           "column": 30
         }
       ]
@@ -210,7 +210,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 186,
+          "line": 245,
           "column": 12
         }
       ]
@@ -275,7 +275,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1108,
+          "line": 1167,
           "column": 58
         }
       ]
@@ -350,12 +350,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 295,
+          "line": 354,
           "column": 47
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1222,
+          "line": 1281,
           "column": 29
         }
       ]
@@ -391,7 +391,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1134,
+          "line": 1193,
           "column": 19
         }
       ]
@@ -456,7 +456,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1604,
+          "line": 1707,
           "column": 33
         }
       ]
@@ -593,7 +593,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 571,
+          "line": 575,
           "column": 14
         }
       ]
@@ -712,7 +712,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1622,
+          "line": 1725,
           "column": 27
         }
       ]
@@ -1145,7 +1145,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 730,
+          "line": 789,
           "column": 48
         }
       ]
@@ -1751,7 +1751,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 341,
+          "line": 400,
           "column": 35
         }
       ]
@@ -1861,6 +1861,18 @@
           "file": "src/components/HomeMetricsCard.vue",
           "line": 612,
           "column": 123
+        }
+      ]
+    },
+    "122506e53c5fc013": {
+      "source": "导入 Claude 订阅凭据",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 1592,
+          "column": 60
         }
       ]
     },
@@ -2191,7 +2203,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1178,
+          "line": 1237,
           "column": 1
         }
       ]
@@ -2275,7 +2287,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1295,
+          "line": 1354,
           "column": 1
         }
       ]
@@ -2311,7 +2323,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1473,
+          "line": 1538,
           "column": 31
         }
       ]
@@ -2467,7 +2479,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 935,
+          "line": 994,
           "column": 21
         }
       ]
@@ -2532,7 +2544,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 185,
+          "line": 244,
           "column": 12
         }
       ]
@@ -2559,7 +2571,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 892,
+          "line": 951,
           "column": 16
         }
       ]
@@ -2636,12 +2648,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1013,
+          "line": 1072,
           "column": 1
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1216,
+          "line": 1275,
           "column": 58
         }
       ]
@@ -2701,7 +2713,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 144,
+          "line": 146,
           "column": 12
         }
       ]
@@ -3058,7 +3070,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 982,
+          "line": 1041,
           "column": 22
         }
       ]
@@ -3290,7 +3302,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1281,
+          "line": 1340,
           "column": 37
         }
       ]
@@ -3348,7 +3360,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1489,
+          "line": 1554,
           "column": 31
         }
       ]
@@ -3396,7 +3408,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1423,
+          "line": 1482,
           "column": 1
         }
       ]
@@ -3497,7 +3509,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1284,
+          "line": 1343,
           "column": 68
         }
       ]
@@ -3830,6 +3842,18 @@
         }
       ]
     },
+    "274bededdf00f85f": {
+      "source": "访问令牌已填入访问密钥。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 230,
+          "column": 18
+        }
+      ]
+    },
     "2759997421d4e288": {
       "source": "模板列表",
       "kind": "text",
@@ -3909,7 +3933,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 580,
+          "line": 584,
           "column": 14
         }
       ]
@@ -4052,7 +4076,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 157,
+          "line": 159,
           "column": 12
         }
       ]
@@ -4078,6 +4102,18 @@
           "file": "src/components/DelegationRuntimePanel.vue",
           "line": 67,
           "column": 14
+        }
+      ]
+    },
+    "298a12343399e665": {
+      "source": "导入令牌",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 1620,
+          "column": 1
         }
       ]
     },
@@ -4283,7 +4319,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1677,
+          "line": 1780,
           "column": 27
         }
       ]
@@ -4307,7 +4343,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 572,
+          "line": 631,
           "column": 16
         }
       ]
@@ -4461,7 +4497,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 884,
+          "line": 943,
           "column": 1
         }
       ]
@@ -4579,7 +4615,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1638,
+          "line": 1741,
           "column": 31
         }
       ]
@@ -4839,6 +4875,18 @@
         }
       ]
     },
+    "308e94edd1091a63": {
+      "source": "这个令牌已在 {0} 过期，请在 Claude CLI 重新登录后再导入。",
+      "kind": "template",
+      "placeholders": 1,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 212,
+          "column": 14
+        }
+      ]
+    },
     "309a97195b1222ab": {
       "source": "主流大模型列表.xlsx",
       "kind": "text",
@@ -4858,7 +4906,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1710,
+          "line": 1813,
           "column": 19
         }
       ]
@@ -4966,7 +5014,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 330,
+          "line": 389,
           "column": 5
         }
       ]
@@ -5002,22 +5050,22 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 543,
+          "line": 547,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 549,
+          "line": 553,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 555,
+          "line": 559,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 564,
+          "line": 568,
           "column": 16
         }
       ]
@@ -5289,6 +5337,18 @@
         }
       ]
     },
+    "35c63669a555fabe": {
+      "source": "「自动」在官方地址上遇到 Claude 订阅令牌（sk-ant-oat…）时，按订阅 OAuth 发送。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 1585,
+          "column": 60
+        }
+      ]
+    },
     "3620e4ae2b78e287": {
       "source": "Agent 执行器",
       "kind": "text",
@@ -5334,6 +5394,18 @@
           "file": "src/views/Home.vue",
           "line": 162,
           "column": 52
+        }
+      ]
+    },
+    "36841707a8f60922": {
+      "source": "{0} 的 Anthropic 鉴权模式仅支持 legacy_dual、auto、x_api_key、bearer、oauth",
+      "kind": "template",
+      "placeholders": 1,
+      "refs": [
+        {
+          "file": "src/utils/modelAdapter.js",
+          "line": 563,
+          "column": 14
         }
       ]
     },
@@ -5800,7 +5872,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1594,
+          "line": 1697,
           "column": 1
         }
       ]
@@ -5940,7 +6012,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 130,
+          "line": 132,
           "column": 12
         }
       ]
@@ -5988,6 +6060,18 @@
           "file": "src/components/DelegationTaskStrip.vue",
           "line": 313,
           "column": 14
+        }
+      ]
+    },
+    "3dfdd42767085f2d": {
+      "source": "粘贴 Claude CLI 凭据文件的内容，访问令牌会填入访问密钥。文件位置：",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 1594,
+          "column": 1
         }
       ]
     },
@@ -6087,7 +6171,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1610,
+          "line": 1713,
           "column": 27
         }
       ]
@@ -6712,7 +6796,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 292,
+          "line": 351,
           "column": 10
         }
       ]
@@ -6866,12 +6950,12 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 506,
+          "line": 510,
           "column": 16
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 521,
+          "line": 525,
           "column": 14
         }
       ]
@@ -6885,6 +6969,18 @@
           "file": "src/components/settings/categories/CursorServiceSettings.vue",
           "line": 648,
           "column": 15
+        }
+      ]
+    },
+    "4955f522ad3885d9": {
+      "source": "Fast 模式（speed: fast）",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 1504,
+          "column": 32
         }
       ]
     },
@@ -6963,7 +7059,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 342,
+          "line": 401,
           "column": 30
         }
       ]
@@ -7021,6 +7117,18 @@
         }
       ]
     },
+    "4a804d17d1091c4e": {
+      "source": "订阅账户使用 Fast 模式需要用量额度，且只有部分模型支持；不可用时自动改用标准速度。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 1515,
+          "column": 1
+        }
+      ]
+    },
     "4a84af992a929425": {
       "source": "把对话级调试日志写入磁盘（history 目录，单个 jsonl 文件上限 50MB）。关闭后立即停止写入，不再产生大体积日志。",
       "kind": "text",
@@ -7052,7 +7160,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1385,
+          "line": 1444,
           "column": 1
         }
       ]
@@ -7160,6 +7268,18 @@
           "file": "src/components/settings/delegation/SubagentProfilesPanel.vue",
           "line": 25,
           "column": 5
+        }
+      ]
+    },
+    "4c1f6be518041505": {
+      "source": "令牌有效期至 {0}。",
+      "kind": "template",
+      "placeholders": 1,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 232,
+          "column": 16
         }
       ]
     },
@@ -7415,12 +7535,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 956,
+          "line": 1015,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1083,
+          "line": 1142,
           "column": 54
         }
       ]
@@ -7469,7 +7589,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 120,
+          "line": 122,
           "column": 12
         }
       ]
@@ -7498,7 +7618,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 121,
+          "line": 123,
           "column": 12
         }
       ]
@@ -7812,7 +7932,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1627,
+          "line": 1730,
           "column": 1
         }
       ]
@@ -7894,12 +8014,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1380,
+          "line": 1439,
           "column": 127
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1426,
+          "line": 1485,
           "column": 28
         }
       ]
@@ -7960,12 +8080,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1152,
+          "line": 1211,
           "column": 19
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1161,
+          "line": 1220,
           "column": 19
         }
       ]
@@ -8088,7 +8208,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1588,
+          "line": 1691,
           "column": 1
         }
       ]
@@ -8343,7 +8463,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1261,
+          "line": 1320,
           "column": 29
         }
       ]
@@ -8509,7 +8629,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1657,
+          "line": 1760,
           "column": 33
         }
       ]
@@ -8670,7 +8790,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1432,
+          "line": 1491,
           "column": 1
         }
       ]
@@ -8718,7 +8838,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1404,
+          "line": 1463,
           "column": 1
         }
       ]
@@ -9165,7 +9285,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 926,
+          "line": 985,
           "column": 1
         }
       ]
@@ -9723,7 +9843,7 @@
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 500,
+          "line": 504,
           "column": 20
         }
       ]
@@ -9747,7 +9867,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 134,
+          "line": 136,
           "column": 12
         }
       ]
@@ -9834,12 +9954,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1047,
+          "line": 1106,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1247,
+          "line": 1306,
           "column": 58
         }
       ]
@@ -9871,7 +9991,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1064,
+          "line": 1123,
           "column": 1
         }
       ]
@@ -10047,7 +10167,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 517,
+          "line": 521,
           "column": 14
         }
       ]
@@ -10096,7 +10216,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 321,
+          "line": 380,
           "column": 54
         }
       ]
@@ -10322,12 +10442,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1033,
+          "line": 1092,
           "column": 19
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1241,
+          "line": 1300,
           "column": 23
         }
       ]
@@ -10716,7 +10836,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1188,
+          "line": 1247,
           "column": 1
         }
       ]
@@ -11450,12 +11570,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 336,
+          "line": 395,
           "column": 38
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 336,
+          "line": 395,
           "column": 59
         }
       ]
@@ -11496,7 +11616,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 329,
+          "line": 388,
           "column": 5
         }
       ]
@@ -11571,7 +11691,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1097,
+          "line": 1156,
           "column": 58
         }
       ]
@@ -11760,7 +11880,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 892,
+          "line": 951,
           "column": 16
         }
       ]
@@ -11834,6 +11954,18 @@
           "file": "src/components/charts/UsageHeatmapCalendar.vue",
           "line": 113,
           "column": 53
+        }
+      ]
+    },
+    "7c0a8251a0d81e23": {
+      "source": "没有找到 claudeAiOauth.accessToken。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 214,
+          "column": 14
         }
       ]
     },
@@ -12111,7 +12243,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1380,
+          "line": 1439,
           "column": 62
         }
       ]
@@ -12157,7 +12289,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1672,
+          "line": 1775,
           "column": 33
         }
       ]
@@ -12362,12 +12494,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1028,
+          "line": 1087,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1235,
+          "line": 1294,
           "column": 29
         }
       ]
@@ -12538,7 +12670,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 532,
+          "line": 536,
           "column": 14
         }
       ]
@@ -12574,7 +12706,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1662,
+          "line": 1765,
           "column": 27
         }
       ]
@@ -12762,7 +12894,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1617,
+          "line": 1720,
           "column": 33
         }
       ]
@@ -12810,7 +12942,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 145,
+          "line": 147,
           "column": 12
         }
       ]
@@ -12856,7 +12988,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 697,
+          "line": 756,
           "column": 26
         }
       ]
@@ -12928,6 +13060,18 @@
           "file": "src/components/onboarding/GuidedTour.vue",
           "line": 233,
           "column": 138
+        }
+      ]
+    },
+    "875242343a31ecbd": {
+      "source": "凭据里没有刷新令牌，到期后需要重新导入。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 235,
+          "column": 16
         }
       ]
     },
@@ -13343,7 +13487,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 327,
+          "line": 386,
           "column": 86
         }
       ]
@@ -13387,7 +13531,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 119,
+          "line": 121,
           "column": 12
         }
       ]
@@ -13633,7 +13777,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 929,
+          "line": 988,
           "column": 1
         }
       ]
@@ -13722,7 +13866,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 535,
+          "line": 539,
           "column": 14
         }
       ]
@@ -13814,7 +13958,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 899,
+          "line": 958,
           "column": 16
         }
       ]
@@ -14058,12 +14202,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1139,
+          "line": 1198,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1292,
+          "line": 1351,
           "column": 1
         }
       ]
@@ -14243,7 +14387,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1267,
+          "line": 1326,
           "column": 23
         }
       ]
@@ -14827,7 +14971,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 951,
+          "line": 1010,
           "column": 1
         }
       ]
@@ -14971,12 +15115,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 571,
+          "line": 630,
           "column": 14
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 573,
+          "line": 632,
           "column": 20
         }
       ]
@@ -15065,7 +15209,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1570,
+          "line": 1673,
           "column": 1
         }
       ]
@@ -15152,7 +15296,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 909,
+          "line": 968,
           "column": 1
         }
       ]
@@ -15200,7 +15344,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1126,
+          "line": 1185,
           "column": 1
         }
       ]
@@ -15415,7 +15559,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 518,
+          "line": 577,
           "column": 48
         }
       ]
@@ -15427,7 +15571,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 568,
+          "line": 572,
           "column": 14
         }
       ]
@@ -15545,7 +15689,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1414,
+          "line": 1473,
           "column": 31
         }
       ]
@@ -15579,7 +15723,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 899,
+          "line": 958,
           "column": 16
         }
       ]
@@ -16037,7 +16181,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 892,
+          "line": 951,
           "column": 16
         }
       ]
@@ -16179,6 +16323,18 @@
         }
       ]
     },
+    "a7bbd734023a55a3": {
+      "source": "Claude 订阅 OAuth（Pro / Max 令牌）",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/utils/anthropicAuthMeta.js",
+          "line": 6,
+          "column": 12
+        }
+      ]
+    },
     "a7e9c4b6ca057d4f": {
       "source": "未提供路径",
       "kind": "text",
@@ -16198,7 +16354,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1519,
+          "line": 1584,
           "column": 60
         }
       ]
@@ -16443,7 +16599,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1130,
+          "line": 1189,
           "column": 54
         }
       ]
@@ -16467,7 +16623,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 538,
+          "line": 542,
           "column": 14
         }
       ]
@@ -16491,7 +16647,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 295,
+          "line": 354,
           "column": 29
         }
       ]
@@ -16604,7 +16760,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1318,
+          "line": 1377,
           "column": 1
         }
       ]
@@ -16949,7 +17105,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1389,
+          "line": 1448,
           "column": 30
         }
       ]
@@ -17084,7 +17240,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 131,
+          "line": 133,
           "column": 12
         }
       ]
@@ -17096,7 +17252,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1379,
+          "line": 1438,
           "column": 50
         }
       ]
@@ -17178,7 +17334,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1270,
+          "line": 1329,
           "column": 68
         }
       ]
@@ -17202,7 +17358,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 974,
+          "line": 1033,
           "column": 54
         }
       ]
@@ -17405,7 +17561,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 140,
+          "line": 142,
           "column": 12
         }
       ]
@@ -17561,20 +17717,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1588,
+          "line": 1691,
           "column": 62
-        }
-      ]
-    },
-    "b74e0b8dc11dfd27": {
-      "source": "{0} 的 Anthropic 鉴权模式仅支持 legacy_dual、auto、x_api_key、bearer",
-      "kind": "template",
-      "placeholders": 1,
-      "refs": [
-        {
-          "file": "src/utils/modelAdapter.js",
-          "line": 559,
-          "column": 14
         }
       ]
     },
@@ -17657,7 +17801,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1459,
+          "line": 1524,
           "column": 31
         }
       ]
@@ -17958,7 +18102,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1321,
+          "line": 1380,
           "column": 1
         }
       ]
@@ -18652,7 +18796,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1143,
+          "line": 1202,
           "column": 19
         }
       ]
@@ -18931,7 +19075,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 128,
+          "line": 130,
           "column": 12
         }
       ]
@@ -18967,7 +19111,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1251,
+          "line": 1310,
           "column": 23
         }
       ]
@@ -19146,7 +19290,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1148,
+          "line": 1207,
           "column": 54
         }
       ]
@@ -19460,7 +19604,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1407,
+          "line": 1466,
           "column": 1
         }
       ]
@@ -19645,7 +19789,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 156,
+          "line": 158,
           "column": 12
         }
       ]
@@ -19751,8 +19895,8 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1445,
-          "column": 29
+          "line": 1504,
+          "column": 32
         }
       ]
     },
@@ -19910,7 +20054,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1575,
+          "line": 1678,
           "column": 31
         }
       ]
@@ -20004,7 +20148,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 502,
+          "line": 506,
           "column": 14
         }
       ]
@@ -20016,7 +20160,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 342,
+          "line": 401,
           "column": 41
         }
       ]
@@ -20093,12 +20237,12 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 989,
+          "line": 1048,
           "column": 52
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1193,
+          "line": 1252,
           "column": 58
         }
       ]
@@ -20298,7 +20442,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1380,
+          "line": 1439,
           "column": 62
         }
       ]
@@ -20368,7 +20512,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1548,
+          "line": 1651,
           "column": 31
         }
       ]
@@ -20380,7 +20524,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1514,
+          "line": 1579,
           "column": 60
         }
       ]
@@ -20565,7 +20709,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1524,
+          "line": 1627,
           "column": 31
         }
       ]
@@ -20577,7 +20721,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 495,
+          "line": 499,
           "column": 14
         }
       ]
@@ -20876,22 +21020,22 @@
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 192,
+          "line": 195,
           "column": 18
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1038,
+          "line": 1097,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1157,
+          "line": 1216,
           "column": 54
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1705,
+          "line": 1808,
           "column": 25
         }
       ]
@@ -20988,7 +21132,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 514,
+          "line": 518,
           "column": 14
         }
       ]
@@ -21196,7 +21340,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 327,
+          "line": 386,
           "column": 75
         }
       ]
@@ -21244,7 +21388,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 940,
+          "line": 999,
           "column": 1
         }
       ]
@@ -21734,7 +21878,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 524,
+          "line": 528,
           "column": 14
         }
       ]
@@ -21746,7 +21890,7 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 527,
+          "line": 531,
           "column": 14
         }
       ]
@@ -21842,7 +21986,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1051,
+          "line": 1110,
           "column": 19
         }
       ]
@@ -21944,6 +22088,18 @@
           "file": "src/components/settings/categories/PromptSettings.vue",
           "line": 458,
           "column": 59
+        }
+      ]
+    },
+    "e54c23f799b1a941": {
+      "source": "请先粘贴 credentials.json 的内容。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 208,
+          "column": 14
         }
       ]
     },
@@ -22070,7 +22226,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 124,
+          "line": 126,
           "column": 12
         }
       ]
@@ -22188,7 +22344,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 965,
+          "line": 1024,
           "column": 54
         }
       ]
@@ -22397,7 +22553,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 290,
+          "line": 349,
           "column": 42
         }
       ]
@@ -22438,12 +22594,12 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 948,
+          "line": 1007,
           "column": 1
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1185,
+          "line": 1244,
           "column": 1
         }
       ]
@@ -22532,6 +22688,18 @@
           "file": "src/components/settings/delegation/SubagentProfilesPanel.vue",
           "line": 52,
           "column": 64
+        }
+      ]
+    },
+    "ed17ff3e47b2609e": {
+      "source": "请求带 Claude CLI 的 OAuth 请求头发送，用量计入你的 Claude 订阅。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 1597,
+          "column": 1
         }
       ]
     },
@@ -22677,7 +22845,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1688,
+          "line": 1791,
           "column": 31
         }
       ]
@@ -22781,7 +22949,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1276,
+          "line": 1335,
           "column": 29
         }
       ]
@@ -23271,17 +23439,17 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1497,
+          "line": 1562,
           "column": 31
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1532,
+          "line": 1635,
           "column": 31
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1556,
+          "line": 1659,
           "column": 31
         }
       ]
@@ -23373,12 +23541,12 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 574,
+          "line": 578,
           "column": 14
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 577,
+          "line": 581,
           "column": 14
         }
       ]
@@ -23414,7 +23582,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1042,
+          "line": 1101,
           "column": 19
         }
       ]
@@ -23569,7 +23737,7 @@
         },
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 330,
+          "line": 333,
           "column": 49
         },
         {
@@ -23579,7 +23747,7 @@
         },
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 559,
+          "line": 618,
           "column": 41
         }
       ]
@@ -23627,7 +23795,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 151,
+          "line": 153,
           "column": 12
         }
       ]
@@ -23692,7 +23860,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 740,
+          "line": 799,
           "column": 30
         }
       ]
@@ -23745,7 +23913,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 291,
+          "line": 350,
           "column": 39
         }
       ]
@@ -24035,7 +24203,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 1646,
+          "line": 1749,
           "column": 1
         }
       ]
@@ -24105,7 +24273,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 574,
+          "line": 633,
           "column": 19
         }
       ]
@@ -24170,7 +24338,19 @@
       "refs": [
         {
           "file": "src/utils/modelAdapter.js",
-          "line": 511,
+          "line": 515,
+          "column": 14
+        }
+      ]
+    },
+    "fdec91f728fb1001": {
+      "source": "粘贴的内容不是有效的 JSON。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/ModelEditor.vue",
+          "line": 210,
           "column": 14
         }
       ]
@@ -24242,7 +24422,7 @@
       "refs": [
         {
           "file": "src/views/ModelEditor.vue",
-          "line": 982,
+          "line": 1041,
           "column": 22
         }
       ]

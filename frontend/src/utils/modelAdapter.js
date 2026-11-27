@@ -69,11 +69,14 @@ export const ANTHROPIC_AUTH_MODE_LEGACY_DUAL = "legacy_dual";
 export const ANTHROPIC_AUTH_MODE_AUTO = "auto";
 export const ANTHROPIC_AUTH_MODE_X_API_KEY = "x_api_key";
 export const ANTHROPIC_AUTH_MODE_BEARER = "bearer";
+// Claude Pro/Max 订阅 OAuth：令牌以 Bearer 发送，适配器附加 Claude Code beta 头与身份系统块。
+export const ANTHROPIC_AUTH_MODE_OAUTH = "oauth";
 export const SUPPORTED_ANTHROPIC_AUTH_MODES = new Set([
   ANTHROPIC_AUTH_MODE_LEGACY_DUAL,
   ANTHROPIC_AUTH_MODE_AUTO,
   ANTHROPIC_AUTH_MODE_X_API_KEY,
   ANTHROPIC_AUTH_MODE_BEARER,
+  ANTHROPIC_AUTH_MODE_OAUTH,
 ]);
 
 export function normalizeAnthropicAuthMode(value, { legacy = true } = {}) {
@@ -391,7 +394,8 @@ export function normalizeModelAdapter(source) {
       raw.maxConcurrencyPerKey ?? raw.max_concurrency_per_key,
     ),
     pricing: normalizePricing(raw.pricing),
-    fastMode: normalizedType === "openai" ? asBoolean(raw.fastMode ?? raw.fast_mode) : false,
+    // Fast 模式：openai 请求 priority 服务层，anthropic 请求 speed: fast；gemini 没有对应能力。
+    fastMode: normalizedType === "openai" || normalizedType === "anthropic" ? asBoolean(raw.fastMode ?? raw.fast_mode) : false,
     openAIServiceTier: normalizedType === "openai" ? asString(raw.openAIServiceTier ?? raw.openai_service_tier) : "",
     modelCatalogURL,
     balanceQueryURL,
@@ -556,7 +560,7 @@ export function validateModelAdapters(source) {
       }
     }
     if (!SUPPORTED_ANTHROPIC_AUTH_MODES.has(adapter.anthropicAuthMode)) {
-      return `${prefix} 的 Anthropic 鉴权模式仅支持 legacy_dual、auto、x_api_key、bearer`;
+      return `${prefix} 的 Anthropic 鉴权模式仅支持 legacy_dual、auto、x_api_key、bearer、oauth`;
     }
     if (adapter.type === "anthropic" && adapter.anthropicExtraParamsEnabled) {
       const extraParamsError = validateAnthropicExtraParamsJSON(adapter.anthropicExtraParamsJSON);
