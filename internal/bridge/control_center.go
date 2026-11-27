@@ -33,6 +33,10 @@ type CursorAccountHealth = client.CursorAccountHealth
 type CursorAccountPlan = client.CursorAccountPlan
 type CursorAccountSpendLimit = client.CursorAccountSpendLimit
 type CursorAccountSpendLimitRequest = client.CursorAccountSpendLimitRequest
+type CursorAccountApiKey = client.CursorAccountApiKey
+type CursorAccountApiKeyList = client.CursorAccountApiKeyList
+type CreateCursorAccountApiKeyRequest = client.CreateCursorAccountApiKeyRequest
+type CreateCursorAccountApiKeyResult = client.CreateCursorAccountApiKeyResult
 type RequestSourceQuery = requestlab.RequestSourceQuery
 type RequestSourcePage = requestlab.RequestSourcePage
 type RequestComparisonRequest = requestlab.RequestComparisonRequest
@@ -116,6 +120,20 @@ func (s *ProxyService) GetCursorAccountSpendLimit(accountID string) (CursorAccou
 // Cursor account to disabled ($0), a fixed dollar cap, or unlimited.
 func (s *ProxyService) SetCursorAccountSpendLimit(req CursorAccountSpendLimitRequest) (CursorAccountSpendLimit, error) {
 	return s.core.SetCursorAccountSpendLimit(req)
+}
+
+// ListCursorAccountApiKeys reads the personal user API keys (crsr_/grok_) on one
+// saved Cursor account. An empty accountID uses the current account.
+func (s *ProxyService) ListCursorAccountApiKeys(accountID string) (CursorAccountApiKeyList, error) {
+	return s.core.ListCursorAccountApiKeys(accountID)
+}
+
+// CreateCursorAccountApiKey mints one user API key on a saved Cursor account.
+// It only runs on an explicit user request (never automatically) and returns the
+// full secret once. The name is either caller-supplied or a privacy-safe random
+// one that mimics the account's existing keys.
+func (s *ProxyService) CreateCursorAccountApiKey(req CreateCursorAccountApiKeyRequest) (CreateCursorAccountApiKeyResult, error) {
+	return s.core.CreateCursorAccountApiKey(req)
 }
 
 func (s *ProxyService) DeleteCursorAccounts(req CursorAccountDeleteRequest) error {

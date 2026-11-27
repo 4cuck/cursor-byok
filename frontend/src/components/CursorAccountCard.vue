@@ -17,6 +17,8 @@ import {
   getCursorAccountLoginStatus,
   getCursorAccountPlan,
   getCursorAccountSpendLimit,
+  listCursorAccountApiKeys,
+  createCursorAccountApiKey,
   importCursorAccount,
   listCursorAccounts,
   prepareCursorAccountRecoveryExport,
@@ -26,6 +28,7 @@ import {
   syncCursorAccountModelsRpc,
   updateCursorAccountTags,
 } from "@/services/clientApi";
+import copyTextToClipboard from "copy-text-to-clipboard";
 import { notifyAccountSync } from "@/utils/accountSync";
 import {
   autoBucketCaption,
@@ -75,6 +78,16 @@ const spendLimitSnapshot = ref(null);
 const spendLimitMode = ref("disabled");
 const spendLimitAmount = ref("50");
 const spendLimitError = ref("");
+const apiKeysDialog = ref(null);
+const apiKeysLoading = ref(false);
+const apiKeys = ref([]);
+const apiKeysError = ref("");
+const apiKeyShowCreate = ref(false);
+const apiKeyNameMode = ref("random");
+const apiKeyCustomName = ref("");
+const apiKeyCreating = ref(false);
+const createdApiKey = ref(null);
+const createdApiKeyCopied = ref(false);
 
 const SPEND_LIMIT_PRESETS = [20, 50, 100, 200, 500];
 
@@ -575,6 +588,108 @@ async function confirmSpendLimit() {
     spendLimitError.value = toUserErrorWithCause(error) || toUserError(error) || "Failed to update on-demand spend limit.";
   } finally {
     spendLimitSaving.value = false;
+  }
+}
+
+function clearApiKeysDialog() {
+  apiKeysDialog.value = null;
+  apiKeysLoading.value = false;
+  apiKeys.value = [];
+  apiKeysError.value = "";
+  apiKeyShowCreate.value = false;
+  apiKeyNameMode.value = "random";
+  apiKeyCustomName.value = "";
+  apiKeyCreating.value = false;
+  createdApiKey.value = null;
+  createdApiKeyCopied.value = false;
+}
+
+async function openApiKeysDialog(account) {
+  if (!account?.id || busy.value) return;
+  apiKeysDialog.value = account;
+  apiKeysError.value = "";
+  apiKeyShowCreate.value = false;
+  apiKeyNameMode.value = "random";
+  apiKeyCustomName.value = "";
+  createdApiKey.value = null;
+  createdApiKeyCopied.value = false;
+  await loadApiKeys(account);
+}
+
+async function loadApiKeys(account) {
+  if (!account?.id) return;
+  apiKeysLoading.value = true;
+  apiKeysError.value = "";
+  try {
+    const result = await listCursorAccountApiKeys(account.id);
+    if (apiKeysDialog.value?.id !== account.id) return;
+    apiKeys.value = Array.isArray(result?.keys) ? result.keys : [];
+  } catch (error) {
+    if (apiKeysDialog.value?.id !== account.id) return;
+    apiKeysError.value = toUserErrorWithCause(error) || toUserError(error) || "Could not load API keys for this account.";
+  } finally {
+    if (apiKeysDialog.value?.id === account.id) apiKeysLoading.value = false;
+  }
+}
+
+function toggleCreateApiKey() {
+  apiKeyShowCreate.value = !apiKeyShowCreate.value;
+  apiKeysError.value = "";
+  if (!apiKeyShowCreate.value) apiKeyCustomName.value = "";
+}
+
+// Mints a key only when the user explicitly confirms here — never automatically.
+async function confirmCreateApiKey() {
+  const account = apiKeysDialog.value;
+  if (!account?.id || apiKeyCreating.value) return;
+  const mode = apiKeyNameMode.value === "custom" ? "custom" : "random";
+  if (mode === "custom" && !apiKeyCustomName.value.trim()) {
+    apiKeysError.value = "Enter a name for the API key, or switch to a random name.";
+    return;
+  }
+  apiKeyCreating.value = true;
+  apiKeysError.value = "";
+  try {
+    const result = await createCursorAccountApiKey({
+      accountId: account.id,
+      nameMode: mode,
+      name: mode === "custom" ? apiKeyCustomName.value.trim() : "",
+    });
+    if (apiKeysDialog.value?.id !== account.id) return;
+    createdApiKey.value = result || null;
+    createdApiKeyCopied.value = false;
+    apiKeyShowCreate.value = false;
+    apiKeyCustomName.value = "";
+    message.success(`API key "${result?.name || "new key"}" created`);
+    await loadApiKeys(account);
+  } catch (error) {
+    if (apiKeysDialog.value?.id !== account.id) return;
+    apiKeysError.value = toUserErrorWithCause(error) || toUserError(error) || "Failed to create the API key.";
+  } finally {
+    if (apiKeysDialog.value?.id === account.id) apiKeyCreating.value = false;
+  }
+}
+
+function copyCreatedApiKey() {
+  const secret = createdApiKey.value?.apiKey;
+  if (!secret) return;
+  copyTextToClipboard(secret);
+  createdApiKeyCopied.value = true;
+  message.success("API key copied to clipboard");
+}
+
+function dismissCreatedApiKey() {
+  createdApiKey.value = null;
+  createdApiKeyCopied.value = false;
+}
+
+function formatApiKeyDate(ms) {
+  const value = Number(ms);
+  if (!value) return "";
+  try {
+    return new Date(value).toLocaleDateString();
+  } catch {
+    return "";
   }
 }
 
@@ -1281,6 +1396,9 @@ onBeforeUnmount(() => {
                   <button type="button" class="menu-item" role="menuitem" @click="() => { close(); void openSpendLimitDialog(account); }">
                     <span class="icon-[mdi--cash-fast]" /> On-demand spend limit
                   </button>
+                  <button type="button" class="menu-item" role="menuitem" @click="() => { close(); void openApiKeysDialog(account); }">
+                    <span class="icon-[mdi--key-variant]" /> API keys
+                  </button>
                   <button
                     v-if="syncedSummaryFor(account)"
                     type="button"
@@ -1482,6 +1600,150 @@ onBeforeUnmount(() => {
             <span v-if="spendLimitSaving" class="icon-[mdi--loading] mr-1 animate-spin text-[12px]" />
             {{ spendLimitSaving ? "Saving…" : "Save limit" }}
           </Button>
+        </div>
+      </div>
+    </div>
+    <div
+      v-if="apiKeysDialog"
+      class="fixed inset-0 z-[100000] flex items-center justify-center bg-black/50 p-4"
+      @click.self="clearApiKeysDialog"
+    >
+      <div class="w-full max-w-[520px] rounded-[8px] border border-[#343434] bg-[#292929] p-5" role="dialog" aria-modal="true" aria-label="API keys">
+        <div class="mb-3 flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h3 class="text-base font-medium text-white">API keys</h3>
+            <p class="mt-0.5 truncate text-xs text-[#8a8a8a]">
+              {{ apiKeysDialog.email || "Unnamed account" }}
+              <span v-if="credentialTypeLabel(apiKeysDialog.credentialType)"> · {{ credentialTypeLabel(apiKeysDialog.credentialType) }}</span>
+            </p>
+          </div>
+          <button type="button" class="shrink-0 text-[#8a8a8a] transition-colors hover:text-white" aria-label="Close" @click="clearApiKeysDialog">
+            <span class="icon-[mdi--close] text-[18px]" />
+          </button>
+        </div>
+
+        <div v-if="createdApiKey" class="mb-4 rounded-[6px] border border-[#2f6b49] bg-[#16281e] p-3">
+          <div class="mb-1 flex items-center gap-1.5 text-xs font-medium text-[#7dd3a0]">
+            <span class="icon-[mdi--check-circle-outline] text-[14px]" />
+            New key “{{ createdApiKey.name }}” created
+          </div>
+          <p class="mb-2 text-[11px] leading-4 text-[#9db8a8]">Copy it now — Cursor only reveals the full secret once.</p>
+          <div class="flex items-center gap-2">
+            <code class="min-w-0 flex-1 truncate rounded-[6px] border border-[#2f6b49] bg-[#0f1a14] px-2.5 py-1.5 font-mono text-xs text-[#d6f3e2]">{{ createdApiKey.apiKey }}</code>
+            <Button variant="primary" @click="copyCreatedApiKey">
+              <span class="mr-1 text-[12px]" :class="createdApiKeyCopied ? 'icon-[mdi--check]' : 'icon-[mdi--content-copy]'" />
+              {{ createdApiKeyCopied ? "Copied" : "Copy" }}
+            </Button>
+          </div>
+          <div class="mt-2 text-right">
+            <button type="button" class="text-[11px] text-[#8a8a8a] transition-colors hover:text-white" @click="dismissCreatedApiKey">Dismiss</button>
+          </div>
+        </div>
+
+        <div
+          v-if="apiKeysError"
+          class="mb-3 rounded-[6px] border border-[#4b1d1d] bg-[#2a1313] px-3 py-2 text-xs text-[#fca5a5]"
+        >
+          {{ apiKeysError }}
+        </div>
+
+        <div class="mb-3">
+          <div class="mb-1.5 flex items-center justify-between">
+            <span class="text-xs font-medium text-[#a3a3a3]">Keys on this account</span>
+            <button type="button" class="flex items-center text-[11px] text-[#8a8a8a] transition-colors hover:text-white disabled:opacity-50" :disabled="apiKeysLoading" @click="loadApiKeys(apiKeysDialog)">
+              <span class="icon-[mdi--refresh] mr-0.5 text-[11px]" :class="apiKeysLoading ? 'animate-spin' : ''" /> Refresh
+            </button>
+          </div>
+
+          <div v-if="apiKeysLoading" class="flex items-center gap-2 rounded-[6px] border border-[#343434] bg-[#232323] px-3 py-3 text-xs text-[#a3a3a3]">
+            <span class="icon-[mdi--loading] animate-spin text-[14px]" /> Loading keys from Cursor…
+          </div>
+          <div v-else-if="apiKeys.length === 0" class="rounded-[6px] border border-dashed border-[#3f3f3f] bg-[#232323] px-3 py-4 text-center text-xs text-[#8a8a8a]">
+            No API keys on this account yet.
+          </div>
+          <ul v-else class="max-h-[220px] space-y-1.5 overflow-y-auto pr-0.5">
+            <li
+              v-for="key in apiKeys"
+              :key="key.id || key.maskedKey || key.name"
+              class="flex items-center justify-between gap-3 rounded-[6px] border border-[#343434] bg-[#232323] px-3 py-2"
+            >
+              <div class="min-w-0">
+                <div class="truncate text-xs font-medium text-[#e5e5e5]" :title="key.name">{{ key.name || "(unnamed)" }}</div>
+                <div class="mt-0.5 flex items-center gap-2 text-[11px] text-[#8a8a8a]">
+                  <span class="font-mono">{{ key.maskedKey || "crsr_…" }}</span>
+                  <span v-if="formatApiKeyDate(key.createdAtMs)">· {{ formatApiKeyDate(key.createdAtMs) }}</span>
+                </div>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="border-t border-[#343434] pt-3">
+          <div v-if="!apiKeyShowCreate" class="flex items-center justify-between gap-3">
+            <p class="text-xs text-[#8a8a8a]">Create a new user API key for this account.</p>
+            <Button variant="default" :disabled="apiKeysLoading" @click="toggleCreateApiKey">
+              <span class="icon-[mdi--plus] mr-1 text-[12px]" /> Create key
+            </Button>
+          </div>
+
+          <div v-else>
+            <div class="mb-2 grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                class="cursor-pointer rounded-[6px] border px-2.5 py-2 text-xs font-medium transition-colors"
+                :class="apiKeyNameMode === 'random'
+                  ? 'border-[#2f6b49] bg-[#1f3a2c] text-[#7dd3a0]'
+                  : 'border-[#3f3f3f] bg-[#232323] text-[#c4c4c4] hover:bg-[#2d2d2d]'"
+                :disabled="apiKeyCreating"
+                @click="apiKeyNameMode = 'random'"
+              >
+                Random name
+              </button>
+              <button
+                type="button"
+                class="cursor-pointer rounded-[6px] border px-2.5 py-2 text-xs font-medium transition-colors"
+                :class="apiKeyNameMode === 'custom'
+                  ? 'border-[#2f6b49] bg-[#1f3a2c] text-[#7dd3a0]'
+                  : 'border-[#3f3f3f] bg-[#232323] text-[#c4c4c4] hover:bg-[#2d2d2d]'"
+                :disabled="apiKeyCreating"
+                @click="apiKeyNameMode = 'custom'"
+              >
+                Custom name
+              </button>
+            </div>
+
+            <div v-if="apiKeyNameMode === 'custom'" class="mb-2">
+              <input
+                v-model="apiKeyCustomName"
+                type="text"
+                maxlength="100"
+                class="h-9 w-full rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+                placeholder="My API key"
+                autocomplete="off"
+                :disabled="apiKeyCreating"
+                @keyup.enter="confirmCreateApiKey"
+              />
+            </div>
+            <p v-else class="mb-2 text-[11px] leading-4 text-[#8a8a8a]">
+              A name is generated to match this account's existing keys, with no device- or user-identifying parts.
+            </p>
+
+            <div class="flex justify-end gap-2">
+              <Button variant="default" :disabled="apiKeyCreating" @click="toggleCreateApiKey">Cancel</Button>
+              <Button
+                variant="primary"
+                :disabled="apiKeyCreating || (apiKeyNameMode === 'custom' && !apiKeyCustomName.trim())"
+                @click="confirmCreateApiKey"
+              >
+                <span v-if="apiKeyCreating" class="icon-[mdi--loading] mr-1 animate-spin text-[12px]" />
+                {{ apiKeyCreating ? "Creating…" : "Create key" }}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 flex justify-end">
+          <Button variant="default" @click="clearApiKeysDialog">Close</Button>
         </div>
       </div>
     </div>

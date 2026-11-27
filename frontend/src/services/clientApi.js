@@ -17,6 +17,7 @@ import {
   SetCurrentCursorAccount, UpdateCursorAccountTags, DeleteCursorAccounts,
   ClearCursorAccountLock, ClearCursorAccountQuotaCooldown, CheckCursorAccountHealth, GetCursorAccountPlan,
   GetCursorAccountSpendLimit, SetCursorAccountSpendLimit,
+  ListCursorAccountApiKeys, CreateCursorAccountApiKey,
   PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
   FetchCursorAccountModels, SyncCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
@@ -85,6 +86,7 @@ const desktopMethods = {
   SetCurrentCursorAccount, UpdateCursorAccountTags, DeleteCursorAccounts,
   ClearCursorAccountLock, ClearCursorAccountQuotaCooldown, CheckCursorAccountHealth, GetCursorAccountPlan,
   GetCursorAccountSpendLimit, SetCursorAccountSpendLimit,
+  ListCursorAccountApiKeys, CreateCursorAccountApiKey,
   PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
   FetchCursorAccountModels, SyncCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
@@ -349,6 +351,33 @@ export function setCursorAccountSpendLimit(request) {
     "SetCursorAccountSpendLimit",
     { accountID: request?.accountId || "", mode: request?.mode || "", hardLimitDollars: request?.hardLimitDollars ?? 0 },
     () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "SetCursorAccountSpendLimit", [request]),
+    { timeoutMs: 30_000 },
+  );
+}
+
+// Lists the personal user API keys (crsr_/grok_) on one saved Cursor account.
+export function listCursorAccountApiKeys(accountID = "") {
+  if (isBrowserPreview) {
+    return ListCursorAccountApiKeys(accountID);
+  }
+  return withApiLogging(
+    "ListCursorAccountApiKeys",
+    { accountID },
+    () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "ListCursorAccountApiKeys", [accountID]),
+    { timeoutMs: 30_000 },
+  );
+}
+
+// Mints one user API key on a saved Cursor account (explicit action only).
+// request: { accountId, nameMode: "random"|"custom", name?, scopes? }
+export function createCursorAccountApiKey(request) {
+  if (isBrowserPreview) {
+    return CreateCursorAccountApiKey(request);
+  }
+  return withApiLogging(
+    "CreateCursorAccountApiKey",
+    { accountID: request?.accountId || "", nameMode: request?.nameMode || "" },
+    () => invoke("@bindings/cursor/internal/bridge/proxyservice.js", "CreateCursorAccountApiKey", [request]),
     { timeoutMs: 30_000 },
   );
 }

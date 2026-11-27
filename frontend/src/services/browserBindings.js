@@ -1292,6 +1292,34 @@ export const SetCursorAccountSpendLimit = (request) => {
   previewSpendLimitByAccount = { ...previewSpendLimitByAccount, [key]: next };
   return Promise.resolve({ ...next });
 };
+let previewApiKeysByAccount = {};
+function previewApiKeysFor(accountID) {
+  const key = String(accountID || "");
+  if (!previewApiKeysByAccount[key]) {
+    previewApiKeysByAccount[key] = [
+      { id: 101, name: "cursor-agent-worker-ext-sample-4210-1790000000000", maskedKey: "crsr_...a1b2", scopes: [], createdAtMs: Date.now() - 86_400_000 },
+    ];
+  }
+  return previewApiKeysByAccount[key];
+}
+export const ListCursorAccountApiKeys = (accountID) => {
+  recordPreviewCall("ListCursorAccountApiKeys", [accountID]);
+  return Promise.resolve({ accountId: String(accountID || ""), keys: [...previewApiKeysFor(accountID)] });
+};
+export const CreateCursorAccountApiKey = (request) => {
+  recordPreviewCall("CreateCursorAccountApiKey", [request]);
+  const key = String(request?.accountId || "");
+  const mode = String(request?.nameMode || "random").toLowerCase();
+  const rand = (n) => Math.random().toString(36).slice(2, 2 + n);
+  const name = mode === "custom"
+    ? String(request?.name || "").trim()
+    : `cursor-agent-worker-ext-${rand(6)}-${1000 + Math.floor(Math.random() * 60000)}-${Date.now()}`;
+  const suffix = Math.random().toString(16).slice(2, 6);
+  const secret = `crsr_${suffix}${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}`.slice(0, 69);
+  const entry = { id: Math.floor(Math.random() * 1e7), name, maskedKey: `crsr_...${suffix}`, scopes: [], createdAtMs: Date.now() };
+  previewApiKeysByAccount = { ...previewApiKeysByAccount, [key]: [entry, ...previewApiKeysFor(key)] };
+  return Promise.resolve({ accountId: key, name, apiKey: secret, key: entry });
+};
 export const ClearCursorAccountLock = (accountID) => {
   recordPreviewCall("ClearCursorAccountLock", [accountID]);
   return Promise.resolve({ id: accountID, lockedUntilUnixMs: 0, lockReason: "" });
