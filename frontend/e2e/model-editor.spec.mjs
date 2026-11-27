@@ -143,6 +143,49 @@ test("Anthropic 鉴权模式可保存到模型配置", async ({ page }) => {
   expect(saved?.anthropicAuthMode).toBe("bearer");
 });
 
+test("导入 Claude 订阅凭据：令牌填入访问密钥并切到订阅 OAuth，Fast 模式随配置保存", async ({ page }) => {
+  await openModelEditorPage(page);
+  await page.getByRole("button", { name: "手动添加", exact: true }).click();
+  await page.getByText("供应商类型", { exact: true }).locator("..").getByRole("button").click();
+  await page.getByRole("option", { name: "Anthropic", exact: true }).click();
+  await page.getByRole("button", { name: /协议与高级设置/ }).click();
+
+  // 接口地址为空、鉴权模式为默认的「自动」时，导入框就在。
+  await expect(page.getByText("导入 Claude 订阅凭据", { exact: true })).toBeVisible();
+  const credentials = page.getByPlaceholder(/claudeAiOauth/);
+  const importButton = page.getByRole("button", { name: "导入令牌", exact: true });
+
+  await credentials.fill("{not json");
+  await importButton.click();
+  await expect(page.getByText("粘贴的内容不是有效的 JSON。", { exact: true })).toBeVisible();
+  await expect(fieldInput(page, "访问密钥")).toHaveValue("");
+
+  const token = "sk-ant-oat01-e2e_Token-123";
+  await credentials.fill(JSON.stringify({
+    claudeAiOauth: { accessToken: token, refreshToken: null, expiresAt: Date.now() + 86_400_000 },
+  }));
+  await importButton.click();
+  await expect(page.getByText("访问令牌已填入访问密钥。", { exact: true })).toBeVisible();
+  await expect(page.getByText("凭据里没有刷新令牌，到期后需要重新导入。", { exact: true })).toBeVisible();
+  await expect(page.getByText("粘贴的内容不是有效的 JSON。", { exact: true })).toHaveCount(0);
+  await expect(fieldInput(page, "访问密钥")).toHaveValue(token);
+  await expect(fieldInput(page, "接口地址")).toHaveValue("https://api.anthropic.com");
+  await expect(credentials).toHaveValue("");
+
+  // Anthropic 渠道提供 Fast 模式开关。
+  await page.locator("label").filter({ hasText: "Fast 模式（speed: fast）" }).locator("input[type=checkbox]").check();
+
+  await fieldInput(page, "显示名称").fill("Claude 订阅");
+  await fieldInput(page, "模型标识").fill("claude-oauth-e2e");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page).toHaveURL(/\/model-config/);
+
+  const stored = await readStoredPreviewConfig(page);
+  const saved = stored?.modelAdapters?.find((adapter) => adapter.modelID === "claude-oauth-e2e");
+  expect(saved?.anthropicAuthMode).toBe("oauth");
+  expect(saved?.fastMode).toBe(true);
+});
+
 test("编辑既有模型：加载草稿并支持保存并测试", async ({ page }) => {
   await openModelEditorPage(page, {
     plan: {
