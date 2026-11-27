@@ -19,8 +19,8 @@ import (
 // billing header, then the Claude Code identity as a block of its own, then the
 // real system prompt, as the Claude CLI sends them.
 func TestAnthropicProviderSystemBlocksOAuth(t *testing.T) {
-	blocks := anthropicProviderSystemBlocks([]string{"REAL SYSTEM PROMPT"}, true)
-	want := []string{anthropicBillingHeaderSystemText, anthropicClaudeCodeIdentitySystemText, "REAL SYSTEM PROMPT"}
+	blocks := anthropicProviderSystemBlocks([]string{"REAL SYSTEM PROMPT"}, true, "BILLING HEADER")
+	want := []string{"BILLING HEADER", anthropicClaudeCodeIdentitySystemText, "REAL SYSTEM PROMPT"}
 	if len(blocks) != len(want) {
 		t.Fatalf("expected %d system blocks, got %d: %+v", len(want), len(blocks), blocks)
 	}
@@ -30,8 +30,8 @@ func TestAnthropicProviderSystemBlocksOAuth(t *testing.T) {
 		}
 	}
 
-	withoutPrompt := anthropicProviderSystemBlocks(nil, true)
-	if len(withoutPrompt) != 2 || withoutPrompt[1]["text"] != anthropicClaudeCodeIdentitySystemText {
+	withoutPrompt := anthropicProviderSystemBlocks(nil, true, "BILLING HEADER")
+	if len(withoutPrompt) != 2 || withoutPrompt[0]["text"] != "BILLING HEADER" || withoutPrompt[1]["text"] != anthropicClaudeCodeIdentitySystemText {
 		t.Fatalf("OAuth blocks without a system prompt = %+v, want the billing header and the identity", withoutPrompt)
 	}
 }
@@ -39,8 +39,8 @@ func TestAnthropicProviderSystemBlocksOAuth(t *testing.T) {
 // TestAnthropicProviderSystemBlocksNonOAuth keeps API-key channels as they
 // were: the billing header and the system prompt, without the identity block.
 func TestAnthropicProviderSystemBlocksNonOAuth(t *testing.T) {
-	blocks := anthropicProviderSystemBlocks([]string{"SYS"}, false)
-	if len(blocks) != 2 || blocks[0]["text"] != anthropicBillingHeaderSystemText || blocks[1]["text"] != "SYS" {
+	blocks := anthropicProviderSystemBlocks([]string{"SYS"}, false, "BILLING HEADER")
+	if len(blocks) != 2 || blocks[0]["text"] != "BILLING HEADER" || blocks[1]["text"] != "SYS" {
 		t.Fatalf("non-OAuth blocks = %+v, want the billing header and the system prompt", blocks)
 	}
 }
@@ -342,7 +342,9 @@ func TestAnthropicStreamOAuthRequestShape(t *testing.T) {
 		t.Fatalf("User-Agent = %q, want a claude-cli agent", agent)
 	}
 	system, _ := got[0].body["system"].([]any)
-	wantSystem := []string{anthropicBillingHeaderSystemText, anthropicClaudeCodeIdentitySystemText, "REAL SYSTEM PROMPT"}
+	// The test server is not Anthropic's own API, so the fingerprint in the
+	// billing header does not follow the first user message.
+	wantSystem := []string{anthropicBillingHeader(""), anthropicClaudeCodeIdentitySystemText, "REAL SYSTEM PROMPT"}
 	if len(system) != len(wantSystem) {
 		t.Fatalf("system has %d blocks, want the billing header, the identity and the real prompt: %+v", len(system), got[0].body["system"])
 	}
@@ -408,7 +410,7 @@ func TestAnthropicStreamAutoModeRecognizesSubscriptionToken(t *testing.T) {
 	if apiKey.header.Get("anthropic-beta") != "" || apiKey.header.Get("x-app") != "" {
 		t.Fatalf("API key request carries OAuth headers: anthropic-beta = %q, x-app = %q", apiKey.header.Get("anthropic-beta"), apiKey.header.Get("x-app"))
 	}
-	if texts := systemTexts(apiKey); len(texts) != 2 || texts[0] != anthropicBillingHeaderSystemText || texts[1] != "REAL SYSTEM PROMPT" {
+	if texts := systemTexts(apiKey); len(texts) != 2 || texts[0] != anthropicBillingHeader("hi") || texts[1] != "REAL SYSTEM PROMPT" {
 		t.Fatalf("API key system blocks = %q, want the billing header and the prompt", texts)
 	}
 }

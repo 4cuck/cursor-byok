@@ -47,6 +47,7 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 		if err != nil {
 			return err
 		}
+		billingHeader := anthropicBillingHeader(anthropicBillingFingerprintText(requestURL, messages))
 
 		tools := make([]anthropicTool, 0, len(req.Tools))
 		for _, raw := range req.Tools {
@@ -66,7 +67,7 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 					"max_tokens":     req.MaxTokens,
 					"tool_raw_count": len(req.Tools),
 				}
-				draftBody["system"] = anthropicProviderSystemBlocks(systemParts, oauthMode)
+				draftBody["system"] = anthropicProviderSystemBlocks(systemParts, oauthMode, billingHeader)
 				recordLLMRequestArtifact(req, "anthropic", modelID, "POST", requestURL, draftBody)
 				recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "anthropic", modelID, startedAt, time.Time{}, finishedAt, "", 0, 0, 0, 0, err))
 				return err
@@ -94,7 +95,7 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 		if len(tools) > 0 {
 			body["tools"] = tools
 		}
-		body["system"] = anthropicProviderSystemBlocks(systemParts, oauthMode)
+		body["system"] = anthropicProviderSystemBlocks(systemParts, oauthMode, billingHeader)
 		frontier := buildAnthropicCacheFrontier(body, stableMessageCount)
 		req.RequestKnobs = annotateAnthropicRequestKnobs(req.RequestKnobs, body, frontier)
 		// 注意：此处 clone 不可省略——它把 []anthropicTool/[]anthropicMessage

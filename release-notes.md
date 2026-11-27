@@ -1,3 +1,14 @@
+## v1.0.63
+
+### Fixed
+
+- **Newer Claude models no longer fail with "Claude Code 2.1.179 does not support this model"**:
+  - Every Anthropic request starts its system prompt with the Claude CLI's billing header block, and Anthropic reads the client version from that block. It still named version 2.1.179 while the user agent said 2.1.329, so models that need a newer Claude Code were refused: Claude Opus 5.5 asks for 2.1.280, Claude Fable 5.2 for 2.1.290.
+  - The block now names the same version as the user agent, 2.1.329. Both are built from one constant, so they cannot drift apart again.
+  - On Anthropic's own API the three digits after the version are now computed from the first user message, the way the CLI computes them. The rule was read from the CLI's code and gives the value the CLI itself sent for a known prompt. For every other provider the block stays the same in all conversations, so prompt caches there are not affected.
+  - Checked against Anthropic with a Pro subscription: Claude Opus 5.5 answers. Claude Fable 5.2 gets past the version check and answers `429 Usage credits are required for this model`; that is the plan's own limit, which the app cannot change.
+- **The Claude subscription section no longer says that requests are refused when a usage limit shows 100%.** Anthropic was seen to accept requests while the current session stood at 100%. The account card now reports the figure and its reset time, and says only that requests may be refused.
+
 ## v1.0.62
 
 ### Added
@@ -212,11 +223,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.62-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.62-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.62-windows-arm64-installer.exe` 或 `cursor-byok-1.0.62-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.62-windows-x32-installer.exe` 或 `cursor-byok-1.0.62-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.62-macos-arm64.dmg` 或 `cursor-byok-1.0.62-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.62-macos-x64.dmg` 或 `cursor-byok-1.0.62-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.62-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.63-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.63-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.63-windows-arm64-installer.exe` 或 `cursor-byok-1.0.63-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.63-windows-x32-installer.exe` 或 `cursor-byok-1.0.63-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.63-macos-arm64.dmg` 或 `cursor-byok-1.0.63-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.63-macos-x64.dmg` 或 `cursor-byok-1.0.63-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.63-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

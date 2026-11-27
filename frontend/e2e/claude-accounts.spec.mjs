@@ -165,8 +165,9 @@ test("添加第一个账号：粘贴凭据后显示账号详情，并引导选�
   await expect(windows.nth(0)).toContainText("重置");
   await expect(windows.nth(1)).toContainText("本周（全部模型）");
   await expect(windows.nth(1)).toContainText("已用 74%");
-  await expect(account.getByTestId("claude-account-exhausted")).toContainText("「当前会话（5 小时）」额度已用完");
-  await expect(account.getByTestId("claude-account-exhausted")).toContainText("重置前 Anthropic 会拒绝这个账号的请求。");
+  // 只报告数字，后果用「可能」：窗口显示 100% 时 Anthropic 未必拒绝请求。
+  await expect(account.getByTestId("claude-account-exhausted")).toContainText("「当前会话（5 小时）」的用量显示为 100%");
+  await expect(account.getByTestId("claude-account-exhausted")).toContainText("Anthropic 可能会因此拒绝这个账号的请求。");
   await expect(account).toContainText("sk-ant-oat01-…1111");
   await expect(account.getByTestId("claude-account-expiry")).toContainText("剩余 364 天");
   await expect(account).toContainText("未开启");
@@ -330,7 +331,7 @@ test("账号状态：过期、被拒绝、读不到资料、快到期各有说�
   // 有账号的令牌不可用：标签上提示需关注。
   await expect(page.getByRole("tab", { name: /Claude 订阅/ })).toHaveAttribute("title", /需关注/);
 
-  // 点刷新：读到新的用量。这个账号开了额外用量，额度用完后的说明随之不同。
+  // 点刷新：读到新的用量。这个账号开了额外用量，用量到 100% 时的说明随之不同。
   await updatePlan(page, {
     claudeAccountRefresh: {
       "acct-soon": {
@@ -347,7 +348,7 @@ test("账号状态：过期、被拒绝、读不到资料、快到期各有说�
   await expect(page.getByText("已刷新", { exact: true })).toBeVisible();
   await expect(soon.getByTestId("claude-usage-window")).toHaveCount(1);
   await expect(soon.getByTestId("claude-usage-window")).toContainText("已用 100%");
-  await expect(soon.getByTestId("claude-account-exhausted")).toContainText("重置前的请求计入额外用量。");
+  await expect(soon.getByTestId("claude-account-exhausted")).toContainText("超出套餐的用量由额外用量支付。");
 
   // 刷新时发现令牌被拒绝：状态随之改变，并直接告诉用户。
   await bare.getByRole("button", { name: "刷新", exact: true }).click();
@@ -499,7 +500,8 @@ test("英文界面：Claude 订阅页、对话框和确认框里的文字都有�
   await expect(panel).toContainText("Current week (all models)");
   await expect(panel).toContainText("Current week (Fable)");
   await expect(panel).toContainText("100% used");
-  await expect(panel.getByTestId("claude-account-exhausted").first()).toContainText("Until then, Anthropic refuses this account's requests.");
+  await expect(panel.getByTestId("claude-account-exhausted").first()).toContainText("is at 100% and resets at");
+  await expect(panel.getByTestId("claude-account-exhausted").first()).toContainText("Anthropic may refuse this account's requests because of it.");
   await expect(panel).toContainText("364 day(s) left");
   await expect(panel).toContainText("5 h left");
   await expect(panel).toContainText("Token expired");

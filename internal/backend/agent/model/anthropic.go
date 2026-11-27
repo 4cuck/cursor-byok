@@ -37,13 +37,12 @@ type anthropicTool struct {
 }
 
 const (
-	anthropicThinkOpenTag            = "<think>"
-	anthropicThinkCloseTag           = "</think>"
-	anthropicBillingHeaderSystemText = "x-anthropic-billing-header: cc_version=2.1.179.61a; cc_entrypoint=cli; cch=37703;"
+	anthropicThinkOpenTag  = "<think>"
+	anthropicThinkCloseTag = "</think>"
 	// anthropicClaudeCodeIdentitySystemText is the identity system block the
 	// Claude CLI (2.1.329) sends with a Claude subscription OAuth token, right
-	// after its billing header block. It is sent as a block of its own, with
-	// exactly this text.
+	// after its billing header block (see anthropic_billing_header.go). It is
+	// sent as a block of its own, with exactly this text.
 	anthropicClaudeCodeIdentitySystemText = "You are Claude Code, Anthropic's official CLI for Claude."
 	// anthropicOAuthAppHeaderValue is the x-app value the Claude CLI sends on
 	// OAuth-authenticated Messages requests.
@@ -214,11 +213,12 @@ func ApplyAnthropicCompatibleAuthHeaders(httpReq *http.Request, requestURL, mode
 // anthropicProviderSystemBlocks builds the Messages `system` array: the billing
 // header block, then for a Claude subscription OAuth token the Claude Code
 // identity as a block of its own, then the caller's system prompt. This is the
-// order the Claude CLI sends them in.
-func anthropicProviderSystemBlocks(systemParts []string, oauthMode bool) []map[string]any {
+// order the Claude CLI sends them in. billingHeader is the text of the first
+// block, as anthropicBillingHeader returns it.
+func anthropicProviderSystemBlocks(systemParts []string, oauthMode bool, billingHeader string) []map[string]any {
 	blocks := []map[string]any{{
 		"type": "text",
-		"text": anthropicBillingHeaderSystemText,
+		"text": billingHeader,
 	}}
 	if oauthMode {
 		blocks = append(blocks, map[string]any{

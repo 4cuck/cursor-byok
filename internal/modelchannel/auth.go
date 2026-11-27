@@ -12,7 +12,7 @@ const (
 	AnthropicAuthModeBearer     = "bearer"
 	// AnthropicAuthModeOAuth authenticates with a Claude Pro/Max subscription
 	// OAuth access token (sk-ant-oat01-…), the kind the Claude CLI stores in
-	// ~/.claude/credentials.json. The token is sent as a bearer token only, and
+	// ~/.claude/.credentials.json. The token is sent as a bearer token only, and
 	// the adapter adds what the Claude CLI sends with such a token: its OAuth
 	// beta features, x-app, and the Claude Code identity system block (see
 	// anthropic.go).

@@ -90,8 +90,9 @@ export function claudeUsageWindows(account) {
   return result;
 }
 
-// The first window that is at its limit, or null. While one is, Anthropic
-// refuses the account's requests until the window resets.
+// The first window Anthropic reports as used to 100%, or null. That figure
+// alone does not tell whether requests are refused: requests have been seen
+// to go through while a window stood at 100%.
 export function claudeExhaustedWindow(account) {
   return claudeUsageWindows(account).find((window) => window.level === "exhausted") || null;
 }

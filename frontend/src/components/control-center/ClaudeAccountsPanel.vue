@@ -188,20 +188,23 @@ function usageBarClass(level) {
   return "bg-[#10AD5D]";
 }
 
-// 有用量窗口到了上限时的说明。每种情况都是一整句，方便翻译成通顺的话。
-// 开了额外用量的账号，额度用完后的请求由额外用量支付；没开的会被拒绝。
+// 有用量窗口显示为 100% 时的说明。每种情况都是一整句，方便翻译成通顺的话。
+//
+// 这里只说 Anthropic 报告的数字，不断言后果：实测（2026-11-27）窗口显示 100%
+// 时请求仍然被接受，所以只能说「可能会拒绝」。开了额外用量的账号，按 Anthropic
+// 自己的说明，超出套餐的部分由额外用量支付。
 function exhaustedNote(account) {
   const window = claudeExhaustedWindow(account);
   if (!window) return "";
   const time = formatClaudeDateTime(window.resetsAt, locale.value, now.value);
   if (account.usageCredits?.enabled) {
     return time
-      ? `「${window.label}」额度已用完，${time} 重置。重置前的请求计入额外用量。`
-      : `「${window.label}」额度已用完。重置前的请求计入额外用量。`;
+      ? `「${window.label}」的用量显示为 100%，${time} 重置。超出套餐的用量由额外用量支付。`
+      : `「${window.label}」的用量显示为 100%。超出套餐的用量由额外用量支付。`;
   }
   return time
-    ? `「${window.label}」额度已用完，${time} 重置。重置前 Anthropic 会拒绝这个账号的请求。`
-    : `「${window.label}」额度已用完。重置前 Anthropic 会拒绝这个账号的请求。`;
+    ? `「${window.label}」的用量显示为 100%，${time} 重置。Anthropic 可能会因此拒绝这个账号的请求。`
+    : `「${window.label}」的用量显示为 100%。Anthropic 可能会因此拒绝这个账号的请求。`;
 }
 
 function expiryOf(account) {

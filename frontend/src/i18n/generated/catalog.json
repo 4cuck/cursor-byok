@@ -176,7 +176,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 856,
+          "line": 859,
           "column": 1
         }
       ]
@@ -646,7 +646,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 981,
+          "line": 984,
           "column": 1
         },
         {
@@ -765,7 +765,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1251,
+          "line": 1254,
           "column": 16
         }
       ]
@@ -914,7 +914,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 577,
+          "line": 580,
           "column": 11
         }
       ]
@@ -1530,7 +1530,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1059,
+          "line": 1062,
           "column": 1
         }
       ]
@@ -1833,6 +1833,18 @@
         }
       ]
     },
+    "10f1f7c7fc89e723": {
+      "source": "「{0}」的用量显示为 100%。Anthropic 可能会因此拒绝这个账号的请求。",
+      "kind": "template",
+      "placeholders": 1,
+      "refs": [
+        {
+          "file": "src/components/control-center/ClaudeAccountsPanel.vue",
+          "line": 207,
+          "column": 7
+        }
+      ]
+    },
     "1117a2f86030d03b": {
       "source": "缓存读写已计入 Prompt 侧统计。",
       "kind": "text",
@@ -1888,7 +1900,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 551,
+          "line": 554,
           "column": 1
         }
       ]
@@ -1936,7 +1948,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 488,
+          "line": 491,
           "column": 12
         }
       ]
@@ -1989,7 +2001,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 914,
+          "line": 917,
           "column": 1
         }
       ]
@@ -2001,7 +2013,7 @@
       "refs": [
         {
           "file": "src/utils/claudeAccounts.js",
-          "line": 121,
+          "line": 122,
           "column": 10
         }
       ]
@@ -2025,7 +2037,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 308,
+          "line": 311,
           "column": 18
         }
       ]
@@ -2109,7 +2121,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1091,
+          "line": 1094,
           "column": 11
         }
       ]
@@ -2424,22 +2436,22 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 650,
+          "line": 653,
           "column": 1
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 904,
+          "line": 907,
           "column": 1
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1154,
+          "line": 1157,
           "column": 9
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1158,
+          "line": 1161,
           "column": 1
         }
       ]
@@ -2451,12 +2463,12 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1012,
+          "line": 1015,
           "column": 22
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1016,
+          "line": 1019,
           "column": 14
         }
       ]
@@ -2552,7 +2564,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 393,
+          "line": 396,
           "column": 40
         }
       ]
@@ -2971,7 +2983,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 244,
+          "line": 247,
           "column": 42
         }
       ]
@@ -3019,7 +3031,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 616,
+          "line": 619,
           "column": 1
         }
       ]
@@ -3115,18 +3127,6 @@
           "file": "src/components/settings/categories/CursorServiceSettings.vue",
           "line": 485,
           "column": 37
-        }
-      ]
-    },
-    "1d7abd4fc286cfa8": {
-      "source": "「{0}」额度已用完，{1} 重置。重置前的请求计入额外用量。",
-      "kind": "template",
-      "placeholders": 2,
-      "refs": [
-        {
-          "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 199,
-          "column": 9
         }
       ]
     },
@@ -4018,7 +4018,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 366,
+          "line": 369,
           "column": 36
         }
       ]
@@ -4553,7 +4553,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 394,
+          "line": 397,
           "column": 54
         }
       ]
@@ -4582,12 +4582,12 @@
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1125,
+          "line": 1128,
           "column": 1
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1240,
+          "line": 1243,
           "column": 1
         },
         {
@@ -5037,7 +5037,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 215,
+          "line": 218,
           "column": 33
         }
       ]
@@ -5309,7 +5309,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 641,
+          "line": 644,
           "column": 1
         }
       ]
@@ -5422,7 +5422,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 653,
+          "line": 656,
           "column": 1
         }
       ]
@@ -5576,7 +5576,7 @@
       "refs": [
         {
           "file": "src/utils/claudeAccounts.js",
-          "line": 120,
+          "line": 121,
           "column": 36
         }
       ]
@@ -5732,12 +5732,12 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 267,
+          "line": 270,
           "column": 26
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 290,
+          "line": 293,
           "column": 24
         }
       ]
@@ -5838,7 +5838,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 395,
+          "line": 398,
           "column": 24
         }
       ]
@@ -5978,7 +5978,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1196,
+          "line": 1199,
           "column": 20
         },
         {
@@ -6222,7 +6222,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 228,
+          "line": 231,
           "column": 32
         }
       ]
@@ -6425,7 +6425,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 466,
+          "line": 469,
           "column": 43
         }
       ]
@@ -6600,7 +6600,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 309,
+          "line": 312,
           "column": 35
         }
       ]
@@ -6798,7 +6798,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 479,
+          "line": 482,
           "column": 36
         }
       ]
@@ -7223,12 +7223,12 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 324,
+          "line": 327,
           "column": 36
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 500,
+          "line": 503,
           "column": 36
         }
       ]
@@ -7288,7 +7288,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 819,
+          "line": 822,
           "column": 1
         }
       ]
@@ -7491,7 +7491,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 868,
+          "line": 871,
           "column": 1
         }
       ]
@@ -7705,7 +7705,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 310,
+          "line": 313,
           "column": 38
         }
       ]
@@ -7758,12 +7758,12 @@
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 213,
+          "line": 216,
           "column": 29
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 227,
+          "line": 230,
           "column": 24
         },
         {
@@ -7919,7 +7919,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 629,
+          "line": 632,
           "column": 1
         }
       ]
@@ -8043,7 +8043,7 @@
       "refs": [
         {
           "file": "src/utils/claudeAccounts.js",
-          "line": 119,
+          "line": 120,
           "column": 35
         }
       ]
@@ -9843,12 +9843,12 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 269,
+          "line": 272,
           "column": 48
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 284,
+          "line": 287,
           "column": 34
         }
       ]
@@ -9884,22 +9884,22 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 314,
+          "line": 317,
           "column": 18
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 490,
+          "line": 493,
           "column": 18
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 732,
+          "line": 735,
           "column": 1
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 989,
+          "line": 992,
           "column": 1
         }
       ]
@@ -11170,18 +11170,6 @@
         }
       ]
     },
-    "6d703e1b1aa24b78": {
-      "source": "「{0}」额度已用完。重置前 Anthropic 会拒绝这个账号的请求。",
-      "kind": "template",
-      "placeholders": 1,
-      "refs": [
-        {
-          "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 204,
-          "column": 7
-        }
-      ]
-    },
     "6d7517e3b15854a7": {
       "source": "等待记录",
       "kind": "text",
@@ -11596,7 +11584,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 926,
+          "line": 929,
           "column": 1
         }
       ]
@@ -11738,7 +11726,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 811,
+          "line": 814,
           "column": 1
         }
       ]
@@ -11786,7 +11774,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 958,
+          "line": 961,
           "column": 21
         }
       ]
@@ -11894,7 +11882,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 965,
+          "line": 968,
           "column": 36
         }
       ]
@@ -11906,17 +11894,17 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 724,
+          "line": 727,
           "column": 1
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1012,
+          "line": 1015,
           "column": 22
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1016,
+          "line": 1019,
           "column": 14
         }
       ]
@@ -12198,7 +12186,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 589,
+          "line": 592,
           "column": 1
         }
       ]
@@ -13151,7 +13139,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 845,
+          "line": 848,
           "column": 1
         }
       ]
@@ -13257,7 +13245,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 515,
+          "line": 518,
           "column": 19
         }
       ]
@@ -13293,7 +13281,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 798,
+          "line": 801,
           "column": 1
         }
       ]
@@ -13353,7 +13341,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1037,
+          "line": 1040,
           "column": 1
         }
       ]
@@ -13382,7 +13370,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1231,
+          "line": 1234,
           "column": 1
         }
       ]
@@ -13394,7 +13382,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1073,
+          "line": 1076,
           "column": 39
         }
       ]
@@ -13799,7 +13787,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1222,
+          "line": 1225,
           "column": 1
         }
       ]
@@ -14008,7 +13996,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 229,
+          "line": 232,
           "column": 81
         },
         {
@@ -14236,18 +14224,6 @@
         }
       ]
     },
-    "8ca56484d6aec7ed": {
-      "source": "「{0}」额度已用完，{1} 重置。重置前 Anthropic 会拒绝这个账号的请求。",
-      "kind": "template",
-      "placeholders": 2,
-      "refs": [
-        {
-          "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 203,
-          "column": 7
-        }
-      ]
-    },
     "8cbcf741e727dbf7": {
       "source": "模型配置",
       "kind": "text",
@@ -14255,7 +14231,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 895,
+          "line": 898,
           "column": 1
         },
         {
@@ -14364,7 +14340,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 463,
+          "line": 466,
           "column": 21
         }
       ]
@@ -14506,7 +14482,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1045,
+          "line": 1048,
           "column": 22
         },
         {
@@ -14663,6 +14639,18 @@
         }
       ]
     },
+    "9118e0916b218138": {
+      "source": "「{0}」的用量显示为 100%。超出套餐的用量由额外用量支付。",
+      "kind": "template",
+      "placeholders": 1,
+      "refs": [
+        {
+          "file": "src/components/control-center/ClaudeAccountsPanel.vue",
+          "line": 203,
+          "column": 9
+        }
+      ]
+    },
     "917b1c1f18d0276b": {
       "source": "保存中...",
       "kind": "text",
@@ -14704,17 +14692,17 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 597,
+          "line": 600,
           "column": 1
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 638,
+          "line": 641,
           "column": 1
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1136,
+          "line": 1139,
           "column": 18
         }
       ]
@@ -14786,7 +14774,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1189,
+          "line": 1192,
           "column": 24
         },
         {
@@ -14863,7 +14851,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 626,
+          "line": 629,
           "column": 1
         }
       ]
@@ -15453,7 +15441,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1033,
+          "line": 1036,
           "column": 1
         }
       ]
@@ -15465,7 +15453,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1118,
+          "line": 1121,
           "column": 1
         }
       ]
@@ -15744,12 +15732,12 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 321,
+          "line": 324,
           "column": 21
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 497,
+          "line": 500,
           "column": 21
         }
       ]
@@ -16228,7 +16216,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 384,
+          "line": 387,
           "column": 46
         }
       ]
@@ -16455,7 +16443,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 578,
+          "line": 581,
           "column": 11
         }
       ]
@@ -17296,7 +17284,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 942,
+          "line": 945,
           "column": 1
         },
         {
@@ -17519,7 +17507,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1028,
+          "line": 1031,
           "column": 1
         }
       ]
@@ -17822,7 +17810,7 @@
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 717,
+          "line": 720,
           "column": 1
         },
         {
@@ -18300,7 +18288,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 435,
+          "line": 438,
           "column": 43
         }
       ]
@@ -18702,12 +18690,12 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 569,
+          "line": 572,
           "column": 1
         },
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1181,
+          "line": 1184,
           "column": 1
         },
         {
@@ -18924,7 +18912,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 489,
+          "line": 492,
           "column": 14
         }
       ]
@@ -18972,7 +18960,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1050,
+          "line": 1053,
           "column": 1
         }
       ]
@@ -19227,7 +19215,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1055,
+          "line": 1058,
           "column": 1
         }
       ]
@@ -19533,6 +19521,18 @@
         }
       ]
     },
+    "bff7c90fbba0f6c3": {
+      "source": "「{0}」的用量显示为 100%，{1} 重置。超出套餐的用量由额外用量支付。",
+      "kind": "template",
+      "placeholders": 2,
+      "refs": [
+        {
+          "file": "src/components/control-center/ClaudeAccountsPanel.vue",
+          "line": 202,
+          "column": 9
+        }
+      ]
+    },
     "c0359f779aafb6c5": {
       "source": "加载 Agent 运行失败",
       "kind": "text",
@@ -19755,7 +19755,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1136,
+          "line": 1139,
           "column": 18
         }
       ]
@@ -20135,7 +20135,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 886,
+          "line": 889,
           "column": 11
         }
       ]
@@ -20258,7 +20258,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1022,
+          "line": 1025,
           "column": 14
         }
       ]
@@ -20760,7 +20760,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 235,
+          "line": 238,
           "column": 17
         }
       ]
@@ -20974,7 +20974,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 230,
+          "line": 233,
           "column": 10
         }
       ]
@@ -21044,7 +21044,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 900,
+          "line": 903,
           "column": 25
         }
       ]
@@ -21167,7 +21167,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 239,
+          "line": 242,
           "column": 10
         },
         {
@@ -21338,7 +21338,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1045,
+          "line": 1048,
           "column": 22
         },
         {
@@ -21577,7 +21577,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1168,
+          "line": 1171,
           "column": 73
         }
       ]
@@ -21649,7 +21649,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 559,
+          "line": 562,
           "column": 69
         }
       ]
@@ -22818,18 +22818,6 @@
         }
       ]
     },
-    "e0c5112f8d1961e5": {
-      "source": "「{0}」额度已用完。重置前的请求计入额外用量。",
-      "kind": "template",
-      "placeholders": 1,
-      "refs": [
-        {
-          "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 200,
-          "column": 9
-        }
-      ]
-    },
     "e0c8656472eca24b": {
       "source": "已为 {0} 个条目生成简介（跳过 {1} 个无效技能）",
       "kind": "template",
@@ -23099,7 +23087,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 312,
+          "line": 315,
           "column": 12
         }
       ]
@@ -23529,7 +23517,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1136,
+          "line": 1139,
           "column": 18
         }
       ]
@@ -23746,7 +23734,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 885,
+          "line": 888,
           "column": 11
         }
       ]
@@ -24156,7 +24144,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1161,
+          "line": 1164,
           "column": 1
         }
       ]
@@ -24335,6 +24323,18 @@
         }
       ]
     },
+    "f2ade1e75f52a4da": {
+      "source": "「{0}」的用量显示为 100%，{1} 重置。Anthropic 可能会因此拒绝这个账号的请求。",
+      "kind": "template",
+      "placeholders": 2,
+      "refs": [
+        {
+          "file": "src/components/control-center/ClaudeAccountsPanel.vue",
+          "line": 206,
+          "column": 7
+        }
+      ]
+    },
     "f2c3bc69d650d644": {
       "source": "工作区基础与常用偏好。",
       "kind": "text",
@@ -24436,7 +24436,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1081,
+          "line": 1084,
           "column": 1
         }
       ]
@@ -24556,7 +24556,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 1196,
+          "line": 1199,
           "column": 20
         },
         {
@@ -24639,7 +24639,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 613,
+          "line": 616,
           "column": 1
         }
       ]
@@ -25091,7 +25091,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 359,
+          "line": 362,
           "column": 36
         }
       ]
@@ -25636,7 +25636,7 @@
       "refs": [
         {
           "file": "src/components/control-center/ClaudeAccountsPanel.vue",
-          "line": 831,
+          "line": 834,
           "column": 1
         }
       ]
