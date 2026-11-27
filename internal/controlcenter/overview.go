@@ -10,9 +10,10 @@ type ControlCenterDomainStatus struct {
 
 // ControlCenterOverview is derived at read time and must not contain secrets.
 type ControlCenterOverview struct {
-	Accounts   ControlCenterDomainStatus `json:"accounts"`
-	RequestLab ControlCenterDomainStatus `json:"requestLab"`
-	Routing    ControlCenterDomainStatus `json:"routing"`
-	Agents     ControlCenterDomainStatus `json:"agents"`
-	Profiles   ControlCenterDomainStatus `json:"profiles"`
+	Accounts       ControlCenterDomainStatus `json:"accounts"`
+	ClaudeAccounts ControlCenterDomainStatus `json:"claudeAccounts"`
+	RequestLab     ControlCenterDomainStatus `json:"requestLab"`
+	Routing        ControlCenterDomainStatus `json:"routing"`
+	Agents         ControlCenterDomainStatus `json:"agents"`
+	Profiles       ControlCenterDomainStatus `json:"profiles"`
 }

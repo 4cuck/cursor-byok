@@ -1,6 +1,7 @@
 <script setup>
 import AccountsPanel from "@/components/control-center/AccountsPanel.vue";
 import AgentOpsPanel from "@/components/control-center/AgentOpsPanel.vue";
+import ClaudeAccountsPanel from "@/components/control-center/ClaudeAccountsPanel.vue";
 import ConfigProfilesPanel from "@/components/control-center/ConfigProfilesPanel.vue";
 import RequestLabPanel from "@/components/control-center/RequestLabPanel.vue";
 import RoutingPanel from "@/components/control-center/RoutingPanel.vue";
@@ -10,6 +11,7 @@ import { useRoute, useRouter } from "vue-router";
 
 const TABS = [
   { id: "accounts", label: "账号", description: "多账号管理与厂商余额", icon: "icon-[mdi--account-multiple-outline]", overviewKey: "accounts" },
+  { id: "claude", label: "Claude 订阅", description: "用 Claude Pro / Max 订阅账号为 Cursor 提供模型", icon: "icon-[simple-icons--claude]", overviewKey: "claudeAccounts" },
   { id: "request-lab", label: "请求实验室", description: "官方镜像 vs 本地结构对比", icon: "icon-[mdi--flask-outline]", overviewKey: "requestLab" },
   { id: "routing", label: "自适应路由", description: "策略、评分与故障切换", icon: "icon-[mdi--routes]", overviewKey: "routing" },
   { id: "agents", label: "Agent 运行台", description: "委派任务与运行审计", icon: "icon-[mdi--robot-outline]", overviewKey: "agents" },
@@ -72,16 +74,21 @@ watch(
 );
 
 // 概览加载与面板渲染解耦：概览失败或挂起时各 tab 面板仍可独立加载。
+// quiet：面板里的数据变了之后顺手更新计数，不闪「…」，失败也保留原有计数。
 let overviewSeq = 0;
-async function loadOverview() {
+async function loadOverview({ quiet = false } = {}) {
   const seq = ++overviewSeq;
-  overviewLoading.value = true;
-  overviewError.value = "";
+  if (!quiet) {
+    overviewLoading.value = true;
+    overviewError.value = "";
+  }
   try {
     const data = await getControlCenterOverview();
-    if (seq === overviewSeq) overview.value = data;
-  } catch (error) {
     if (seq !== overviewSeq) return;
+    overview.value = data;
+    overviewError.value = "";
+  } catch (error) {
+    if (seq !== overviewSeq || quiet) return;
     overview.value = null;
     overviewError.value = error?.message || String(error || "加载概览失败");
   } finally {
@@ -161,6 +168,10 @@ onMounted(() => {
         </div>
 
         <AccountsPanel v-if="activeTab === 'accounts'" />
+        <ClaudeAccountsPanel
+          v-else-if="activeTab === 'claude'"
+          @changed="loadOverview({ quiet: true })"
+        />
         <RequestLabPanel v-else-if="activeTab === 'request-lab'" />
         <RoutingPanel v-else-if="activeTab === 'routing'" />
         <AgentOpsPanel v-else-if="activeTab === 'agents'" />

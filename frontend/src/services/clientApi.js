@@ -21,6 +21,8 @@ import {
   PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
   FetchCursorAccountModels, SyncCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
+  ListClaudeAccounts, ImportClaudeAccount, RefreshClaudeAccount, RemoveClaudeAccount,
+  FetchClaudeAccountModels, AddClaudeAccountModels, RemoveClaudeAccountModels, SetClaudeAccountModelFastMode,
   ListRequestSources, BuildRequestComparison, ExportSanitizedRequestComparison,
   GetRoutingPolicy, SaveRoutingPolicy, PreviewRoutingDecision, GetRoutingDecisionHistory,
   GetAgentRuns, GetAgentRun, CancelAgentRun, PrepareAgentRunRetry, ExecuteAgentRunRetry, ExportSanitizedAgentRunReport,
@@ -90,6 +92,8 @@ const desktopMethods = {
   PrepareCursorClientAccountSwitch, PrepareCursorClientAccountSwitchWithOptions, ExecuteCursorClientAccountSwitch,
   FetchCursorAccountModels, SyncCursorAccountModels,
   BeginCursorAccountLogin, GetCursorAccountLoginStatus, CancelCursorAccountLogin,
+  ListClaudeAccounts, ImportClaudeAccount, RefreshClaudeAccount, RemoveClaudeAccount,
+  FetchClaudeAccountModels, AddClaudeAccountModels, RemoveClaudeAccountModels, SetClaudeAccountModelFastMode,
   ListRequestSources, BuildRequestComparison, ExportSanitizedRequestComparison,
   GetRoutingPolicy, SaveRoutingPolicy, PreviewRoutingDecision, GetRoutingDecisionHistory,
   GetAgentRuns, GetAgentRun, CancelAgentRun, PrepareAgentRunRetry, ExecuteAgentRunRetry, ExportSanitizedAgentRunReport,
@@ -416,6 +420,70 @@ export function getCursorAccountLoginStatus(sessionID) {
 
 export function cancelCursorAccountLogin(sessionID) {
   return withApiLogging("CancelCursorAccountLogin", undefined, () => desktopOrMockRaw(() => CancelCursorAccountLogin(sessionID), "@bindings/cursor/internal/bridge/proxyservice.js", "CancelCursorAccountLogin", [sessionID]));
+}
+
+// Claude subscription accounts (Control Center → Claude subscription).
+//
+// The backend gives each exchange with Anthropic 30 seconds. The calls that
+// make one wait longer than that here, so a slow answer arrives as the
+// backend's own result instead of a UI timeout that hides whether the change
+// was saved.
+const CLAUDE_ACCOUNT_REMOTE_TIMEOUT_MS = 45_000;
+
+export function listClaudeAccounts() {
+  return withApiLogging("ListClaudeAccounts", undefined, () => desktopOrMockRaw(() => ListClaudeAccounts(), "@bindings/cursor/internal/bridge/proxyservice.js", "ListClaudeAccounts"));
+}
+
+// credentials is the text the user submitted: the contents of a Claude CLI
+// credentials file, or an access token. It is a secret, so only its length is
+// handed to the call log.
+export function importClaudeAccount(credentials) {
+  const text = String(credentials ?? "");
+  return withApiLogging(
+    "ImportClaudeAccount",
+    { length: text.length },
+    () => desktopOrMockRaw(() => ImportClaudeAccount(text), "@bindings/cursor/internal/bridge/proxyservice.js", "ImportClaudeAccount", [text]),
+    { timeoutMs: CLAUDE_ACCOUNT_REMOTE_TIMEOUT_MS },
+  );
+}
+
+export function refreshClaudeAccount(accountID) {
+  return withApiLogging(
+    "RefreshClaudeAccount",
+    { accountID },
+    () => desktopOrMockRaw(() => RefreshClaudeAccount(accountID), "@bindings/cursor/internal/bridge/proxyservice.js", "RefreshClaudeAccount", [accountID]),
+    { timeoutMs: CLAUDE_ACCOUNT_REMOTE_TIMEOUT_MS },
+  );
+}
+
+export function removeClaudeAccount(accountID) {
+  return withApiLogging("RemoveClaudeAccount", { accountID }, () => desktopOrMockRaw(() => RemoveClaudeAccount(accountID), "@bindings/cursor/internal/bridge/proxyservice.js", "RemoveClaudeAccount", [accountID]));
+}
+
+export function fetchClaudeAccountModels() {
+  return withApiLogging(
+    "FetchClaudeAccountModels",
+    undefined,
+    () => desktopOrMockRaw(() => FetchClaudeAccountModels(), "@bindings/cursor/internal/bridge/proxyservice.js", "FetchClaudeAccountModels"),
+    { timeoutMs: CLAUDE_ACCOUNT_REMOTE_TIMEOUT_MS },
+  );
+}
+
+// models: [{ id, displayName }]
+export function addClaudeAccountModels(models) {
+  const request = { models: Array.isArray(models) ? models : [] };
+  return withApiLogging("AddClaudeAccountModels", { count: request.models.length }, () => desktopOrMockRaw(() => AddClaudeAccountModels(request), "@bindings/cursor/internal/bridge/proxyservice.js", "AddClaudeAccountModels", [request]));
+}
+
+// ids: ids of model rows, as in the models of listClaudeAccounts().
+export function removeClaudeAccountModels(ids) {
+  const request = { ids: Array.isArray(ids) ? ids : [] };
+  return withApiLogging("RemoveClaudeAccountModels", { count: request.ids.length }, () => desktopOrMockRaw(() => RemoveClaudeAccountModels(request), "@bindings/cursor/internal/bridge/proxyservice.js", "RemoveClaudeAccountModels", [request]));
+}
+
+export function setClaudeAccountModelFastMode(modelRowID, enabled) {
+  const args = [modelRowID, Boolean(enabled)];
+  return withApiLogging("SetClaudeAccountModelFastMode", { modelRowID, enabled: args[1] }, () => desktopOrMockRaw(() => SetClaudeAccountModelFastMode(...args), "@bindings/cursor/internal/bridge/proxyservice.js", "SetClaudeAccountModelFastMode", args));
 }
 
 export function listRequestSources(query) {

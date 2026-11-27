@@ -6,6 +6,7 @@ import { basePreviewConfig, seedPreviewTestPlan } from "./helpers.mjs";
 const routes = [
   "/",
   "/control-center?tab=accounts",
+  "/control-center?tab=claude",
   "/control-center?tab=request-lab",
   "/model-config",
   "/model-editor",

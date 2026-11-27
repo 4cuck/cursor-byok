@@ -12,9 +12,11 @@ import (
 	"cursor/internal/agentops"
 	"cursor/internal/appdata"
 	backend "cursor/internal/backend"
+	modeladapter "cursor/internal/backend/agent/model"
 	"cursor/internal/backend/forwarder"
 	serverconfig "cursor/internal/backend/server/config"
 	"cursor/internal/certs"
+	"cursor/internal/claudeaccount"
 	"cursor/internal/configprofile"
 	"cursor/internal/cursoraccount"
 	"cursor/internal/historymetrics"
@@ -45,7 +47,10 @@ type ProxyService struct {
 	// backendHost 表示当前嵌入式 backend 服务。
 	backendHost *backend.Host
 	// cursorAccount 持有仅供插件、Skills 和 MCP 控制面使用的真实 Cursor 身份。
-	cursorAccount  *cursoraccount.Manager
+	cursorAccount *cursoraccount.Manager
+	// claudeAccount keeps the Claude subscription accounts the user submitted
+	// credentials for (see claude_account.go).
+	claudeAccount  *claudeaccount.Manager
 	requestLab     *requestlab.Lab
 	routingHist    *routing.History
 	routingMetrics *routing.MetricsSnapshot
@@ -225,6 +230,10 @@ func NewProxyService(proxy *mitm.ProxyServer, certManager *certs.Manager, caCert
 		appdata.DataRootPath(),
 		filepath.Join(appdata.DataRootPath(), "cursor-account.json"),
 		netproxy.NewHTTPClient(publicAPITimeout),
+	)
+	service.claudeAccount = claudeaccount.NewManager(
+		appdata.DataRootPath(),
+		claudeaccount.NewAPI(netproxy.NewHTTPClient(publicAPITimeout), modeladapter.AnthropicClaudeCodeUserAgent),
 	)
 	service.requestLab = requestlab.New(
 		appdata.HistoryRootPath(),

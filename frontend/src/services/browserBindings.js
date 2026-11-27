@@ -1132,10 +1132,403 @@ function upsertPreviewAccount(account) {
   return { ...next };
 }
 
+// ---------------------------------------------------------------------------
+// Claude subscription accounts (Control Center → Claude subscription).
+//
+// The preview keeps accounts in memory and the model rows they serve in the
+// preview config. It follows the backend's rules closely enough to drive the
+// UI: the same error codes, a renewed credential replaces its account, every
+// account serves every row.
+//
+// Test plan keys:
+//   claudeAccountDirectory  [{ token, account }]. What "Anthropic" knows: a
+//                           submitted token is the account of its entry, and
+//                           entries with the same account.id are one account.
+//                           A token that is not listed is refused. Without the
+//                           key every well-formed token is a made-up account.
+//   claudeAccounts          accounts saved before the page loads.
+//   claudeAccountModels     [{ id, accountIds }]: rows of the preview config,
+//                           by id, that the saved accounts serve.
+//   claudeAccountCatalog    [{ id, displayName }]: the models that can be added.
+//   claudeAccountRefresh    { [accountId]: fields }: what a refresh changes.
+//   claudeAccountFailures   { models: "code: detail" }: make a call fail.
+// ---------------------------------------------------------------------------
+const PREVIEW_CLAUDE_GROUP_NAME = "Claude Subscription";
+const PREVIEW_CLAUDE_MAX_CREDENTIAL_LENGTH = 64 * 1024;
+const PREVIEW_CLAUDE_DEFAULT_CATALOG = [
+  { id: "claude-opus-4-8", displayName: "Claude Opus 4.8" },
+  { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+  { id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5" },
+];
+
+function previewClaudeError(code, detail) {
+  return new Error(`${code}: ${detail}`);
+}
+
+function previewClaudeTokenHint(token) {
+  const prefixLength = "sk-ant-oat01-".length;
+  if (token.length < prefixLength + 12) return "…";
+  return `${token.slice(0, prefixLength)}…${token.slice(-4)}`;
+}
+
+function normalizePreviewClaudeAccount(source) {
+  const item = source && typeof source === "object" ? source : {};
+  const now = Date.now();
+  return {
+    id: String(item.id || nextID()),
+    email: String(item.email || ""),
+    displayName: String(item.displayName || ""),
+    organizationName: String(item.organizationName || ""),
+    plan: String(item.plan || ""),
+    billingType: String(item.billingType || ""),
+    rateLimitTier: String(item.rateLimitTier || ""),
+    usageCredits: item.usageCredits && typeof item.usageCredits === "object" ? clone(item.usageCredits) : undefined,
+    usageWindows: Array.isArray(item.usageWindows) ? clone(item.usageWindows) : [],
+    scopes: Array.isArray(item.scopes) ? item.scopes.map((scope) => String(scope)) : [],
+    tokenHint: String(item.tokenHint || "sk-ant-oat01-…demo"),
+    expiresAtUnixMs: Number(item.expiresAtUnixMs || 0),
+    status: item.status === "rejected" ? "rejected" : "ok",
+    createdAtUnixMs: Number(item.createdAtUnixMs || now),
+    updatedAtUnixMs: Number(item.updatedAtUnixMs || now),
+    usageAtUnixMs: Number(item.usageAtUnixMs ?? now),
+    detailsError: String(item.detailsError || ""),
+  };
+}
+
+// The status the UI is shown: a token past its expiry is expired whatever
+// else is known about it.
+function previewClaudeAccountView(account) {
+  const expired = account.expiresAtUnixMs > 0 && account.expiresAtUnixMs <= Date.now();
+  return { ...clone(account), status: expired ? "expired" : account.status };
+}
+
+let previewClaudeAccounts = Array.isArray(previewTestPlan?.claudeAccounts)
+  ? previewTestPlan.claudeAccounts.map((item) => normalizePreviewClaudeAccount(item))
+  : [];
+// Row id -> ids of the accounts that serve the row.
+const previewClaudeModelOwners = new Map(
+  (Array.isArray(previewTestPlan?.claudeAccountModels) ? previewTestPlan.claudeAccountModels : [])
+    .filter((item) => item && typeof item === "object" && item.id)
+    .map((item) => [String(item.id), Array.isArray(item.accountIds) ? item.accountIds.map((id) => String(id)) : []]),
+);
+// Account id -> the token it was last given. Kept only to tell a renewed
+// credential from the same one submitted again; it is never returned.
+const previewClaudeTokens = new Map();
+
+function previewClaudeState() {
+  const order = new Map(previewClaudeAccounts.map((account, index) => [account.id, index]));
+  const counts = new Map();
+  const models = [];
+  for (const row of previewConfig.modelAdapters) {
+    const owners = previewClaudeModelOwners.get(row?.id);
+    if (!owners) continue;
+    const accountIds = owners
+      .filter((id) => order.has(id))
+      .sort((left, right) => order.get(left) - order.get(right));
+    if (accountIds.length === 0) continue;
+    for (const id of accountIds) counts.set(id, (counts.get(id) || 0) + 1);
+    models.push({
+      id: row.id,
+      displayName: String(row.displayName || ""),
+      modelId: String(row.modelID || ""),
+      groupName: String(row.groupName || ""),
+      disabled: Boolean(row.disabled),
+      fastMode: Boolean(row.fastMode),
+      accountIds,
+    });
+  }
+  return {
+    accounts: previewClaudeAccounts.map((account) => ({
+      account: previewClaudeAccountView(account),
+      modelCount: counts.get(account.id) || 0,
+    })),
+    models,
+  };
+}
+
+function previewClaudeOverview() {
+  if (previewClaudeAccounts.length === 0) return { state: "empty" };
+  const troubled = previewClaudeAccounts.some((account) => previewClaudeAccountView(account).status !== "ok");
+  return {
+    state: troubled ? "warning" : "ready",
+    count: previewClaudeAccounts.length,
+    ...(troubled ? { warningCode: "claude_subscription_token_rejected" } : {}),
+  };
+}
+
+function parsePreviewClaudeCredentials(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) throw previewClaudeError("claude_subscription_import_empty", "nothing was provided");
+  if (raw.length > PREVIEW_CLAUDE_MAX_CREDENTIAL_LENGTH) {
+    throw previewClaudeError("claude_subscription_import_too_large", "the pasted text is too large to be a credentials file");
+  }
+  if (/^sk-ant-oat\d*-[A-Za-z0-9_-]+$/.test(raw)) {
+    return { token: raw, expiresAtUnixMs: 0, scopes: [], plan: "" };
+  }
+  let document = null;
+  try {
+    document = JSON.parse(raw);
+  } catch {
+    document = null;
+  }
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    if (raw.startsWith("sk-ant-")) {
+      throw previewClaudeError("claude_subscription_not_oauth_token", "this is not a Claude subscription token (sk-ant-oat...)");
+    }
+    throw previewClaudeError("claude_subscription_import_invalid", "the pasted text is neither a credentials file nor an access token");
+  }
+  if ("claudeAiOauth" in document) {
+    const inner = document.claudeAiOauth;
+    if (!inner || typeof inner !== "object" || Array.isArray(inner)) {
+      throw previewClaudeError("claude_subscription_import_no_token", "claudeAiOauth holds no access token");
+    }
+    document = inner;
+  }
+  const token = typeof document.accessToken === "string" ? document.accessToken.trim() : "";
+  if (!token) throw previewClaudeError("claude_subscription_import_no_token", "no claudeAiOauth.accessToken was found");
+  if (!token.startsWith("sk-ant-oat")) {
+    throw previewClaudeError("claude_subscription_not_oauth_token", "the access token is not a Claude subscription token (sk-ant-oat...)");
+  }
+  let expiresAt = Number(document.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) expiresAt = 0;
+  else if (expiresAt < 100_000_000_000) expiresAt *= 1000;
+  return {
+    token,
+    expiresAtUnixMs: Math.trunc(expiresAt),
+    scopes: Array.isArray(document.scopes) ? document.scopes.map((scope) => String(scope).trim()).filter(Boolean) : [],
+    plan: typeof document.subscriptionType === "string" ? document.subscriptionType.trim().toLowerCase() : "",
+  };
+}
+
+// The account a token belongs to, or null when "Anthropic" refuses the token.
+function resolvePreviewClaudeIdentity(token) {
+  const directory = readPreviewTestPlan()?.claudeAccountDirectory;
+  if (Array.isArray(directory)) {
+    const entry = directory.find((item) => item?.token === token);
+    return entry?.account && typeof entry.account === "object" ? clone(entry.account) : null;
+  }
+  const tail = token.slice(-4).toLowerCase().replace(/[^a-z0-9]/g, "x");
+  return {
+    id: `preview-claude-${tail}`,
+    email: `preview-${tail}@example.test`,
+    displayName: "Preview User",
+    organizationName: "Preview Organization",
+    plan: "pro",
+    rateLimitTier: "default_claude_ai",
+    usageCredits: { enabled: false },
+    usageWindows: [
+      { id: "5h", usedPercent: 12, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+      { id: "7d", usedPercent: 48, resetsAt: new Date(Date.now() + 4 * 86_400_000).toISOString() },
+    ],
+  };
+}
+
+function previewClaudeServedRows() {
+  const saved = new Set(previewClaudeAccounts.map((account) => account.id));
+  return previewConfig.modelAdapters.filter((row) => (previewClaudeModelOwners.get(row?.id) || []).some((id) => saved.has(id)));
+}
+
+export const ListClaudeAccounts = () => {
+  recordPreviewCall("ListClaudeAccounts");
+  return Promise.resolve(previewClaudeState());
+};
+export const ImportClaudeAccount = (credentials) => {
+  // The credential is a secret: only its length goes into the call record.
+  recordPreviewCall("ImportClaudeAccount", [{ length: String(credentials ?? "").length }]);
+  let parsed;
+  try {
+    parsed = parsePreviewClaudeCredentials(credentials);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (parsed.expiresAtUnixMs > 0 && parsed.expiresAtUnixMs <= Date.now()) {
+    const day = new Date(parsed.expiresAtUnixMs).toISOString().slice(0, 10);
+    return Promise.reject(previewClaudeError("claude_subscription_token_expired", `this token expired on ${day}`));
+  }
+  const identity = resolvePreviewClaudeIdentity(parsed.token);
+  if (!identity) {
+    return Promise.reject(previewClaudeError("claude_subscription_token_rejected", "Anthropic refused this token"));
+  }
+  const now = Date.now();
+  const index = previewClaudeAccounts.findIndex((account) => account.id === String(identity.id));
+  const created = index < 0;
+  const previous = created ? null : previewClaudeAccounts[index];
+  const account = normalizePreviewClaudeAccount({
+    plan: parsed.plan,
+    ...identity,
+    scopes: parsed.scopes,
+    tokenHint: previewClaudeTokenHint(parsed.token),
+    expiresAtUnixMs: parsed.expiresAtUnixMs,
+    status: "ok",
+    createdAtUnixMs: previous?.createdAtUnixMs || now,
+    updatedAtUnixMs: now,
+    usageAtUnixMs: now,
+    detailsError: "",
+  });
+  // The token replaces the account's previous one in the rows that held it,
+  // and joins every other row the saved accounts serve.
+  const renewed = !created && previewClaudeTokens.get(account.id) !== parsed.token;
+  let updatedModels = 0;
+  for (const row of previewClaudeServedRows()) {
+    const owners = previewClaudeModelOwners.get(row.id);
+    if (owners.includes(account.id)) {
+      if (renewed) updatedModels += 1;
+      continue;
+    }
+    owners.push(account.id);
+    updatedModels += 1;
+  }
+  previewClaudeTokens.set(account.id, parsed.token);
+  if (created) previewClaudeAccounts = [...previewClaudeAccounts, account];
+  else previewClaudeAccounts = previewClaudeAccounts.map((item, position) => (position === index ? account : item));
+  return Promise.resolve({ state: previewClaudeState(), accountId: account.id, created, updatedModels });
+};
+export const RefreshClaudeAccount = (accountID) => {
+  recordPreviewCall("RefreshClaudeAccount", [accountID]);
+  const index = previewClaudeAccounts.findIndex((account) => account.id === accountID);
+  if (index < 0) {
+    return Promise.reject(previewClaudeError("claude_subscription_not_found", "this Claude account is no longer saved"));
+  }
+  // Without a patch in the plan a refresh finds the account as it was. An
+  // account whose usage can be read gets a new read time.
+  const current = previewClaudeAccounts[index];
+  const patch = readPreviewTestPlan()?.claudeAccountRefresh?.[accountID];
+  const refreshed = normalizePreviewClaudeAccount({
+    ...current,
+    ...(current.detailsError ? {} : { usageAtUnixMs: Date.now() }),
+    ...(patch && typeof patch === "object" ? patch : {}),
+  });
+  previewClaudeAccounts = previewClaudeAccounts.map((item, position) => (position === index ? refreshed : item));
+  return Promise.resolve(previewClaudeState());
+};
+export const RemoveClaudeAccount = (accountID) => {
+  recordPreviewCall("RemoveClaudeAccount", [accountID]);
+  if (!previewClaudeAccounts.some((account) => account.id === accountID)) {
+    return Promise.reject(previewClaudeError("claude_subscription_not_found", "this Claude account is no longer saved"));
+  }
+  let updatedModels = 0;
+  const removedRows = new Set();
+  for (const row of previewClaudeServedRows()) {
+    const owners = previewClaudeModelOwners.get(row.id);
+    if (!owners.includes(accountID)) continue;
+    const remaining = owners.filter((id) => id !== accountID);
+    if (remaining.length === 0) {
+      previewClaudeModelOwners.delete(row.id);
+      removedRows.add(row.id);
+    } else {
+      previewClaudeModelOwners.set(row.id, remaining);
+      updatedModels += 1;
+    }
+  }
+  if (removedRows.size > 0) {
+    previewConfig.modelAdapters = previewConfig.modelAdapters.filter((row) => !removedRows.has(row.id));
+    persistPreviewConfig();
+  }
+  previewClaudeAccounts = previewClaudeAccounts.filter((account) => account.id !== accountID);
+  previewClaudeTokens.delete(accountID);
+  return Promise.resolve({ state: previewClaudeState(), updatedModels, removedModels: removedRows.size });
+};
+export const FetchClaudeAccountModels = () => {
+  recordPreviewCall("FetchClaudeAccountModels");
+  if (!previewClaudeAccounts.some((account) => previewClaudeAccountView(account).status === "ok")) {
+    return Promise.reject(previewClaudeError("claude_subscription_no_usable_account", "no saved Claude account has a usable token"));
+  }
+  const plan = readPreviewTestPlan();
+  if (typeof plan?.claudeAccountFailures?.models === "string") {
+    return Promise.reject(new Error(plan.claudeAccountFailures.models));
+  }
+  const catalog = Array.isArray(plan?.claudeAccountCatalog) ? plan.claudeAccountCatalog : PREVIEW_CLAUDE_DEFAULT_CATALOG;
+  const served = new Set(previewClaudeServedRows().map((row) => String(row.modelID || "").toLowerCase()));
+  return Promise.resolve({
+    models: catalog.map((model) => ({
+      id: String(model.id),
+      displayName: String(model.displayName || model.id),
+      added: served.has(String(model.id).toLowerCase()),
+    })),
+  });
+};
+export const AddClaudeAccountModels = (request) => {
+  const requested = [];
+  const seen = new Set();
+  for (const model of Array.isArray(request?.models) ? request.models : []) {
+    const id = String(model?.id || "").trim();
+    if (!id || seen.has(id.toLowerCase())) continue;
+    seen.add(id.toLowerCase());
+    requested.push({ id, displayName: String(model?.displayName || "").trim() || id });
+  }
+  recordPreviewCall("AddClaudeAccountModels", [{ models: requested.map((model) => model.id) }]);
+  if (requested.length === 0) {
+    return Promise.reject(previewClaudeError("claude_subscription_no_models_selected", "no model was selected"));
+  }
+  const usable = previewClaudeAccounts
+    .filter((account) => previewClaudeAccountView(account).status === "ok")
+    .map((account) => account.id);
+  if (usable.length === 0) {
+    return Promise.reject(previewClaudeError("claude_subscription_no_usable_account", "no saved Claude account has a usable token"));
+  }
+  const served = new Set(previewClaudeServedRows().map((row) => String(row.modelID || "").toLowerCase()));
+  let added = 0;
+  let skipped = 0;
+  for (const model of requested) {
+    if (served.has(model.id.toLowerCase())) {
+      skipped += 1;
+      continue;
+    }
+    const row = {
+      id: nextID(),
+      displayName: model.displayName,
+      groupName: PREVIEW_CLAUDE_GROUP_NAME,
+      type: "anthropic",
+      supplierID: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      apiKey: "browser-preview-claude-token",
+      tooltipData: "Claude subscription",
+      modelID: model.id,
+      anthropicAuthMode: "oauth",
+      balanceProfile: "none",
+      fastMode: false,
+    };
+    previewConfig.modelAdapters.push(row);
+    previewClaudeModelOwners.set(row.id, [...usable]);
+    served.add(model.id.toLowerCase());
+    added += 1;
+  }
+  if (added > 0) persistPreviewConfig();
+  return Promise.resolve({ state: previewClaudeState(), added, skipped });
+};
+export const RemoveClaudeAccountModels = (request) => {
+  const ids = new Set((Array.isArray(request?.ids) ? request.ids : []).map((id) => String(id).trim()).filter(Boolean));
+  recordPreviewCall("RemoveClaudeAccountModels", [{ ids: [...ids] }]);
+  if (ids.size === 0) {
+    return Promise.reject(previewClaudeError("claude_subscription_no_models_selected", "no model was selected"));
+  }
+  const targets = new Set(previewClaudeServedRows().filter((row) => ids.has(row.id)).map((row) => row.id));
+  if (targets.size === 0) {
+    return Promise.reject(previewClaudeError("claude_subscription_model_not_found", "no saved Claude account serves the selected model rows"));
+  }
+  previewConfig.modelAdapters = previewConfig.modelAdapters.filter((row) => !targets.has(row.id));
+  for (const id of targets) previewClaudeModelOwners.delete(id);
+  persistPreviewConfig();
+  return Promise.resolve({ state: previewClaudeState(), removed: targets.size });
+};
+export const SetClaudeAccountModelFastMode = (modelRowID, enabled) => {
+  recordPreviewCall("SetClaudeAccountModelFastMode", [modelRowID, Boolean(enabled)]);
+  const row = previewClaudeServedRows().find((item) => item.id === modelRowID);
+  if (!row) {
+    return Promise.reject(previewClaudeError("claude_subscription_model_not_found", "no saved Claude account serves this model row"));
+  }
+  if (Boolean(row.fastMode) !== Boolean(enabled)) {
+    row.fastMode = Boolean(enabled);
+    persistPreviewConfig();
+  }
+  return Promise.resolve(previewClaudeState());
+};
+
 export const GetControlCenterOverview = () => {
   recordPreviewCall("GetControlCenterOverview");
   return Promise.resolve({
     accounts: { state: previewCursorAccounts.length > 0 ? "ready" : "empty", count: previewCursorAccounts.length },
+    claudeAccounts: previewClaudeOverview(),
     requestLab: { state: "ready", count: 2 },
     routing: { state: previewRoutingPolicy.enabled ? "ready" : "empty" },
     agents: { state: previewAgentRuns.length > 0 ? "ready" : "empty", count: previewAgentRuns.length },

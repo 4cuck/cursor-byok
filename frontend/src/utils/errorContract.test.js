@@ -114,6 +114,56 @@ test("maps backend network wording in Chinese to network error", () => {
   assert.equal(error.disposition, "retryable");
 });
 
+test("turns Claude subscription codes into their own sentences", () => {
+  const cases = [
+    ["claude_subscription_import_invalid: the pasted text is neither a credentials file nor an access token", "This is neither a Claude credentials file nor an access token."],
+    ["claude_subscription_not_oauth_token: this is not a Claude subscription token (sk-ant-oat...)", "This is not a Claude subscription token. Subscription tokens start with sk-ant-oat; an API key goes into Model Settings instead."],
+    ["claude_subscription_token_rejected: Anthropic refused this token", "Anthropic refused this token. Sign in again with the Claude CLI and submit the new credentials."],
+    ["claude_subscription_not_found: this Claude account is no longer saved", "This Claude account is no longer saved. Refresh the list."],
+    ["claude_subscription_model_not_found: no saved Claude account serves this model row", "This model is no longer in the list. Refresh and try again."],
+    ["claude_subscription_no_usable_account: no saved Claude account has a usable token", "No saved Claude account has a working token. Add an account, or replace the credentials of a saved one."],
+    ["claude_subscription_details_unavailable: this token may not read the account's profile", "This token works, but it is not allowed to read the account's profile or usage."],
+  ];
+  for (const [text, message] of cases) {
+    const error = normalizeClientError(new Error(text), { operation: "ImportClaudeAccount" });
+    assert.equal(error.code, text.slice(0, text.indexOf(":")));
+    assert.equal(error.kind, "account");
+    assert.equal(error.disposition, "blocked");
+    assert.equal(error.userMessage, message);
+  }
+});
+
+test("a Claude subscription code wins over an HTTP status in its detail, and the detail is kept", () => {
+  const unreachable = normalizeClientError(new Error(
+    "claude_subscription_unreachable: the token could not be checked with Anthropic: HTTP 503: Service unavailable",
+  ));
+  assert.equal(unreachable.code, "claude_subscription_unreachable");
+  assert.equal(
+    unreachable.userMessage,
+    "Could not reach Anthropic. Check your network or proxy and try again. (the token could not be checked with Anthropic: HTTP 503: Service unavailable)",
+  );
+
+  const expired = normalizeClientError("claude_subscription_token_expired: this token expired on 2026-11-19");
+  assert.equal(
+    expired.userMessage,
+    "This token has expired. Sign in again with the Claude CLI and submit the new credentials. (this token expired on 2026-11-19)",
+  );
+
+  // A failed save while a Claude account changes model rows keeps its own code.
+  const save = normalizeClientError(new Error("config_save_failed: disk full"));
+  assert.equal(save.code, "config_save_failed");
+});
+
+test("redacts Anthropic keys and Claude subscription tokens from technical text", () => {
+  const error = normalizeClientError(new Error(
+    "claude_subscription_unreachable: request with sk-ant-oat01-abcDEF_123-xyz and sk-ant-api03-QRS_456 failed",
+  ));
+
+  assert.doesNotMatch(error.technicalMessage, /abcDEF|QRS_456/);
+  assert.doesNotMatch(error.userMessage, /abcDEF|QRS_456/);
+  assert.match(error.technicalMessage, /sk-ant-\[redacted\]/);
+});
+
 test("maps backend model catalog auth failure via HTTP status in text", () => {
   const error = normalizeClientError(new Error(
     "模型列表鉴权失败（HTTP 401），请检查访问密钥是否有效、是否有模型列表权限",

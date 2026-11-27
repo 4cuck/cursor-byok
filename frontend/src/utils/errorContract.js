@@ -52,6 +52,38 @@ const ACCOUNT_ERROR_MESSAGES = new Map([
   ["config_save_failed", "Saving the model list failed. The configuration was rejected."],
   ["cursor_restore_failed", "The configuration saved, but restoring Cursor's official login failed. Restart Cursor and retry."],
   ["cursor_account_reinject_failed", "The configuration saved, but installing the selected Cursor account failed. Restart Cursor and retry."],
+  // Claude subscription accounts, from internal/claudeaccount and
+  // internal/client/claude_account.go. A code is found by looking for its name
+  // in the error text, so none of these may contain an earlier code of this
+  // table: that is why they start with claude_subscription_ and not
+  // claude_account_, which would contain account_not_found.
+  ["claude_subscription_import_empty", "Nothing was submitted. Choose the credentials file or paste its contents."],
+  ["claude_subscription_import_too_large", "This is too large to be a Claude credentials file."],
+  ["claude_subscription_import_invalid", "This is neither a Claude credentials file nor an access token."],
+  ["claude_subscription_import_no_token", "No access token was found in it. A Claude credentials file holds one under claudeAiOauth.accessToken."],
+  ["claude_subscription_not_oauth_token", "This is not a Claude subscription token. Subscription tokens start with sk-ant-oat; an API key goes into Model Settings instead."],
+  ["claude_subscription_token_expired", "This token has expired. Sign in again with the Claude CLI and submit the new credentials."],
+  ["claude_subscription_token_rejected", "Anthropic refused this token. Sign in again with the Claude CLI and submit the new credentials."],
+  ["claude_subscription_unreachable", "Could not reach Anthropic. Check your network or proxy and try again."],
+  ["claude_subscription_details_unavailable", "This token works, but it is not allowed to read the account's profile or usage."],
+  ["claude_subscription_not_found", "This Claude account is no longer saved. Refresh the list."],
+  ["claude_subscription_no_usable_account", "No saved Claude account has a working token. Add an account, or replace the credentials of a saved one."],
+  ["claude_subscription_store_failed", "The saved Claude accounts could not be read or written."],
+  ["claude_subscription_models_failed", "Could not read the model list from Anthropic."],
+  ["claude_subscription_no_models_selected", "No model was selected."],
+  ["claude_subscription_model_not_found", "This model is no longer in the list. Refresh and try again."],
+  ["claude_subscription_service_unavailable", "The Claude account service is not available. Restart the app and retry."],
+]);
+
+// Codes whose backend detail is shown after the sentence above, because the
+// detail is what tells one cause from another (which request failed, and how).
+const ACCOUNT_ERROR_CODES_WITH_DETAIL = new Set([
+  "cursor_model_catalog_failed",
+  "config_save_failed",
+  "claude_subscription_token_expired",
+  "claude_subscription_unreachable",
+  "claude_subscription_store_failed",
+  "claude_subscription_models_failed",
 ]);
 
 const DIAGNOSTIC_CODES = new Map([
@@ -92,6 +124,8 @@ function redactTechnicalText(raw) {
   if (!text) return "unknown error";
   return text
     .replace(/(authorization\s*[=:]\s*)(?:bearer\s+)?[^\s,;&?#]+/gi, "$1[redacted]")
+    // Anthropic keys and Claude subscription tokens (sk-ant-api…, sk-ant-oat…).
+    .replace(/\bsk-ant-[A-Za-z0-9_-]+/g, "sk-ant-[redacted]")
     .replace(/\bcrsr_[A-Za-z0-9_-]+/g, "crsr_[redacted]")
     .replace(/\bgrok_(?:[0-9a-fA-F]{16,}(?:_[0-9a-fA-F]{16,})+|(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{12,})/g, "grok_[redacted]")
     .replace(/\bxai-[A-Za-z0-9]{20,}\b/g, "xai-[redacted]")
@@ -155,7 +189,7 @@ export function normalizeClientError(error, { operation = "ui.operation", traceI
   let result = accountHit || mapped;
 
   // Keep the backend's own explanation when an account/config failure includes detail.
-  if (accountHit && (result.code === "cursor_model_catalog_failed" || result.code === "config_save_failed")) {
+  if (accountHit && ACCOUNT_ERROR_CODES_WITH_DETAIL.has(result.code)) {
     const idx = lower.indexOf(result.code);
     if (idx >= 0) {
       const detail = redactTechnicalText(text.slice(idx + result.code.length).replace(/^[\s:]+/, "").trim());

@@ -59,7 +59,6 @@ import {
   validateModelAdapters,
 } from "@/state/appState";
 import { anthropicAuthModeOptions } from "@/utils/anthropicAuthMeta";
-import { parseClaudeCredentials } from "@/utils/claudeCredentials";
 import { ANTHROPIC_AUTH_MODE_OAUTH } from "@/utils/modelAdapter";
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
@@ -182,15 +181,10 @@ const localTestFailure = ref("");
 const manualAddMode = ref(false);
 const catalogError = ref("");
 
-// Claude 订阅 OAuth：粘贴 Claude CLI 的 credentials.json（~/.claude/credentials.json），
-// 取出其中的访问令牌填入访问密钥，省去手工复制长令牌。
-const claudeCredentialsText = ref("");
-// 导入结果，一行一句；claudeCredentialsFailed 为 true 时按错误显示。
-const claudeCredentialsStatus = ref([]);
-const claudeCredentialsFailed = ref(false);
-// 导入框只在用得上订阅令牌的鉴权模式下显示：订阅 OAuth，或接口地址为空、
-// 为官方地址时的「自动」（官方地址上「自动」会识别订阅令牌）。
-const showClaudeCredentialsImport = computed(() => {
+// Claude 订阅账号在「控制中心 → Claude 订阅」里添加和管理。这里只在用得上
+// 订阅令牌的鉴权模式下给出去那里的指引：订阅 OAuth，或接口地址为空、为官方
+// 地址时的「自动」（官方地址上「自动」会识别订阅令牌）。
+const showClaudeSubscriptionHint = computed(() => {
   if (draft.type !== "anthropic") return false;
   if (draft.anthropicAuthMode === ANTHROPIC_AUTH_MODE_OAUTH) return true;
   if (draft.anthropicAuthMode !== ANTHROPIC_AUTH_MODE_AUTO) return false;
@@ -198,44 +192,8 @@ const showClaudeCredentialsImport = computed(() => {
   return baseURL === "" || /^https:\/\/api\.anthropic\.com(\/|$)/i.test(baseURL);
 });
 
-function claudeCredentialsDate(expiresAt) {
-  return new Date(expiresAt).toLocaleDateString();
-}
-
-function claudeCredentialsFailure(result) {
-  switch (result.reason) {
-    case "empty":
-      return "请先粘贴 credentials.json 的内容。";
-    case "invalid_json":
-      return "粘贴的内容不是有效的 JSON。";
-    case "expired":
-      return `这个令牌已在 ${claudeCredentialsDate(result.expiresAt)} 过期，请在 Claude CLI 重新登录后再导入。`;
-    default:
-      return "没有找到 claudeAiOauth.accessToken。";
-  }
-}
-
-function importClaudeCredentials() {
-  const result = parseClaudeCredentials(claudeCredentialsText.value);
-  claudeCredentialsFailed.value = !result.ok;
-  if (!result.ok) {
-    claudeCredentialsStatus.value = [String(claudeCredentialsFailure(result))];
-    return;
-  }
-  draft.apiKey = result.accessToken;
-  draft.anthropicAuthMode = ANTHROPIC_AUTH_MODE_OAUTH;
-  if (!String(draft.baseURL || "").trim()) {
-    draft.baseURL = "https://api.anthropic.com";
-  }
-  const lines = ["访问令牌已填入访问密钥。"];
-  if (result.expiresAt > 0) {
-    lines.push(`令牌有效期至 ${claudeCredentialsDate(result.expiresAt)}。`);
-  }
-  if (result.fromFile && !result.hasRefreshToken) {
-    lines.push("凭据里没有刷新令牌，到期后需要重新导入。");
-  }
-  claudeCredentialsStatus.value = lines.map((line) => String(line));
-  claudeCredentialsText.value = "";
+function openClaudeSubscription() {
+  void router.push({ path: "/control-center", query: { tab: "claude" } });
 }
 
 // 快速添加：归类方式（与模型配置页「名称/连接」一致），不再在此页手填 groupName
@@ -1586,40 +1544,19 @@ onMounted(async () => {
                     </label>
 
                     <div
-                      v-if="showClaudeCredentialsImport"
-                      class="mb-3 rounded-[8px] border border-[#3a3a3a] bg-[#1f1f1f] p-3"
+                      v-if="showClaudeSubscriptionHint"
+                      class="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-[#3a3a3a] bg-[#1f1f1f] px-3 py-2.5"
+                      data-testid="claude-subscription-hint"
                     >
-                      <span class="text-sm text-[#d4d4d4]">导入 Claude 订阅凭据</span>
-                      <p class="mt-1 text-xs text-[#a3a3a3]">
-                        粘贴 Claude CLI 凭据文件的内容，访问令牌会填入访问密钥。文件位置： <code class="text-[#d4d4d4]">~/.claude/credentials.json</code>
+                      <p class="min-w-0 flex-1 text-xs leading-relaxed text-[#a3a3a3]">
+                        要用 Claude 订阅（Pro / Max）？在「控制中心 → Claude 订阅」里添加账号：模型会自动配好，还能看到账号用量，并支持多个账号。
                       </p>
-                      <p class="mt-1 text-xs text-[#a3a3a3]">
-                        请求带 Claude CLI 的 OAuth 请求头发送，用量计入你的 Claude 订阅。
-                      </p>
-                      <textarea
-                        v-model="claudeCredentialsText"
-                        rows="4"
-                        spellcheck="false"
-                        placeholder='{"claudeAiOauth":{"accessToken":"sk-ant-oat01-..."}}'
-                        class="mt-2 min-h-[88px] w-full resize-none rounded-[6px] border border-[#3f3f3f] bg-[#1b1b1b] px-3 py-2 font-mono text-xs text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
-                      />
-                      <div class="center-row mt-2 justify-between gap-3">
-                        <div
-                          class="flex flex-col gap-0.5 text-xs"
-                          :class="claudeCredentialsFailed ? 'text-[#fca5a5]' : 'text-[#8f8f8f]'"
-                        >
-                          <span
-                            v-for="(line, index) in claudeCredentialsStatus"
-                            :key="index"
-                          >{{ line }}</span>
-                        </div>
-                        <Button
-                          variant="primary"
-                          @click="importClaudeCredentials"
-                        >
-                          导入令牌
-                        </Button>
-                      </div>
+                      <Button
+                        variant="primary"
+                        @click="openClaudeSubscription"
+                      >
+                        前往 Claude 订阅
+                      </Button>
                     </div>
                     <div class="flex items-center justify-between gap-3">
                       <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">

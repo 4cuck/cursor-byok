@@ -1,3 +1,23 @@
+## v1.0.62
+
+### Added
+
+- **Claude subscription accounts have their own section: Control center → Claude subscription**:
+  - An account is added by pasting the Claude CLI's credentials (`~/.claude/.credentials.json`; on macOS they are in the Keychain) or a token, or by choosing the credentials file in a file dialog. The app never looks for a credentials file on its own: credentials are read only when you submit them. The token is checked with Anthropic first and then saved on this computer.
+  - Each account shows its e-mail address, name, organization and plan, the state and expiry of its token, the usage limits Anthropic reports (current session, current week, weekly limits of single model families) with their reset times, usage credits, rate limit tier and token scopes. Usage older than five minutes is read again when the section is opened, and **Refresh** reads it at any time.
+  - **Several accounts** can be added, and all of them serve the same models. New conversations take the accounts in turn, a conversation stays on the account it started with, and when an account is rate limited or refused the next one takes over.
+  - **Add models** lists the models the accounts can see and sets up the chosen ones for subscription OAuth. Each model has a Fast switch, **Edit** (the model editor) and **Remove**. When a model has Fast on and none of the usable accounts has usage credits, the section says that Fast mode will not apply.
+  - **Replace credentials** gives a saved account a new token in every model it serves. Credentials of an account that is already saved replace its token; they do not add the account a second time.
+  - Removing an account takes its token out of every model. A model other accounts serve too stays; a model only that account served is removed with it.
+  - A model set up by hand in v1.0.61 with a subscription token is listed in the section once the account of that token is added.
+  - A long-lived token from `claude setup-token` is accepted as well. It is for sending requests only, so its account shows no profile and no usage.
+  - Tokens are still not renewed. An account says when its token is about to expire, and an expired or refused token is marked on the account and on the tab.
+  - Checked against one real Pro subscription: reading the account and its usage, listing the models, adding and removing models and the account. Taking turns between several accounts is covered by automated tests against a stand-in for Anthropic's API, and a `claude setup-token` token has not been tried.
+
+### Changed
+
+- **The model editor no longer has the Import Claude subscription credentials box.** An Anthropic model that can use a subscription token shows a pointer to the new section instead. The **Claude subscription OAuth** authentication mode and the Fast mode switch are unchanged.
+
 ## v1.0.61
 
 ### Added
@@ -192,11 +212,11 @@
 
 > 名字里的 x64 / x32 / arm64 表示 CPU 架构，认准自己系统的类型下载即可。
 
-- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.61-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.61-windows-x64.zip`（绿色版）
-- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.61-windows-arm64-installer.exe` 或 `cursor-byok-1.0.61-windows-arm64.zip`
-- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.61-windows-x32-installer.exe` 或 `cursor-byok-1.0.61-windows-x32.zip`
-- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.61-macos-arm64.dmg` 或 `cursor-byok-1.0.61-macos-arm64.tar.gz`
-- **macOS Intel**：下载 `cursor-byok-1.0.61-macos-x64.dmg` 或 `cursor-byok-1.0.61-macos-x64.tar.gz`
-- **Linux 64 位**：下载 `cursor-byok-1.0.61-linux-x64.tar.gz`
+- **Windows 64 位（绝大多数 Windows 电脑）**：下载 `cursor-byok-1.0.62-windows-x64-installer.exe`（安装版，推荐）或 `cursor-byok-1.0.62-windows-x64.zip`（绿色版）
+- **Windows ARM64（骁龙/麒麟等 ARM 处理器的 Windows 电脑）**：下载 `cursor-byok-1.0.62-windows-arm64-installer.exe` 或 `cursor-byok-1.0.62-windows-arm64.zip`
+- **Windows 32 位（很老的低配电脑才需要）**：下载 `cursor-byok-1.0.62-windows-x32-installer.exe` 或 `cursor-byok-1.0.62-windows-x32.zip`
+- **macOS Apple Silicon（M1/M2/M3/M4 芯片）**：下载 `cursor-byok-1.0.62-macos-arm64.dmg` 或 `cursor-byok-1.0.62-macos-arm64.tar.gz`
+- **macOS Intel**：下载 `cursor-byok-1.0.62-macos-x64.dmg` 或 `cursor-byok-1.0.62-macos-x64.tar.gz`
+- **Linux 64 位**：下载 `cursor-byok-1.0.62-linux-x64.tar.gz`
 
 Windows 系统类型可在「设置 → 系统 → 关于 → 系统类型」查看；macOS 在「关于本机」查看芯片或处理器。

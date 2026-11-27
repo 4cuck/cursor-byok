@@ -16,6 +16,8 @@ import (
 func (s *ProxyService) GetControlCenterOverview() (controlcenter.ControlCenterOverview, error) {
 	overview := controlcenter.ControlCenterOverview{}
 	overview.Accounts = s.overviewAccounts()
+	claudeState, claudeCount, claudeWarning := s.overviewClaudeAccounts()
+	overview.ClaudeAccounts = controlcenter.ControlCenterDomainStatus{State: claudeState, Count: claudeCount, WarningCode: claudeWarning}
 	overview.RequestLab = s.overviewRequestLab()
 	overview.Routing = s.overviewRouting()
 	overview.Agents = s.overviewAgents()
