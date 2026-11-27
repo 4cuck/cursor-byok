@@ -96,7 +96,7 @@ export const EXTRA_PARAMS_DEFAULT_JSON = `{
 // anthropic-beta 能力声明），与上游 modelDefaults.ts 的 defaultCustomHeaders
 // 保持一致。仅在用户显式开启「自定义 Headers」时生效。
 export const CUSTOM_HEADERS_DEFAULT_JSON = `{
-  "User-Agent": "claude-cli/2.1.177 (external, cli)",
+  "User-Agent": "claude-cli/2.1.329 (external, cli)",
   "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24"
 }`;
 export function normalizeBaseURL(value) {
